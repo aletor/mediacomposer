@@ -1,0 +1,734 @@
+/* Spaces Workspace Styling */
+.spaces-canvas {
+  background-color: #f8fafc;
+  background-image: url('/studio_back.jpg');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+  width: 100%;
+  height: 100%;
+}
+
+.custom-node {
+  background: rgba(255, 255, 255, 0.45);
+  backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 24px;
+  padding: 0;
+  color: #1a1a1b;
+  /* Fill the ReactFlow node wrapper so NodeResizer can control height */
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  box-shadow: 
+    0 4px 6px -1px rgba(0, 0, 0, 0.05),
+    0 20px 40px -4px rgba(0, 0, 0, 0.08);
+  overflow: visible; /* handles must not be clipped */
+  /* Prevent text selection when dragging nodes */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Re-enable text selection inside actual editable elements */
+.custom-node input,
+.custom-node textarea,
+.custom-node [contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ── NodeResizer handles ── */
+.react-flow__resize-control.handle {
+  width: 16px !important;
+  height: 16px !important;
+  /* Tiny square rendered via background, centered in the larger hit area */
+  background-color: transparent !important;
+  background-image: linear-gradient(#aaaaaa, #aaaaaa) !important;
+  background-size: 4px 4px !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  transition: background-image 0.15s;
+}
+.react-flow__resize-control.handle:hover {
+  background-image: linear-gradient(#666666, #666666) !important;
+  background-size: 5px 5px !important;
+}
+/* Line controls = invisible wider drag zone, no visual */
+.react-flow__resize-control.line {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.custom-node:hover {
+  border-color: rgba(0, 0, 0, 0.05);
+  box-shadow: 0 30px 60px -12px rgba(0, 0, 0, 0.12);
+}
+
+/* ── Node selection (click / Shift+click) ─────────────────────────── */
+.react-flow__node.selected .custom-node {
+  border-color: rgba(74, 222, 128, 0.7);     /* green-400 */
+  box-shadow:
+    0 0 0 2px rgba(74, 222, 128, 0.25),       /* soft aura */
+    0 20px 40px -4px rgba(0, 0, 0, 0.10);
+  transform: translateY(-2px) scale(1.005);
+}
+
+/* Remove ReactFlow's default blue outline on selected nodes */
+.react-flow__node.selected {
+  outline: none !important;
+}
+
+
+
+.node-header {
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  color: #1a1a1b;
+  border-top-left-radius: 24px;
+  border-top-right-radius: 24px;
+}
+
+.node-header svg {
+  opacity: 0.8;
+  filter: drop-shadow(0 0 8px currentColor);
+}
+
+.node-header .node-badge {
+  margin-left: auto;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 3px 10px;
+  border-radius: 8px;
+  font-size: 7px;
+  font-weight: 900;
+  color: #64748b;
+  letter-spacing: 0.15em;
+}
+
+.node-content {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  background: transparent;
+}
+
+.node-content::-webkit-scrollbar {
+  width: 4px;
+}
+
+.node-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+}
+
+.node-label {
+  display: block;
+  font-size: 0.65rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+
+.node-input, .node-textarea {
+  width: 100%;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 12px;
+  color: #1e293b;
+  font-size: 0.85rem;
+  font-weight: 500;
+  outline: none;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.node-input:focus, .node-textarea:focus {
+  background: #fff;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+}
+
+.node-slider {
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  outline: none;
+  transition: all 0.2s;
+}
+
+.node-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 0 10px rgba(0,0,0,0.5);
+  border: 2px solid #000;
+  transition: all 0.2s;
+}
+
+.node-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.3);
+}
+
+/* Specific Node Types */
+.media-node .node-header { color: #f43f5e; }
+.prompt-node .node-header { color: #3b82f6; }
+.processor-node .node-header { color: #a855f7; }
+.tool-node .node-header { color: #10b981; }
+.mask-node .node-header { color: #06b6d4; }
+.describer-node .node-header { color: #6366f1; }
+.background-node .node-header { color: #f59e0b; }
+.composer-node .node-header { color: #06b6d4; }
+/* Global Action Button Style */
+.action-btn, .execute-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px;
+  background: #1e293b;
+  border-radius: 16px;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  color: white;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.action-btn:hover:not(:disabled), .execute-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  background: #0f172a;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.2);
+}
+
+.action-btn:active:not(:disabled), .execute-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.action-btn:disabled, .execute-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  background: #64748b;
+}
+
+.media-node .action-btn, .media-node .execute-btn { background: linear-gradient(135deg, #f43f5e, #e11d48); }
+.prompt-node .action-btn, .prompt-node .execute-btn { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+.processor-node .action-btn, .processor-node .execute-btn { background: linear-gradient(135deg, #a855f7, #9333ea); }
+.tool-node .action-btn, .tool-node .execute-btn { background: linear-gradient(135deg, #10b981, #059669); }
+.mask-node .action-btn, .mask-node .execute-btn { background: linear-gradient(135deg, #06b6d4, #0891b2); }
+.space-node .node-header { color: #06b6d4; }
+.space-io-node .node-header { color: #10b981; }
+.space-io-node.border-rose-500\/30 .node-header { color: #f43f5e; }
+
+/* Handle styling */
+.handle-wrapper {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.handle-left {
+  left: 0;
+  transform: translateX(-50%);
+  flex-direction: row;
+}
+
+.handle-right {
+  right: 0;
+  transform: translateX(50%);
+  flex-direction: row-reverse;
+}
+
+.handle-label {
+  font-size: 7px;
+  font-weight: 900;
+  color: #1e293b;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  background: #ffffff;
+  padding: 4px 8px;
+  border: 1px solid #f1f5f9;
+  border-radius: 6px;
+  white-space: nowrap;
+  opacity: 0;
+  transition: all 0.3s;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+}
+
+.custom-node:hover .handle-label {
+  opacity: 1;
+  transform: translateY(-12px);
+}
+
+.react-flow__handle {
+  width: 17px;
+  height: 17px;
+  border-radius: 50% !important;
+  background: #ffffff !important;
+  border-width: 3px !important;
+  transform-origin: center center; /* scale from center — prevents hover jump */
+  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  pointer-events: all;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+}
+
+.handle-prompt { border-color: #3b82f6 !important; }
+.handle-video  { border-color: #f43f5e !important; }
+.handle-image  { border-color: #ec4899 !important; }
+.handle-sound  { border-color: #a855f7 !important; }
+.handle-mask   { border-color: #06b6d4 !important; }
+.handle-pdf    { border-color: #f97316 !important; }
+.handle-txt    { border-color: #f59e0b !important; }
+.handle-url    { border-color: #10b981 !important; }
+.handle-rose   { border-color: #f43f5e !important; }
+.handle-emerald{ border-color: #10b981 !important; }
+
+/* Handle hover: MUST compose with ReactFlow's own translate transform per side */
+/* ReactFlow uses translateX(±50%) / translateY(±50%) to center handles on the node border */
+/* If we only write transform:scale, we lose that translate → handle jumps inward */
+.react-flow__handle-left:hover  { transform: translateX(-50%) scaleX(1.4) scaleY(1.4) !important; }
+.react-flow__handle-right:hover { transform: translateX(50%)  scaleX(1.4) scaleY(1.4) !important; }
+.react-flow__handle-top:hover   { transform: translateY(-50%) scaleX(1.4) scaleY(1.4) !important; }
+.react-flow__handle-bottom:hover{ transform: translateY(50%)  scaleX(1.4) scaleY(1.4) !important; }
+.react-flow__handle:hover {
+  background: #fff !important;
+  box-shadow: 0 3px 12px rgba(0,0,0,0.28);
+}
+
+/* Animations */
+@keyframes shimmer {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+
+/* Sidebar Styling */
+.spaces-sidebar {
+  position: fixed;  /* fixed = outside ReactFlow transform context, allows backdrop-filter to work */
+  left: 0;
+  top: 0;
+  width: 16px;
+  background: rgba(0, 0, 0, 0.01);
+  backdrop-filter: blur(0px);
+  -webkit-backdrop-filter: blur(0px);
+  border-right: 1px solid transparent;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  z-index: 1000;
+  overflow: visible;
+  height: 100vh;
+  transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1), background 0.4s ease, backdrop-filter 0.4s ease, border-color 0.4s ease, padding 0.6s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.4s ease;
+}
+
+/* Expansion area for hover: Makes it easier to trigger the sidebar */
+.spaces-sidebar::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 48px;
+  height: 100%;
+  background: transparent;
+  pointer-events: auto;
+  z-index: -1;
+}
+
+.spaces-sidebar:hover {
+  width: 200px;
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(40px);      /* matches backdrop-blur-2xl = 40px like the legend */
+  -webkit-backdrop-filter: blur(40px);
+  border-right: 1px solid rgba(255, 255, 255, 0.07);
+  padding: 16px 12px;
+  box-shadow: 4px 0 80px rgba(0, 0, 0, 0.5);
+}
+
+/* Suppress sidebar hover when NanaBanana Studio is fullscreen */
+body.nb-studio-open .spaces-sidebar,
+body.nb-studio-open .spaces-sidebar:hover {
+  width: 16px !important;
+  background: rgba(0,0,0,0.01) !important;
+  backdrop-filter: blur(0px) !important;
+  border-right: 1px solid transparent !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  pointer-events: none !important;
+}
+
+/* Collapsible Content Control */
+.collapsible-content {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.spaces-sidebar:hover .collapsible-content {
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 0.5s 0.2s ease;
+}
+
+.sidebar-label {
+  font-size: 0.6rem;
+  font-weight: 800;
+  margin-top: 2px;
+}
+
+/* Node Grid Adaptation */
+.spaces-sidebar .grid {
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+  transition: grid-template-columns 0.5s ease;
+  justify-items: center;
+}
+
+.spaces-sidebar:hover .grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dndnode {
+  padding: 8px 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: grab;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  font-size: 0.55rem;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.75);
+  position: relative;
+  overflow: hidden;
+  text-align: center;
+  aspect-ratio: 1/1;
+  width: 82px;
+}
+
+.dndnode:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(99, 102, 241, 0.6);
+  color: #ffffff;
+  transform: translateY(-4px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #e2e8f0;
+  border-radius: 10px;
+}
+
+.sidebar-category {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sidebar-category-title {
+  font-size: 0.65rem;
+  font-weight: 900;
+  color: rgba(255, 255, 255, 0.4);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+}
+
+.dndnode {
+  padding: 12px;
+  background: #f8fafc;
+  border: 1px solid #f1f5f9;
+  border-radius: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  cursor: grab;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  font-size: 0.6rem;
+  font-weight: 800;
+  color: #555;
+  position: relative;
+  overflow: hidden;
+  text-align: center;
+  aspect-ratio: 1/1;
+}
+
+.dndnode:hover {
+  background: #fff;
+  border-color: #3b82f6;
+  color: #1e293b;
+  transform: translateY(-4px) scale(1.05);
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+}
+
+.dndnode svg {
+  color: #1e293b;
+}
+
+.type-indicator-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  width: 100%;
+  padding: 0 8px;
+  position: absolute;
+  bottom: 8px;
+  opacity: 0;
+  transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  pointer-events: none;
+}
+
+.dndnode:hover .type-indicator-container {
+  opacity: 1;
+}
+
+.type-group {
+  display: flex;
+  gap: 2px;
+  flex-wrap: wrap;
+  max-width: 45%;
+}
+
+.type-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #222;
+  box-shadow: 0 0 6px rgba(0,0,0,0.5);
+  transition: all 0.3s;
+}
+
+.type-dot.active {
+  box-shadow: 0 0 10px currentColor;
+}
+
+.type-dot.image, .type-dot.video { background: #f43f5e; color: #f43f5e; }
+.type-dot.prompt { background: #3b82f6; color: #3b82f6; }
+.type-dot.url { background: #10b981; color: #10b981; }
+.type-dot.mask { background: #06b6d4; color: #06b6d4; }
+.type-dot.audio { background: #a855f7; color: #a855f7; }
+.type-dot.pdf, .type-dot.txt { background: #f97316; color: #f97316; }
+.type-dot.json { background: #f59e0b; color: #f59e0b; }
+
+.dndnode:hover .type-dot.active {
+  transform: scale(1.4);
+}
+
+/* Overlay for DnD */
+.dnd-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(244, 63, 94, 0.05);
+  border: 2px dashed #f43f5e;
+  z-index: 5;
+  pointer-events: none;
+}
+
+/* Edge & Wire disconnection styles */
+.edgebutton {
+  width: 22px;
+  height: 22px;
+  background: #000;
+  border: 2px solid #333;
+  cursor: pointer;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #666;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+  transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.edgebutton:hover {
+  transform: scale(1.3) rotate(90deg);
+  background: #f43f5e;
+  color: white;
+  border-color: #f43f5e;
+}
+
+/* No hardcoded stroke here — ButtonEdge sets inline stroke color per data type */
+.react-flow__edge-path {
+  stroke-width: 2.5px;
+  transition: stroke 0.3s;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: #06b6d4 !important;
+  stroke-width: 3.5px !important;
+}
+
+.react-flow__edge.animated .react-flow__edge-path {
+  stroke-dasharray: 5;
+  animation: edgePulse 1s infinite linear;
+}
+
+@keyframes edgePulse {
+  from { stroke-dashoffset: 20; }
+  to { stroke-dashoffset: 0; }
+}
+
+/* Composer Studio Mode */
+.studio-overlay {
+  animation: studioFadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes studioFadeIn {
+  from { opacity: 0; backdrop-filter: blur(0); }
+  to { opacity: 1; backdrop-filter: blur(12px); }
+}
+
+.studio-canvas {
+  box-shadow: 0 50px 100px -20px rgba(0, 0, 0, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.studio-layer {
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+
+.studio-layer:active {
+  cursor: grabbing !important;
+}
+
+.studio-handle {
+  width: 12px;
+  height: 12px;
+  background: white;
+  border: 3px solid #06b6d4;
+  border-radius: 50%;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+  transition: all 0.2s;
+}
+
+.studio-handle:hover {
+  transform: scale(1.5);
+  background: #06b6d4;
+  border-color: white;
+}
+/* Context Menu Styling */
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  background: rgba(18, 18, 20, 0.85);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 6px;
+  min-width: 200px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  animation: contextMenuFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes contextMenuFadeIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.context-menu-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+}
+
+.context-menu-item.danger:hover {
+  background: rgba(244, 63, 94, 0.15);
+  color: #fb7185;
+}
+
+.context-menu-item.primary {
+  color: #06b6d4;
+}
+
+.context-menu-item.primary:hover {
+  background: rgba(6, 182, 212, 0.15);
+  color: #22d3ee;
+}
+
+.context-menu-separator {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.05);
+  margin: 4px 6px;
+}
+@keyframes dolly-in {
+  0% { transform: scale(0.8); opacity: 0.5; }
+  100% { transform: scale(1.2); opacity: 1; }
+}
+@keyframes dolly-out {
+  0% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(0.8); opacity: 0.5; }
+}
+@keyframes orbit {
+  0% { transform: rotate(0deg) translateX(12px) rotate(0deg); }
+  100% { transform: rotate(360deg) translateX(12px) rotate(-360deg); }
+}
+@keyframes pan {
+  0% { transform: translateX(-5px); }
+  100% { transform: translateX(5px); }
+}
+@keyframes crane {
+  0% { transform: translateY(5px); }
+  100% { transform: translateY(-5px); }
+}
+.animate-dolly-in { animation: dolly-in 2s infinite ease-in-out; transform-origin: center; }
+.animate-dolly-out { animation: dolly-out 2s infinite ease-in-out; transform-origin: center; }
+.animate-orbit { animation: orbit 4s infinite linear; transform-origin: center; }
+.animate-pan { animation: pan 3s infinite ease-in-out alternate; }
+.animate-crane { animation: crane 3s infinite ease-in-out alternate; }

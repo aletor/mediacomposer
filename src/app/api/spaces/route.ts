@@ -1,0 +1,126 @@
+import { NextResponse } from 'next/server';
+import fs from 'fs';
+import path from 'path';
+import { v4 as uuidv4 } from 'uuid';
+import { deleteFromS3 } from '@/lib/s3-utils';
+
+const DB_PATH = path.join(process.cwd(), 'data', 'spaces-db.json');
+
+// Helper to ensure directory exists
+const DATA_DIR = path.join(process.cwd(), 'data');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function readDB() {
+  if (!fs.existsSync(DB_PATH)) return [];
+  const data = fs.readFileSync(DB_PATH, 'utf8');
+  return JSON.parse(data);
+}
+
+function writeDB(data: any) {
+  fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+}
+
+export async function GET() {
+  try {
+    const projects = readDB();
+    return NextResponse.json(projects);
+  } catch (error) {
+    return NextResponse.json({ error: 'Failed to read projects' }, { status: 500 });
+  }
+}
+
+export async function POST(req: Request) {
+  try {
+    const { id, name, rootSpaceId, spaces, metadata } = await req.json();
+    const projects = readDB();
+
+    if (id) {
+      const index = projects.findIndex((p: any) => p.id === id);
+      if (index !== -1) {
+        projects[index] = { 
+          ...projects[index], 
+          name: name || projects[index].name, 
+          rootSpaceId: rootSpaceId || projects[index].rootSpaceId,
+          spaces: spaces || projects[index].spaces,
+          metadata: metadata || projects[index].metadata,
+          updatedAt: new Date().toISOString() 
+        };
+      } else {
+        return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+      }
+    } else {
+      const projectId = uuidv4();
+      const initialSpaceId = uuidv4();
+      const newProject = {
+        id: projectId,
+        name: name || `New Project ${projects.length + 1}`,
+        rootSpaceId: initialSpaceId,
+        spaces: spaces || {
+            [initialSpaceId]: {
+                id: initialSpaceId,
+                name: 'Main Space',
+                nodes: [],
+                edges: [],
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+            }
+        },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      projects.push(newProject);
+    }
+
+    writeDB(projects);
+    return NextResponse.json(projects);
+  } catch (error) {
+    console.error('Save error:', error);
+    return NextResponse.json({ error: 'Failed to save project' }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get('id');
+    if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 });
+
+    const projects = readDB();
+    const projectToDelete = projects.find((p: any) => p.id === id);
+    
+    if (projectToDelete) {
+        console.log(`[Cleanup] Deleting project "${projectToDelete.name}"...`);
+        
+        // Find all S3 keys across all internal spaces
+        const s3Keys: string[] = [];
+        Object.values(projectToDelete.spaces || {}).forEach((space: any) => {
+            if (space.nodes) {
+                space.nodes.forEach((n: any) => {
+                    if (n.data?.s3Key) s3Keys.push(n.data.s3Key);
+                });
+            }
+        });
+        
+        if (s3Keys.length > 0) {
+            console.log(`[Cleanup] Found ${s3Keys.length} assets across all spaces to remove from S3.`);
+            for (const key of s3Keys) {
+                try {
+                    await deleteFromS3(key);
+                    console.log(`[Cleanup] Successfully removed: ${key}`);
+                } catch (err) {
+                    console.error(`[Cleanup] Failed to remove ${key}:`, err);
+                }
+            }
+        }
+    }
+
+    const filtered = projects.filter((p: any) => p.id !== id);
+    writeDB(filtered);
+    return NextResponse.json(filtered);
+  } catch (error) {
+    console.error('Delete error:', error);
+    return NextResponse.json({ error: 'Failed to delete project' }, { status: 500 });
+  }
+}
