@@ -193,6 +193,11 @@ const SpacesContent = () => {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<any>(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<any>(initialEdges);
+  /** Siempre la misma referencia que `nodes` / `edges` (sync en render, no en useEffect) */
+  const liveNodesRef = useRef<any[]>(initialNodes);
+  const liveEdgesRef = useRef<any[]>(initialEdges);
+  liveNodesRef.current = nodes;
+  liveEdgesRef.current = edges;
   const { screenToFlowPosition, setViewport, fitView, getViewport } = useReactFlow();
   
   // Persistence state
@@ -415,10 +420,6 @@ const SpacesContent = () => {
     document.addEventListener('pointerup', onUp);
   }, [viewerHeight]);
 
-  // Keep live refs in sync with React state for snapshot access
-  useEffect(() => { liveNodesRef.current = nodes; }, [nodes]);
-  useEffect(() => { liveEdgesRef.current = edges; }, [edges]);
-
     // ── Viewer pan / zoom ───────────────────────────────────────────────────────
   const [viewerTransform, setViewerTransform] = useState({ scale: 1, x: 0, y: 0 });
   const isPanningViewer = useRef(false);
@@ -594,9 +595,6 @@ const SpacesContent = () => {
   const MAX_HISTORY = 20;
   const historyRef = useRef<Array<{ nodes: any[]; edges: any[] }>>([]);
   const futureRef  = useRef<Array<{ nodes: any[]; edges: any[] }>>([]);
-  // Ref holding LIVE nodes/edges so snapshot can access them synchronously
-  const liveNodesRef = useRef<any[]>(initialNodes);
-  const liveEdgesRef = useRef<any[]>(initialEdges);
 
   // takeSnapshot: call BEFORE making a change so we record the pre-change state.
   // This replaces the old pushHistory(newState) pattern — call it before setNodes/setEdges.
@@ -978,24 +976,129 @@ const SpacesContent = () => {
     }, 100);
   }, [nodes, edges, setNodes, takeSnapshot, fitView]);
 
-  // ── Keyboard shortcuts ───────────────────────────────────────────────────
+  // ── Keyboard shortcuts (deps fijas `[]`: ref evita error de tamaño de array con Fast Refresh) ──
+  const keyboardShortcutsRef = useRef({
+    addNodeAtCenter,
+    undo,
+    redo,
+    fitView,
+    autoLayout,
+    setNodes,
+    fitViewToNodeIds,
+    pushHistory,
+  });
+  keyboardShortcutsRef.current = {
+    addNodeAtCenter,
+    undo,
+    redo,
+    fitView,
+    autoLayout,
+    setNodes,
+    fitViewToNodeIds,
+    pushHistory,
+  };
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      const {
+        addNodeAtCenter: addNode,
+        undo: doUndo,
+        redo: doRedo,
+        fitView: doFitView,
+        autoLayout: doAutoLayout,
+        setNodes: doSetNodes,
+        fitViewToNodeIds: doFitViewToNodeIds,
+        pushHistory: doPushHistory,
+      } = keyboardShortcutsRef.current;
+
       const target = e.target as HTMLElement;
-      const typing = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+      const typing =
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        target.isContentEditable;
       if (typing) return;
+
+      // Tab / Shift+Tab — siguiente o anterior por aristas; al llegar al fin del ramal, vuelta al primero/último del componente conexo
+      if (e.key === 'Tab') {
+        const nds = liveNodesRef.current;
+        const es = liveEdgesRef.current;
+        const selected = nds.filter((n) => n.selected);
+        if (selected.length !== 1) return;
+        const fromId = selected[0].id;
+        const forward = !e.shiftKey;
+        const idSet = new Set(nds.map((n) => n.id));
+        if (!idSet.has(fromId)) return;
+
+        const adj = new Map<string, string[]>();
+        const link = (a: string, b: string) => {
+          if (!idSet.has(a) || !idSet.has(b)) return;
+          if (!adj.has(a)) adj.set(a, []);
+          if (!adj.has(b)) adj.set(b, []);
+          adj.get(a)!.push(b);
+          adj.get(b)!.push(a);
+        };
+        for (const edge of es) link(edge.source, edge.target);
+
+        const component = new Set<string>();
+        const stack = [fromId];
+        while (stack.length) {
+          const id = stack.pop()!;
+          if (!idSet.has(id) || component.has(id)) continue;
+          component.add(id);
+          for (const n of adj.get(id) || []) {
+            if (!component.has(n)) stack.push(n);
+          }
+        }
+        const sortedComponent = [...component].sort((a, b) => a.localeCompare(b));
+        // Tab “al primero”: no usar orden alfabético crudo — `final_output_permanent` iba primero y el wrap no movía la selección
+        const wrapPool = sortedComponent
+          .filter((id) => id !== FINAL_NODE_ID)
+          .sort((a, b) => a.localeCompare(b));
+        const sourcesInComponent = wrapPool.filter(
+          (id) => !es.some((e) => e.target === id && component.has(e.source))
+        );
+        const firstInLoop =
+          [...sourcesInComponent].sort((a, b) => a.localeCompare(b))[0] ??
+          wrapPool[0] ??
+          sortedComponent[0];
+        const sinksInComponent = wrapPool.filter(
+          (id) => !es.some((e) => e.source === id && component.has(e.target))
+        );
+        const lastInLoop =
+          [...sinksInComponent].sort((a, b) => a.localeCompare(b)).slice(-1)[0] ??
+          wrapPool[wrapPool.length - 1] ??
+          sortedComponent[sortedComponent.length - 1];
+
+        let nextId: string | null = null;
+        if (forward) {
+          const outs = es
+            .filter((edge) => edge.source === fromId && idSet.has(edge.target))
+            .sort((a, b) => String(a.target).localeCompare(String(b.target)));
+          nextId = outs[0]?.target ?? firstInLoop ?? null;
+        } else {
+          const ins = es
+            .filter((edge) => edge.target === fromId && idSet.has(edge.source))
+            .sort((a, b) => String(a.source).localeCompare(String(b.source)));
+          nextId = ins[0]?.source ?? lastInLoop ?? null;
+        }
+        if (!nextId) return;
+        e.preventDefault();
+        doSetNodes((nds2) => nds2.map((n) => ({ ...n, selected: n.id === nextId })));
+        doFitViewToNodeIds([nextId], 600);
+        return;
+      }
 
       // Undo / Redo
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
-        if (e.shiftKey) redo(); else undo();
+        if (e.shiftKey) doRedo(); else doUndo();
         return;
       }
       // Ctrl+D — duplicate selected nodes
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
         e.preventDefault();
-        setNodes(nds => {
+        doSetNodes((nds) => {
           const selected = nds.filter(n => n.selected);
           if (selected.length === 0) return nds;
           const clones = selected.map(n => ({
@@ -1006,7 +1109,7 @@ const SpacesContent = () => {
             data: { ...n.data },
           }));
           const next = [...nds.map(n => ({ ...n, selected: false })), ...clones];
-          pushHistory(next, edges);
+          doPushHistory(next, liveEdgesRef.current);
           return next;
         });
         return;
@@ -1016,41 +1119,41 @@ const SpacesContent = () => {
 
       switch (e.key.toLowerCase()) {
         // ── Ingesta ──────────────────────────────────────────────────────
-        case 'p': addNodeAtCenter('promptInput'); break;
-        case 'm': addNodeAtCenter('mediaInput'); break;
-        case 'b': addNodeAtCenter('background'); break;
-        case 'u': addNodeAtCenter('urlImage'); break;
+        case 'p': addNode('promptInput'); break;
+        case 'm': addNode('mediaInput'); break;
+        case 'b': addNode('background'); break;
+        case 'u': addNode('urlImage'); break;
         // ── Inteligencia ─────────────────────────────────────────────────
-        case 'n': addNodeAtCenter('nanoBanana'); break;
-        case 'd': addNodeAtCenter('mediaDescriber'); break;
-        case 'h': addNodeAtCenter('enhancer'); break;
-        case 'g': addNodeAtCenter('grokProcessor'); break;
-        case 'r': addNodeAtCenter('backgroundRemover'); break;
-        case 'v': addNodeAtCenter('geminiVideo'); break;
+        case 'n': addNode('nanoBanana'); break;
+        case 'd': addNode('mediaDescriber'); break;
+        case 'h': addNode('enhancer'); break;
+        case 'g': addNode('grokProcessor'); break;
+        case 'r': addNode('backgroundRemover'); break;
+        case 'v': addNode('geminiVideo'); break;
         // ── Lógica ───────────────────────────────────────────────────────
-        case 'q': addNodeAtCenter('concatenator'); break;
-        case 's': addNodeAtCenter('space', { label: 'Space', hasInput: true, hasOutput: true }); break;
-        case 'i': addNodeAtCenter('spaceInput'); break;
-        case 'o': addNodeAtCenter('spaceOutput'); break;
+        case 'q': addNode('concatenator'); break;
+        case 's': addNode('space', { label: 'Space', hasInput: true, hasOutput: true }); break;
+        case 'i': addNode('spaceInput'); break;
+        case 'o': addNode('spaceOutput'); break;
         // ── Composición ──────────────────────────────────────────────────
-        case 'c': addNodeAtCenter('imageComposer'); break;
-        case 'l': addNodeAtCenter('imageComposer'); break;   // alias
-        case 'e': addNodeAtCenter('imageExport'); break;
-        case 't': addNodeAtCenter('textOverlay'); break;
-        case 'w': addNodeAtCenter('painter'); break;
+        case 'c': addNode('imageComposer'); break;
+        case 'l': addNode('imageComposer'); break;   // alias
+        case 'e': addNode('imageExport'); break;
+        case 't': addNode('textOverlay'); break;
+        case 'w': addNode('painter'); break;
 
-        case 'x': addNodeAtCenter('crop'); break;
-        case 'z': addNodeAtCenter('bezierMask'); break;
+        case 'x': addNode('crop'); break;
+        case 'z': addNode('bezierMask'); break;
         // ── Canvas actions ───────────────────────────────────────────────
-        case 'f': fitView({ padding: FIT_VIEW_PADDING, duration: 800 }); break;
-        case 'a': autoLayout(); break;
+        case 'f': doFitView({ padding: FIT_VIEW_PADDING, duration: 800 }); break;
+        case 'a': doAutoLayout(); break;
         default: break;
       }
 
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [addNodeAtCenter, undo, redo, fitView, autoLayout]);
+  }, []);
 
   
   // ── Track last-clicked node for persistent z-index ──────────────────────
