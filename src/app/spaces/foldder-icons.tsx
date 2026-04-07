@@ -120,12 +120,23 @@ export function FoldderIcon({
 
 /* ── Foundational four: Prompt, Asset, Space, Output ───────────────────── */
 
+/** Letra “P” en serif — reconocible en topbar / nodos Prompt */
 export function FoldderPrompt({ state, className, size }: GlyphProps) {
   return (
     <FoldderIcon state={state} className={className} size={size}>
-      <path d="M3.25 5.25 H12.75" />
-      <path d="M3.25 8 H9.25" />
-      <path d="M3.25 10.75 H11" />
+      <text
+        x="8"
+        y="11.25"
+        textAnchor="middle"
+        fill="currentColor"
+        stroke="none"
+        fontFamily="Georgia, 'Times New Roman', Times, serif"
+        fontSize="11"
+        fontWeight={700}
+        style={{ letterSpacing: '-0.02em' }}
+      >
+        P
+      </text>
     </FoldderIcon>
   );
 }
@@ -232,33 +243,32 @@ export function FoldderGrok({ state, className, size }: GlyphProps) {
   );
 }
 
-/** Nano Banana — solo plátano: curva asimétrica (lado convexo / cóncavo), sin otros elementos */
+/** Nano Banana — solo “imagen” (marco + sol + sierra), sin plátano */
 export function FoldderNano({ state, className, size }: GlyphProps) {
   return (
     <FoldderIcon state={state} className={className} size={size}>
+      <rect x="2.5" y="2.75" width="11" height="10.5" rx="1.35" />
+      <circle cx="5.4" cy="5.85" r="0.9" fill="currentColor" stroke="none" strokeWidth={0} />
       <path
-        d="M 5.1 14.35
-           C 2.65 12.6 2.05 8.4 4.15 5.05
-           C 6.25 1.7 10.85 0.95 13.65 3.55
-           C 15.75 6.15 15.35 10.8 13.05 13.15
-           C 10.25 15.5 7.15 15.75 5.1 14.35
-           Z"
-        fill="currentColor"
-        stroke="none"
-        strokeWidth={0}
-        opacity={0.98}
+        d="M3.35 12.45 L6.15 9.15 L8.35 10.85 L10.55 8.55 L12.65 12.45"
+        opacity={0.92}
+        strokeWidth={1.25}
       />
     </FoldderIcon>
   );
 }
 
-/** Film sequence — three frames, no clapper */
+/** Marco de vídeo + triángulo play (lectura inmediata) */
 export function FoldderVideo({ state, className, size }: GlyphProps) {
   return (
     <FoldderIcon state={state} className={className} size={size}>
-      <rect x="3.25" y="4" width="2.75" height="8" rx="0.55" />
-      <rect x="6.625" y="4" width="2.75" height="8" rx="0.55" />
-      <rect x="10" y="4" width="2.75" height="8" rx="0.55" />
+      <rect x="2.35" y="3.35" width="11.3" height="9.3" rx="1.65" />
+      <path
+        d="M6.85 6.15 L6.85 10.85 L10.85 8.5 Z"
+        fill="currentColor"
+        stroke="none"
+        strokeWidth={0}
+      />
     </FoldderIcon>
   );
 }
@@ -293,12 +303,13 @@ export function FoldderLayout({ state, className, size }: GlyphProps) {
   );
 }
 
+/** Descarga — flecha hacia bandeja (export imagen) */
 export function FoldderExport({ state, className, size }: GlyphProps) {
   return (
     <FoldderIcon state={state} className={className} size={size}>
-      <path d="M3 12.75 H13" opacity={0.45} strokeWidth={1.25} />
-      <rect x="4.75" y="3.25" width="6.5" height="6.5" rx="1.2" />
-      <path d="M8 9.75 V12.25 M6.25 10.75 L8 12.25 L9.75 10.75" strokeWidth={1.35} />
+      <path d="M3.25 13.25 H12.75" strokeWidth={1.35} strokeLinecap="round" />
+      <path d="M8 3.25 V10.5" strokeWidth={1.35} strokeLinecap="round" />
+      <path d="M5.1 7.6 L8 10.5 L10.9 7.6" strokeWidth={1.35} strokeLinecap="round" strokeLinejoin="round" />
     </FoldderIcon>
   );
 }
@@ -412,7 +423,6 @@ export const NODE_TYPE_TO_FOLDDER_ICON: Record<string, FoldderIconKey> = {
   textOverlay: 'text',
   crop: 'crop',
   bezierMask: 'mask',
-  finalOutput: 'output',
 };
 
 export function resolveFoldderNodeState(opts: {

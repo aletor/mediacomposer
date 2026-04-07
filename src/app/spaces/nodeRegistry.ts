@@ -309,19 +309,4 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
       canvasH: 'number',
     }
   },
-
-  finalOutput: {
-    type: 'finalOutput',
-    label: 'FINAL Output',
-    description: 'Permanent destination node. Accepts image or video. No outputs.',
-    inputs: [
-      { id: 'image', label: 'Image In', type: 'image' },
-      { id: 'video', label: 'Video In', type: 'video' },
-    ],
-    outputs: [],
-    dataSchema: {
-      value: 'string (url)',
-      mediaType: "'image' | 'video'",
-    }
-  },
 };

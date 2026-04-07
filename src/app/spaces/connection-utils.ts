@@ -235,7 +235,6 @@ const DEFAULT_W: Record<string, number> = {
   nanoBanana: 280,
   geminiVideo: 340,
   space: 320,
-  finalOutput: 1,
 };
 
 export function estimateNodeWidth(node: Node): number {

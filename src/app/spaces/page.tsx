@@ -40,7 +40,6 @@ import {
   CropNode,
   BezierMaskNode,
   TextOverlayNode,
-  FinalOutputNode,
   ButtonEdge 
 } from './CustomNodes';
 
@@ -81,9 +80,7 @@ import {
   X,
   Edit2,
   Maximize,
-  Maximize2,
   LayoutGrid,
-  ChevronLeft,
   Layers,
   Sparkles,
   Download,
@@ -181,7 +178,6 @@ const nodeTypes: any = {
   crop: CropNode,
   bezierMask: BezierMaskNode,
   textOverlay: TextOverlayNode,
-  finalOutput: FinalOutputNode,
 };
 
 
@@ -305,7 +301,6 @@ const SpacesContent = () => {
 
       const compatible: string[] = [];
       for (const n of nodes) {
-        if (n.id === FINAL_NODE_ID) continue;
         if (findLibraryDropPlan(nodeType, n, edges)) {
           compatible.push(n.id);
         }
@@ -356,54 +351,18 @@ const SpacesContent = () => {
   // ── Window Viewer Mode ─────────────────────────────────────────────────────
   const [windowMode, setWindowMode] = useState(false);
   const [showWelcome, setShowWelcome] = useState(false); // triggered after auth
-  const [showFinalOut, setShowFinalOut] = useState(false); // appears 3s after welcome splash ends
+  /** Which node supplies `data.value` for the fullscreen viewer (opened via node header buttons). */
+  const [viewerSourceNodeId, setViewerSourceNodeId] = useState<string | null>(null);
 
-  // On mount: position viewport so FINAL node is ~50px from right, vertically centered
   useEffect(() => {
     const t = setTimeout(() => {
-      const zoom = 0.7;
-      const nodeX = 1400, nodeY = 200, nodeW = 260, nodeH = 180;
-      const marginRight = 50;
-      // Screen position of node's right edge = window.innerWidth - marginRight
-      const vpX = (window.innerWidth - marginRight) - (nodeX + nodeW) * zoom;
-      const vpY = window.innerHeight / 2 - (nodeY + nodeH / 2) * zoom;
-      setViewport({ x: vpX, y: vpY, zoom });
+      setViewport({ x: 120, y: 80, zoom: 0.72 });
     }, 50);
-    // Welcome disappears via onAnimationEnd (not setTimeout) for smooth fade-out
+    return () => clearTimeout(t);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
 
   const [viewerHeight, setViewerHeight] = useState(500); // safe SSR default; updated on mount
-  const viewerHeightRef = useRef(500);
-  const windowModeRef = useRef(false);
-  useEffect(() => { viewerHeightRef.current = viewerHeight; }, [viewerHeight]);
-  useEffect(() => { windowModeRef.current = windowMode; }, [windowMode]);
-
-  // Compute canvas position for FINAL node so handles align with visual dots
-  const syncFinalNode = useCallback((vp: { x: number; y: number; zoom: number }) => {
-    let screenX: number, screenY: number;
-    if (windowModeRef.current) {
-      // viewerMode: bottom-center of the viewer panel
-      screenX = window.innerWidth / 2 - 16;
-      screenY = viewerHeightRef.current - 48;
-    } else {
-      // Card: right:50, width:130 → card left edge = innerWidth - 50 - 130 = innerWidth - 180
-      // Dots: left:-18 from card edge → dot screen X = innerWidth - 180 - 18 = innerWidth - 198
-      // Card top = innerHeight/2 - 50 (centered, height=100)
-      // Dot img: cardTop + 100*0.35 = innerHeight/2 - 50 + 35 = innerHeight/2 - 15
-      // Dot vid: cardTop + 100*0.65 = innerHeight/2 - 50 + 65 = innerHeight/2 + 15
-      // Node placed at midpoint between both dots:
-      screenX = window.innerWidth - 198; // dot X
-      screenY = window.innerHeight / 2;  // midpoint between img(-15) and vid(+15)
-    }
-    const canvasX = (screenX - vp.x) / vp.zoom;
-    const canvasY = (screenY - vp.y) / vp.zoom;
-    setNodes((prev: any[]) => prev.map((n: any) =>
-      n.id === FINAL_NODE_ID
-        ? { ...n, position: { x: canvasX, y: canvasY }, data: { ...(n.data || {}), vpZoom: vp.zoom } }
-        : n
-    ));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isDraggingViewer = useRef(false);
   const dragStartY = useRef(0);
@@ -489,51 +448,23 @@ const SpacesContent = () => {
     }
   }, []);
 
-  // Move FINAL node to viewer bottom in windowMode; restore on close
-  const savedFinalPosition = useRef<{ x: number; y: number } | null>(null);
-  useEffect(() => {
-    setNodes((prev: any[]) =>
-      prev.map((n: any) => {
-        if (n.id !== FINAL_NODE_ID) return n;
-        if (windowMode) {
-          // Save original position
-          savedFinalPosition.current = { x: n.position.x, y: n.position.y };
-          // Map viewer bottom-center to canvas coords
-          const canvasPos = screenToFlowPosition({
-            x: window.innerWidth / 2 - 16,
-            y: viewerHeight - 40,
-          });
-          return {
-            ...n,
-            position: canvasPos,
-            style: { ...(n.style || {}), opacity: 1, pointerEvents: 'auto' },
-            data: { ...(n.data || {}), viewerMode: true },
-          };
-        } else {
-          // Restore original position
-          const restored = savedFinalPosition.current || n.position;
-          return {
-            ...n,
-            position: restored,
-            style: { ...(n.style || {}), opacity: 1, pointerEvents: 'auto' },
-            data: { ...(n.data || {}), viewerMode: false },
-          };
-        }
-      })
-    );
-  }, [windowMode, viewerHeight, screenToFlowPosition]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Track final output media for the viewer panel
+  // Media shown in the fullscreen viewer (from the node the user opened)
   const finalMedia = useMemo(() => {
-    const imgEdge = edges.find((e: any) => e.target === FINAL_NODE_ID && e.targetHandle === 'image');
-    const vidEdge = edges.find((e: any) => e.target === FINAL_NODE_ID && e.targetHandle === 'video');
-    const vidNode = vidEdge ? nodes.find((n: any) => n.id === vidEdge.source) : null;
-    const imgNode = imgEdge ? nodes.find((n: any) => n.id === imgEdge.source) : null;
-    const value = (typeof vidNode?.data?.value === 'string' ? vidNode.data.value : null) ||
-                  (typeof imgNode?.data?.value === 'string' ? imgNode.data.value : null);
-    const type = vidNode?.data?.value ? 'video' : 'image';
-    return { value, type } as { value: string | null; type: 'image' | 'video' };
-  }, [nodes, edges]);
+    if (!viewerSourceNodeId) {
+      return { value: null as string | null, type: 'image' as const };
+    }
+    const node = nodes.find((n: any) => n.id === viewerSourceNodeId);
+    if (!node) {
+      return { value: null as string | null, type: 'image' as const };
+    }
+    const value = typeof node.data?.value === 'string' ? node.data.value : null;
+    let type: 'image' | 'video' = 'image';
+    const nt = node.type as string;
+    if (nt === 'geminiVideo' || nt === 'grokProcessor') type = 'video';
+    else if (node.data?.type === 'video') type = 'video';
+    else if (typeof value === 'string' && value.startsWith('data:video')) type = 'video';
+    return { value, type };
+  }, [nodes, viewerSourceNodeId]);
 
   // Download helper for viewer (placed after finalMedia to avoid use-before-declaration)
   const downloadViewerMedia = useCallback(async () => {
@@ -570,30 +501,16 @@ const SpacesContent = () => {
     }
   }, [finalMedia]);
 
-  // Listen for toggle-final-window events from the FinalOutputNode button
   useEffect(() => {
-    const handler = () => setWindowMode(prev => !prev);
-    window.addEventListener('toggle-final-window', handler);
-    return () => window.removeEventListener('toggle-final-window', handler);
-  }, []); // toggle-final-window listener
-
-  // FINAL OUT overlay is hidden whenever we're inside a nested space
-  const isInsideNestedSpace = navigationStack.length > 0;
-
-  // Initialize FINAL node on empty canvas (first ever use, no project loaded)
-  useEffect(() => {
-    setNodes(prev => {
-      if (prev.some((n: any) => n.id === FINAL_NODE_ID)) return prev;
-      return [...prev, {
-        id: FINAL_NODE_ID,
-        type: 'finalOutput',
-        position: { x: 1400, y: 200 },
-        data: { label: 'FINAL OUT' },
-        deletable: false,
-        draggable: false,
-      }];
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    const onOpen = (e: Event) => {
+      const ce = e as CustomEvent<{ nodeId?: string }>;
+      const nid = ce.detail?.nodeId;
+      if (!nid) return;
+      setViewerSourceNodeId(nid);
+      setWindowMode(true);
+    };
+    window.addEventListener('open-viewer-for-node', onOpen);
+    return () => window.removeEventListener('open-viewer-for-node', onOpen);
   }, []);
 
   // Set real viewerHeight once mounted on client
@@ -1103,9 +1020,7 @@ const SpacesContent = () => {
           }
         }
         const sortedComponent = [...component].sort((a, b) => a.localeCompare(b));
-        const wrapPool = sortedComponent
-          .filter((id) => id !== FINAL_NODE_ID)
-          .sort((a, b) => a.localeCompare(b));
+        const wrapPool = sortedComponent.sort((a, b) => a.localeCompare(b));
         const sourcesInComponent = wrapPool.filter(
           (id) => !es.some((edge) => edge.target === id && component.has(edge.source))
         );
@@ -1285,7 +1200,7 @@ const SpacesContent = () => {
         case 'q': addNode('concatenator'); break;
         case 's': {
           const sel = liveNodesRef.current.filter(
-            (n) => n.selected && n.id !== FINAL_NODE_ID
+            (n) => n.selected
           );
           if (sel.length > 1) {
             groupSelectedToSpaceRef.current();
@@ -1431,8 +1346,7 @@ const SpacesContent = () => {
   // so our manual zoom starts from the correct position.
   const onMoveHandler = useCallback((evt: any, vp: any) => {
     viewportRef.current = vp;
-    syncFinalNode(vp);
-  }, [syncFinalNode]);
+  }, []);
 
 
   // Access Security
@@ -1763,28 +1677,6 @@ const SpacesContent = () => {
     }
   }, [activeSpaceId, nodes, edges, spacesMap, setNodes, setEdges, fitView, syncCurrentSpaceState]);
 
-  const handleGoBack = useCallback(() => {
-    if (navigationStack.length === 0) return;
-    
-    const newStack = [...navigationStack];
-    const parentSpaceId = newStack.pop() as string;
-    const currentId = activeSpaceId;
-    
-    // 1. Sync current state AND propagate up
-    const { newMap: updatedSpacesMap } = syncCurrentSpaceState(nodes, edges, spacesMap, currentId);
-
-    // 2. Switch to parent
-    const parentSpace = updatedSpacesMap[parentSpaceId];
-    if (parentSpace) {
-      setSpacesMap(updatedSpacesMap);
-      setNodes([...parentSpace.nodes]);
-      setEdges([...(parentSpace.edges || [])]);
-      setActiveSpaceId(parentSpaceId);
-      setNavigationStack(newStack);
-      setTimeout(() => fitView({ padding: FIT_VIEW_PADDING, duration: fitAnim(800) }), 100);
-    }
-  }, [activeSpaceId, nodes, edges, spacesMap, navigationStack, setNodes, setEdges, fitView, syncCurrentSpaceState]);
-
   /** Vuelve al lienzo root con sync; fit a todo el grafo tras aplicar nodos (doble rAF = tras pintar). */
   const goToRootCanvas = useCallback(() => {
     if (activeSpaceId === 'root') return;
@@ -1805,6 +1697,11 @@ const SpacesContent = () => {
 
   const handleEscapeNavigation = useCallback((): boolean => {
     if (showSaveModal || showLoadModal || projectToDelete) return false;
+    if (windowMode) {
+      setWindowMode(false);
+      setViewerSourceNodeId(null);
+      return true;
+    }
     if (contextMenu) {
       setContextMenu(null);
       return true;
@@ -1818,6 +1715,7 @@ const SpacesContent = () => {
     showSaveModal,
     showLoadModal,
     projectToDelete,
+    windowMode,
     contextMenu,
     activeSpaceId,
     goToRootCanvas,
@@ -1925,21 +1823,13 @@ const SpacesContent = () => {
       return;
     }
 
-    const makeFinalNode = (existingNodes: any[]) => {
-      const hasFinal = existingNodes.some((n: any) => n.id === FINAL_NODE_ID);
-      if (hasFinal) return existingNodes;
-      const finalNode = {
-        id: FINAL_NODE_ID,
-        type: 'finalOutput',
-        position: { x: 1400, y: 200 },
-        data: { label: 'FINAL OUT' },
-        deletable: false,
-      };
-      return [...existingNodes, finalNode];
-    };
+    const stripLegacyFinal = (ns: any[]) =>
+      ns.filter((n: any) => n.id !== FINAL_NODE_ID && n.type !== 'finalOutput');
+    const stripEdgesToFinal = (es: any[]) =>
+      es.filter((e: any) => e.target !== FINAL_NODE_ID);
 
-    setNodes(makeFinalNode([...(rootSpace.nodes || [])]));
-    setEdges([...(rootSpace.edges || [])]);
+    setNodes(stripLegacyFinal([...(rootSpace.nodes || [])]));
+    setEdges(stripEdgesToFinal([...(rootSpace.edges || [])]));
     setActiveProjectId(project.id);
     setActiveSpaceId(rootSpaceId);
     setCurrentName(project.name);
@@ -2101,8 +1991,7 @@ const SpacesContent = () => {
     // Client-side clear detection — no AI needed for simple canvas reset
     const clearKeywords = ['clear', 'limpiar', 'reset', 'borrar', 'vaciar', 'limpia', 'elimina todo', 'nueva pizarra', 'start over', 'new canvas'];
     if (clearKeywords.some(kw => prompt.toLowerCase().includes(kw))) {
-      // Keep the permanent FINAL node when clearing
-      setNodes(prev => prev.filter((n: any) => n.id === FINAL_NODE_ID));
+      setNodes([]);
       setEdges([]);
       return;
     }
@@ -2325,7 +2214,7 @@ const SpacesContent = () => {
 
   const groupSelectedToSpace = useCallback(() => {
     const selectedNodes = nodes.filter(
-      (n) => n.selected && n.id !== FINAL_NODE_ID
+      (n) => n.selected
     );
     if (selectedNodes.length === 0) {
       setContextMenu(null);
@@ -2563,9 +2452,7 @@ const SpacesContent = () => {
         x: event.clientX,
         y: event.clientY,
       });
-      const hit = findTopNodeUnderFlowPoint(p, nodes, {
-        excludeIds: new Set([FINAL_NODE_ID]),
-      });
+      const hit = findTopNodeUnderFlowPoint(p, nodes);
       if (!hit) {
         libraryDropTargetIdRef.current = null;
         setLibraryDropTargetId(null);
@@ -2749,74 +2636,6 @@ const SpacesContent = () => {
   return (
     <div className="flex w-full h-full" ref={reactFlowWrapper} style={{ flexDirection: 'column' }}>
 
-      {!windowMode && !isInsideNestedSpace && showFinalOut && (
-        <div style={{
-          position: 'fixed', right: 50, top: '50%', transform: 'translateY(-50%)',
-          zIndex: 9997, width: 130, pointerEvents: 'auto', transition: 'opacity 0.5s ease',
-        }}>
-          {/* Connection handle indicators */}
-          <div style={{ position:'absolute', left:-18, top:'35%', transform:'translateY(-50%)', display:'flex', alignItems:'center', gap:3, pointerEvents:'none' }}>
-            <div style={{ width:8, height:8, borderRadius:'50%', background:'#ec4899', border:'2px solid white', boxShadow:'0 0 5px #ec4899' }} />
-          </div>
-          <div style={{ position:'absolute', left:-18, top:'65%', transform:'translateY(-50%)', display:'flex', alignItems:'center', gap:3, pointerEvents:'none' }}>
-            <div style={{ width:8, height:8, borderRadius:'50%', background:'#f43f5e', border:'2px solid white', boxShadow:'0 0 5px #f43f5e' }} />
-          </div>
-
-          {/* Card */}
-          <div style={{
-            borderRadius: 14, overflow: 'hidden', position: 'relative',
-            border: '2px solid rgba(251,191,36,0.6)',
-            boxShadow: '0 12px 32px rgba(251,191,36,0.25)',
-            background: finalMedia.value ? 'transparent' : 'rgba(20,16,8,0.95)',
-            height: 100,
-          }}>
-            {/* Top bar */}
-            <div style={{
-              position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10,
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '4px 6px',
-              background: 'linear-gradient(to bottom,rgba(0,0,0,0.8) 0%,transparent 100%)',
-            }}>
-              <div style={{ display:'flex', alignItems:'center', gap:4 }}>
-                <div style={{ width:5, height:5, borderRadius:'50%', background:'#fbbf24', boxShadow:'0 0 4px #fbbf24' }} />
-                <span style={{ fontSize:7, fontWeight:900, textTransform:'uppercase', letterSpacing:'0.1em', color:'#fcd34d' }}>Output</span>
-              </div>
-              <button
-                onClick={() => setWindowMode(true)}
-                title="Open viewer"
-                style={{
-                  display:'flex', alignItems:'center', justifyContent:'center',
-                  padding:3, borderRadius:6, cursor:'pointer',
-                  background:'rgba(251,191,36,0.2)', border:'1px solid rgba(251,191,36,0.4)',
-                  color:'#fbbf24',
-                }}
-              >
-                <Maximize2 size={9} />
-              </button>
-            </div>
-
-            {/* Content */}
-            {finalMedia.value ? (
-              <>
-                {finalMedia.type === 'video'
-                  ? <video src={finalMedia.value} style={{ width:'100%', height:'100%', objectFit:'cover' }} loop muted />
-                  : <img src={finalMedia.value} style={{ width:'100%', height:'100%', objectFit:'cover' }} alt="output" />
-                }
-                <div style={{ position:'absolute', inset:0, background:'linear-gradient(to top,rgba(0,0,0,0.5) 0%,transparent 60%)', pointerEvents:'none' }} />
-              </>
-            ) : (
-              <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:4 }}>
-                <Maximize size={16} style={{ color:'#fbbf24', opacity:0.5 }} strokeWidth={1.5} />
-                <span style={{ fontSize:7, color:'rgba(251,191,36,0.5)', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.08em', textAlign:'center', lineHeight:1.3 }}>
-                  Connect<br/>node
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-
       {/* ── WELCOME SPLASH ─────────────────────────────────────────────────── */}
       {showWelcome && (
         <div style={{
@@ -2825,7 +2644,7 @@ const SpacesContent = () => {
           pointerEvents: 'none',
           animation: 'welcomeFade 4s ease forwards',
         }}
-        onAnimationEnd={() => { setShowWelcome(false); setShowFinalOut(true); }}
+        onAnimationEnd={() => { setShowWelcome(false); }}
         >
           <style>{`
             @keyframes welcomeFade {
@@ -2894,7 +2713,7 @@ const SpacesContent = () => {
               </button>
             )}
             <button
-              onClick={() => setWindowMode(false)}
+              onClick={() => { setWindowMode(false); setViewerSourceNodeId(null); }}
               title="Close viewer"
               style={{
                 display: 'flex', alignItems: 'center', gap: 5,
@@ -2976,7 +2795,7 @@ const SpacesContent = () => {
             ) : (
               <div className="flex flex-col items-center justify-center h-full gap-3 opacity-30">
                 <Maximize size={48} strokeWidth={1} className="text-amber-400" />
-                <span className="text-amber-300 text-xs font-bold uppercase tracking-widest">No output yet — connect a node to FINAL OUT</span>
+                <span className="text-amber-300 text-xs font-bold uppercase tracking-widest text-center px-6">No media on this node — generate or load image/video first, then open the viewer from the node header</span>
               </div>
             )}
           </div>
@@ -3073,17 +2892,12 @@ const SpacesContent = () => {
           nodes={flowNodes}
           edges={edges}
           onNodesChange={(changes) => {
-            // Guard: prevent deletion of the permanent FINAL output node
             const removals = changes.filter(c => c.type === 'remove');
             if (removals.length > 0) {
-              // Snapshot BEFORE ReactFlow applies the deletion so undo can restore
               takeSnapshot();
             }
-            const filtered = changes.filter(
-              (c) => !(c.type === 'remove' && c.id === FINAL_NODE_ID)
-            );
-            onNodesChange(filtered);
-            if (filtered.some((c) => c.type === 'remove')) {
+            onNodesChange(changes);
+            if (changes.some((c) => c.type === 'remove')) {
               setTimeout(() => {
                 void fitView({
                   padding: FIT_VIEW_PADDING_NODE_FOCUS,
@@ -3127,15 +2941,6 @@ const SpacesContent = () => {
 
         >
           <Background color="#111" gap={40} size={1} />
-          
-          {/* Initial State Message */}
-          {isAuthenticated && nodes.length === 0 && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
-              <span className="text-white/90 text-[14px] font-black uppercase tracking-[20px] animate-pulse drop-shadow-2xl">
-                Hola
-              </span>
-            </div>
-          )}
         </ReactFlow>
 
         {/* Password Overlay */}
@@ -3265,7 +3070,7 @@ const SpacesContent = () => {
           <AgentHUD onGenerate={onGenerateAssistant} isGenerating={isGeneratingAssistant} windowMode />
         )}
 
-        {/* Action HUD — fila1: agente (izq.) + Canvas/Untitled junto a Order/Fit (der.); fila2: pins topbar */}
+        {/* Action HUD — fila1: agente (izq.) + acciones (der.); fila2: pins topbar */}
         <div
           key="action-hud"
           className="pointer-events-none flex min-w-0 w-full max-w-[min(1280px,calc(100vw-48px))] flex-col gap-2"
@@ -3314,72 +3119,6 @@ const SpacesContent = () => {
                   : 'pointer-events-auto flex w-full min-w-0 flex-1 items-center justify-between gap-3'
               }
             >
-              {/* Navigation & Project Context (Clean Ghost Style) */}
-              <div className="flex shrink-0 items-center gap-3 border-r border-white/10 pr-2">
-                <button
-                  onClick={handleGoBack}
-                  disabled={navigationStack.length === 0}
-                  className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-all disabled:opacity-0"
-                >
-                  <ChevronLeft size={16} />
-                </button>
-
-                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[2px]">
-                  <NodeIconMono iconKey="canvas" size={12} className="opacity-70" />
-                  <span
-                    onClick={() => {
-                      if (activeSpaceId !== 'root') goToRootCanvas();
-                    }}
-                    className={`hover:text-cyan-400 cursor-pointer transition-colors ${activeSpaceId === 'root' ? 'text-cyan-400 font-bold' : 'text-slate-400'}`}
-                  >
-                    Canvas
-                  </span>
-
-                  {navigationStack.map((id, idx) => (
-                    <React.Fragment key={id}>
-                      <span className="text-white/20">/</span>
-                      <span className="inline-flex items-center gap-1">
-                        <NodeIconMono iconKey="space" size={11} className="opacity-60" />
-                        <span
-                          onClick={() => {
-                            const { newMap: updatedSpacesMap } = syncCurrentSpaceState(nodes, edges, spacesMap, activeSpaceId);
-                            const newStack = navigationStack.slice(0, idx);
-                            const targetSpace = updatedSpacesMap[id];
-                            if (targetSpace) {
-                              setSpacesMap(updatedSpacesMap);
-                              setNodes([...targetSpace.nodes]);
-                              setEdges([...(targetSpace.edges || [])]);
-                              setActiveSpaceId(id);
-                              setNavigationStack(newStack);
-                            }
-                          }}
-                          className="text-slate-400 hover:text-cyan-400 cursor-pointer transition-colors"
-                        >
-                          {spacesMap[id]?.name || 'Space'}
-                        </span>
-                      </span>
-                    </React.Fragment>
-                  ))}
-
-                  {activeSpaceId !== 'root' && (
-                    <>
-                      <span className="text-white/20">/</span>
-                      <span className="inline-flex items-center gap-1 text-cyan-400 font-bold tracking-wider">
-                        <NodeIconMono iconKey="space" size={11} />
-                        {spacesMap[activeSpaceId]?.name || 'Nested Space'}
-                      </span>
-                    </>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-3 px-3 py-1.5 rounded-xl">
-                  <div className="w-1.5 h-1.5 rounded-full bg-cyan-500 shadow-[0_0_8px_rgba(6,182,212,0.6)]" />
-                  <span className="max-w-[min(200px,28vw)] truncate text-[10px] font-black text-white uppercase tracking-widest drop-shadow-sm">
-                    {currentName || 'Untitled Composition'}
-                  </span>
-                </div>
-              </div>
-
               {/* Quick Actions */}
               <div className="flex shrink-0 gap-1.5">
                 <button
@@ -3415,16 +3154,21 @@ const SpacesContent = () => {
             </div>
           </div>
           {isAuthenticated && activeSpaceId !== 'root' && (
-            <div className="pointer-events-none w-full flex justify-center px-3 -mt-0.5">
+            <div className="pointer-events-none w-full flex justify-center px-3 pt-3 sm:pt-4">
               <p className="max-w-[min(640px,92vw)] text-center text-[10px] sm:text-[11px] font-medium leading-snug text-slate-600 drop-shadow-sm">
                 Estás dentro del space{' '}
                 <span className="font-bold text-slate-800">
                   {spacesMap[activeSpaceId]?.name || 'Space'}
                 </span>
                 , pulsa{' '}
-                <kbd className="inline rounded border border-slate-400/50 bg-white/50 px-1.5 py-0.5 font-mono text-[9px] font-semibold text-slate-700 shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => goToRootCanvas()}
+                  className="pointer-events-auto inline rounded border border-slate-400/50 bg-white/50 px-1.5 py-0.5 font-mono text-[9px] font-semibold text-slate-700 shadow-sm align-baseline cursor-pointer transition-colors hover:bg-white/80 hover:border-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50"
+                  aria-label="Salir del space (equivalente a ESC)"
+                >
                   ESC
-                </kbd>{' '}
+                </button>{' '}
                 para salir
               </p>
             </div>
@@ -3502,52 +3246,52 @@ const SpacesContent = () => {
         )}
 
         {showLoadModal && (
-          <div className="fixed inset-0 z-[10004] flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-[10004] flex items-center justify-center p-3 sm:p-4">
             <div
               className="absolute inset-0 bg-black/45 backdrop-blur-xl"
               onClick={() => setShowLoadModal(false)}
               aria-hidden
             />
-            <div className="relative z-10 flex max-h-[80vh] w-full max-w-2xl flex-col rounded-3xl border border-white/25 bg-white/20 p-8 shadow-2xl shadow-black/20 backdrop-blur-xl">
-              <div className="mb-6 flex items-center justify-between">
-                <h2 className="flex items-center gap-3 text-xl font-black uppercase tracking-wide text-slate-800">
-                  <FolderOpen size={20} className="text-rose-500" /> Your Projects
+            <div className="relative z-10 flex max-h-[min(85vh,560px)] w-full max-w-lg flex-col rounded-2xl border border-white/25 bg-white/20 p-4 shadow-2xl shadow-black/20 backdrop-blur-xl sm:p-5">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h2 className="flex items-center gap-2 text-sm font-black uppercase tracking-wide text-slate-800">
+                  <FolderOpen size={16} className="shrink-0 text-rose-500" /> Your Projects
                 </h2>
                 <button
                   type="button"
                   onClick={() => setShowLoadModal(false)}
-                  className="rounded-full p-2 text-slate-500 transition-colors hover:bg-white/40 hover:text-slate-800"
+                  className="shrink-0 rounded-full p-1 text-slate-500 transition-colors hover:bg-white/40 hover:text-slate-800"
                   aria-label="Close"
                 >
-                  <X size={16} />
+                  <X size={14} />
                 </button>
               </div>
-              <p className="mb-6 text-sm text-slate-600">
+              <p className="mb-3 text-[11px] leading-snug text-slate-600">
                 Select a configuration to restore it to the canvas.
               </p>
 
-              <div className="custom-scrollbar flex-1 overflow-y-auto pb-2 -mx-2 px-2">
+              <div className="custom-scrollbar min-h-0 max-h-[min(52vh,340px)] flex-1 overflow-y-auto -mx-1 px-1 pb-1 sm:max-h-[min(48vh,380px)]">
                 {savedProjects.length === 0 ? (
-                  <div className="rounded-3xl border-2 border-dashed border-white/30 bg-white/10 py-20 text-center backdrop-blur-sm">
-                    <FolderOpen className="mx-auto mb-4 text-slate-400" size={48} />
-                    <p className="font-bold text-slate-600">No saved projects found yet.</p>
+                  <div className="rounded-xl border border-dashed border-white/30 bg-white/10 py-10 text-center backdrop-blur-sm">
+                    <FolderOpen className="mx-auto mb-2 text-slate-400" size={28} />
+                    <p className="text-xs font-bold text-slate-600">No saved projects yet.</p>
                   </div>
                 ) : (
-                  <div className="grid gap-4">
+                  <div className="flex flex-col gap-1.5">
                     {savedProjects.map((project) => (
                       <div
                         key={project.id}
-                        className="group/item flex items-center gap-4 rounded-2xl border border-white/25 bg-white/15 p-4 shadow-sm backdrop-blur-sm transition-all hover:bg-white/30"
+                        className="group/item flex items-center gap-2.5 rounded-xl border border-white/25 bg-white/15 px-2.5 py-2 shadow-sm backdrop-blur-sm transition-all hover:bg-white/28"
                       >
-                        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-white/25 bg-white/25 text-rose-500">
-                          <Workflow size={24} />
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/20 bg-white/20 text-rose-500">
+                          <Workflow size={15} />
                         </div>
                         <div className="min-w-0 flex-1">
                           {editingId === project.id ? (
                             <input
                               autoFocus
                               type="text"
-                              className="w-full rounded-xl border border-white/25 bg-white/35 px-3 py-2 text-sm font-black text-slate-900 shadow-inner outline-none backdrop-blur-sm placeholder:text-slate-500 focus:border-rose-400/50 focus:ring-2 focus:ring-rose-400/20"
+                              className="w-full rounded-lg border border-white/25 bg-white/35 px-2 py-1 text-xs font-black text-slate-900 shadow-inner outline-none backdrop-blur-sm placeholder:text-slate-500 focus:border-rose-400/50 focus:ring-1 focus:ring-rose-400/20"
                               value={editingName}
                               onChange={(e) => setEditingName(e.target.value)}
                               onBlur={() => renameProject(project.id, editingName)}
@@ -3567,47 +3311,47 @@ const SpacesContent = () => {
                                   setEditingName(project.name);
                                 }
                               }}
-                              className="group/title flex cursor-pointer items-center gap-2 truncate text-[15px] font-black tracking-tight text-slate-800 hover:text-rose-600"
+                              className="group/title flex cursor-pointer items-center gap-1.5 truncate text-[13px] font-black leading-tight tracking-tight text-slate-800 hover:text-rose-600"
                             >
                               {project.name}
                               <Edit2
-                                size={12}
-                                className="text-slate-400 opacity-0 transition-opacity group-hover/title:opacity-100"
+                                size={10}
+                                className="shrink-0 text-slate-400 opacity-0 transition-opacity group-hover/title:opacity-100"
                               />
                             </h4>
                           )}
-                          <div className="mt-2 flex items-center gap-4">
-                            <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                              <Calendar size={12} /> {new Date(project.updatedAt).toLocaleDateString()}
+                          <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                            <div className="flex items-center gap-1">
+                              <Calendar size={10} /> {new Date(project.updatedAt).toLocaleDateString()}
                             </div>
-                            <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                              <Settings2 size={12} /> {Object.keys(project.spaces || {}).length} Spaces
+                            <div className="flex items-center gap-1">
+                              <Settings2 size={10} /> {Object.keys(project.spaces || {}).length} spaces
                             </div>
                           </div>
                         </div>
-                        <div className="flex shrink-0 gap-2 opacity-0 transition-opacity group-hover/item:opacity-100">
+                        <div className="flex shrink-0 items-center gap-1">
                           <button
                             type="button"
                             onClick={() => duplicateProject(project)}
-                            title="Duplicate Project"
-                            className="rounded-2xl border border-white/25 bg-white/15 p-3 text-slate-500 transition-all hover:border-sky-400/50 hover:bg-white/40 hover:text-sky-600"
+                            title="Duplicate"
+                            className="rounded-lg border border-white/20 bg-white/12 p-1.5 text-slate-500 transition-all hover:border-sky-400/50 hover:bg-white/35 hover:text-sky-600"
                           >
-                            <Copy size={16} />
+                            <Copy size={13} />
                           </button>
                           <button
                             type="button"
                             onClick={() => setProjectToDelete(project)}
-                            title="Delete Project"
-                            className="rounded-2xl border border-white/25 bg-white/15 p-3 text-slate-500 transition-all hover:border-rose-400/50 hover:bg-white/40 hover:text-rose-600"
+                            title="Delete"
+                            className="rounded-lg border border-white/20 bg-white/12 p-1.5 text-slate-500 transition-all hover:border-rose-400/50 hover:bg-white/35 hover:text-rose-600"
                           >
-                            <Trash2 size={16} />
+                            <Trash2 size={13} />
                           </button>
                           <button
                             type="button"
                             onClick={() => loadProject(project)}
-                            className="rounded-2xl border border-white/25 bg-white/30 px-6 py-3 text-[11px] font-black uppercase tracking-widest text-slate-800 shadow-md transition-all hover:border-slate-400/40 hover:bg-white/50"
+                            className="rounded-lg border border-white/25 bg-white/35 px-3 py-1.5 text-[9px] font-black uppercase tracking-widest text-slate-800 shadow-sm transition-all hover:border-slate-400/40 hover:bg-white/50"
                           >
-                            LOAD
+                            Load
                           </button>
                         </div>
                       </div>
@@ -3619,28 +3363,46 @@ const SpacesContent = () => {
           </div>
         )}
 
-        {/* Delete Confirmation Modal — mismo estilo tarjetas Lógica */}
+        {/* Delete — mismo cristal / borde que Save & Load (compacto, alto contraste) */}
         {projectToDelete && (
-          <div className="fixed inset-0 z-[10005] flex items-center justify-center bg-black/45 p-4 backdrop-blur-xl">
-            <div className="relative w-full max-w-md overflow-hidden rounded-3xl border border-white/25 bg-white/20 p-8 text-center shadow-2xl shadow-black/20 backdrop-blur-xl">
-              <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-2xl border border-white/25 bg-white/25">
-                <Trash2 size={36} className="text-rose-500" />
+          <div className="fixed inset-0 z-[10005] flex items-center justify-center p-3 sm:p-4">
+            <div
+              className="absolute inset-0 bg-black/45 backdrop-blur-xl"
+              onClick={() => setProjectToDelete(null)}
+              aria-hidden
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="delete-project-title"
+              className="relative z-10 w-full max-w-sm rounded-2xl border border-white/25 bg-white/20 p-4 shadow-2xl shadow-black/20 backdrop-blur-xl sm:p-5"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-rose-500/35 bg-rose-500/12">
+                  <Trash2 size={18} className="text-rose-600" strokeWidth={2} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h2
+                    id="delete-project-title"
+                    className="text-sm font-black uppercase tracking-wide text-slate-900"
+                  >
+                    Delete project?
+                  </h2>
+                  <p className="mt-2 text-left text-[11px] font-medium leading-snug text-slate-800">
+                    This will permanently remove{' '}
+                    <span className="font-bold text-slate-950">&quot;{projectToDelete.name}&quot;</span>. This cannot be
+                    undone.
+                  </p>
+                </div>
               </div>
-
-              <h2 className="mb-2 text-2xl font-black text-slate-800">Delete Project?</h2>
-              <p className="mb-8 text-sm leading-relaxed text-slate-600">
-                This will permanently remove{' '}
-                <strong className="text-slate-900">&quot;{projectToDelete.name}&quot;</strong>. This action cannot be
-                undone.
-              </p>
-
-              <div className="flex gap-4">
+              <div className="mt-4 flex gap-2">
                 <button
                   type="button"
                   onClick={() => setProjectToDelete(null)}
-                  className="flex-1 rounded-2xl border border-white/25 bg-white/15 py-3 font-black uppercase text-[11px] tracking-widest text-slate-700 transition-all hover:bg-white/35"
+                  className="flex-1 rounded-xl border border-white/25 bg-white/15 py-2 text-[10px] font-black uppercase tracking-widest text-slate-800 transition-all hover:bg-white/35"
                 >
-                  CANCEL
+                  Cancel
                 </button>
                 <button
                   type="button"
@@ -3648,9 +3410,9 @@ const SpacesContent = () => {
                     deleteProject(projectToDelete.id);
                     setProjectToDelete(null);
                   }}
-                  className="flex-1 rounded-2xl border border-rose-400/40 bg-rose-600 py-3 font-black uppercase text-[11px] tracking-widest text-white shadow-lg shadow-rose-600/25 transition-all hover:bg-rose-500"
+                  className="flex-1 rounded-xl border border-rose-500/45 bg-rose-600 py-2 text-[10px] font-black uppercase tracking-widest text-white shadow-md shadow-rose-900/20 transition-all hover:bg-rose-500 hover:brightness-105"
                 >
-                  DELETE
+                  Delete
                 </button>
               </div>
             </div>

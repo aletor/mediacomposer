@@ -68,6 +68,33 @@ interface BaseNodeData {
   loading?: boolean;
 }
 
+/** Same affordance as the old OUTPUT card — opens the fixed viewer for this node's media. */
+function ViewerOpenButton({ nodeId, disabled, className }: { nodeId: string; disabled?: boolean; className?: string }) {
+  return (
+    <button
+      type="button"
+      title="Open viewer"
+      disabled={disabled}
+      onClick={(e) => {
+        e.stopPropagation();
+        window.dispatchEvent(new CustomEvent('open-viewer-for-node', { detail: { nodeId } }));
+      }}
+      className={`nodrag flex shrink-0 items-center justify-center rounded-md cursor-pointer transition-colors ${className ?? ''}`}
+      style={{
+        padding: 3,
+        borderRadius: 6,
+        background: 'rgba(251,191,36,0.2)',
+        border: '1px solid rgba(251,191,36,0.4)',
+        color: '#fbbf24',
+        opacity: disabled ? 0.35 : 1,
+        pointerEvents: disabled ? 'none' : 'auto',
+      }}
+    >
+      <Maximize2 size={9} />
+    </button>
+  );
+}
+
 interface ComposerLayer {
   id: string;
   type: 'image' | 'color' | 'rect' | 'circle' | 'gradient' | 'text' | 'paint';
@@ -395,7 +422,10 @@ export const UrlImageNode = memo(({ id, data, selected }: NodeProps<any>) => {
       <NodeResizer minWidth={280} minHeight={320} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Image Search" />
       <div className="node-header text-cyan-400">
-        <NodeIcon type="urlImage" loading={loading} selected={selected} size={16} /> CAROUSEL {loading && <Loader2 size={12} className="animate-spin ml-auto" />}
+        <NodeIcon type="urlImage" loading={loading} selected={selected} size={16} />
+        <span className="flex-1">CAROUSEL</span>
+        {loading && <Loader2 size={12} className="animate-spin shrink-0" />}
+        <ViewerOpenButton nodeId={id} disabled={!currentUrl} className="ml-auto" />
       </div>
       <div className="node-content">
         <div className="relative w-full aspect-video bg-slate-50 rounded-xl overflow-hidden border border-white/10 group mb-3 shadow-inner">
@@ -1900,12 +1930,13 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
       {/* Persistent header */}
       <div className="node-header" style={{ color: getTitleColor() }}>
         <NodeIcon type="mediaInput" iconKey={mediaIconKey()} selected={selected} loading={isUploading} size={16} />
-        <span className="font-black tracking-tighter uppercase">{nodeData.type || 'Media'} Input</span>
+        <span className="min-w-0 flex-1 font-black tracking-tighter uppercase">{nodeData.type || 'Media'} Input</span>
         {nodeData.type && (
-          <span className="ml-auto text-[8px] bg-white/10 px-2 py-0.5 rounded-full font-black uppercase tracking-widest text-gray-400">
+          <span className="shrink-0 text-[8px] bg-white/10 px-2 py-0.5 rounded-full font-black uppercase tracking-widest text-gray-400">
             {nodeData.source || 'upload'}
           </span>
         )}
+        {isVisual && hasMedia && <ViewerOpenButton nodeId={id} />}
       </div>
 
       {/* Full-bleed drop zone / preview */}
@@ -3927,6 +3958,10 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
         >
           <Maximize2 size={10} /> STUDIO
         </button>
+        <ViewerOpenButton
+          nodeId={id}
+          disabled={!((typeof nodeData.value === 'string' && nodeData.value) || result)}
+        />
       </div>
 
       {/* ── Main image area (flex-1, fills all remaining height) ── */}
@@ -5293,8 +5328,9 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
       {/* Header */}
       <div className="node-header bg-gradient-to-r from-emerald-600/20 to-cyan-600/20">
         <NodeIcon type="geminiVideo" selected={selected} state={resolveFoldderNodeState({ loading: status === 'running', done: !!result, error: status === 'error' })} size={16} />
-        <span>Gemini Video</span>
+        <span className="flex-1">Gemini Video</span>
         <div className="node-badge">VEO 3.1</div>
+        <ViewerOpenButton nodeId={id} disabled={!(result || nodeData.value)} />
       </div>
 
       {/* ── Video preview — top, fills space (NanoBanana style) ── */}
@@ -6538,101 +6574,3 @@ export const BezierMaskNode = memo(({ id, data, selected }: NodeProps<any>) => {
     </div>
   );
 });
-
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// FINAL OUTPUT NODE — permanent output destination, no delete, no outputs
-// ─────────────────────────────────────────────────────────────────────────────
-export const FinalOutputNode = memo(({ id, data, selected }: NodeProps<any>) => {
-  const nodes = useNodes();
-  const edges = useEdges();
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-
-  // Resolve connected media from either image or video input handle
-  const imageEdge = edges.find((e: any) => e.target === id && e.targetHandle === 'image');
-  const videoEdge = edges.find((e: any) => e.target === id && e.targetHandle === 'video');
-  const imageSourceNode = imageEdge ? nodes.find((n: any) => n.id === imageEdge.source) : null;
-  const videoSourceNode = videoEdge ? nodes.find((n: any) => n.id === videoEdge.source) : null;
-
-  const mediaValue: string | undefined =
-    (typeof videoSourceNode?.data?.value === 'string' ? videoSourceNode.data.value : undefined) ||
-    (typeof imageSourceNode?.data?.value === 'string' ? imageSourceNode.data.value : undefined);
-
-  const mediaType: 'image' | 'video' =
-    videoSourceNode?.data?.value ? 'video' : 'image';
-
-  const toggleWindow = () => {
-    window.dispatchEvent(new CustomEvent('toggle-final-window'));
-  };
-
-  const togglePlay = () => {
-    if (!videoRef.current) return;
-    if (isPlaying) {
-      videoRef.current.pause();
-    } else {
-      videoRef.current.play();
-    }
-    setIsPlaying(!isPlaying);
-  };
-
-  // ── VIEWER MODE: compact connection circle ─────────────────────────────────
-  if (data?.viewerMode) {
-    const isConnected = !!(imageEdge || videoEdge);
-    const dotColor = mediaType === 'video' ? '#f43f5e' : '#ec4899';
-    const vz = data?.vpZoom || 1;
-    return (
-      <div className="relative overflow-visible" style={{ width: 32, height: 32, transform: `scale(${1/vz})`, transformOrigin: 'top center' }}>
-        {/* Image handle — top-left */}
-        <Handle
-          type="target"
-          position={Position.Top}
-          id="image"
-          style={{ left: 6, top: -6, background: '#ec4899', border: '2px solid #fff', width: 10, height: 10 }}
-        />
-        {/* Video handle — top-right */}
-        <Handle
-          type="target"
-          position={Position.Top}
-          id="video"
-          style={{ left: 22, top: -6, background: '#f43f5e', border: '2px solid #fff', width: 10, height: 10 }}
-        />
-        {/* Connection circle */}
-        <div style={{
-          width: 32, height: 32, borderRadius: '50%',
-          background: isConnected ? dotColor : 'rgba(255,255,255,0.08)',
-          border: `2px solid ${isConnected ? dotColor : 'rgba(255,255,255,0.2)'}`,
-          boxShadow: isConnected ? `0 0 14px ${dotColor}99` : 'none',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          transition: 'all 0.3s',
-        }}>
-          {isConnected && (
-            <div style={{
-              width: 10, height: 10, borderRadius: '50%',
-              background: '#fff', opacity: 0.9,
-            }} />
-          )}
-        </div>
-      </div>
-    );
-  }
-
-
-  // Normal mode: invisible node — handles aligned exactly with the fixed overlay dots
-  // Node is anchored at screen (innerWidth-198, innerHeight/2).
-  // Dot img: innerHeight/2 - 15px  → handle at y = -15px relative to node origin → top:0 on a 30px-tall wrapper starting at -15px
-  // Dot vid: innerHeight/2 + 15px  → handle at y = +15px → bottom of the 30px wrapper
-  return (
-    <div style={{ width: 1, height: 30, overflow: 'visible', opacity: 0, pointerEvents: 'none', position: 'relative' }}>
-      {/* Image handle — top dot (15px above node center) */}
-      <Handle type="target" position={Position.Left} id="image"
-        style={{ left: 0, top: -15, pointerEvents: 'all', width: 30, height: 30, opacity: 0 }} />
-      {/* Video handle — bottom dot (15px below node center) */}
-      <Handle type="target" position={Position.Left} id="video"
-        style={{ left: 0, top: 15, pointerEvents: 'all', width: 30, height: 30, opacity: 0 }} />
-    </div>
-  );
-});
-
-FinalOutputNode.displayName = 'FinalOutputNode';
