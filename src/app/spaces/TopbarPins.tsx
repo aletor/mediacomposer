@@ -38,16 +38,16 @@ type TopbarPinsProps = {
 /**
  * Barra inferior del canvas: el tooltip debe ir **encima** del chip (`bottom-full`).
  * Si va debajo (`top-full`), queda fuera del viewport o bajo el stacking del lienzo.
- * Muy pegado al botón: `mb-px`, z-index alto sobre nodos React Flow.
+ * Pegado al icono: poca separación (`mb-0.5`), z-index alto sobre nodos React Flow.
  */
 function PinHoverCard({ label }: { label: string }) {
   return (
     <div
-      className="pointer-events-none absolute bottom-full left-1/2 z-[10020] mb-px flex w-max max-w-[min(260px,78vw)] -translate-x-1/2 flex-col items-center opacity-0 translate-y-1 scale-[0.98] transition-[opacity,transform] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] group-hover/pin:opacity-100 group-hover/pin:translate-y-0 group-hover/pin:scale-100"
+      className="pointer-events-none absolute bottom-full left-1/2 z-[10020] mb-0.5 flex w-max max-w-[min(260px,78vw)] -translate-x-1/2 flex-col items-center opacity-0 translate-y-1 scale-[0.98] transition-[opacity,transform] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] group-hover/pin:opacity-100 group-hover/pin:translate-y-0 group-hover/pin:scale-100"
       role="tooltip"
     >
-      <div className="relative rounded-xl border border-white/10 bg-white/10 px-3 py-1.5 text-center shadow-sm backdrop-blur-md">
-        <p className="text-[13px] font-bold leading-snug tracking-tight text-black">
+      <div className="relative rounded-lg border border-white/10 bg-white/10 px-2.5 py-1 text-center shadow-sm backdrop-blur-md">
+        <p className="text-[11px] font-bold leading-tight tracking-tight text-black">
           {label}
         </p>
       </div>
@@ -81,7 +81,7 @@ function TopbarPinChip({
   onPinDoubleClick,
 }: PinChipProps) {
   return (
-    <div className="relative shrink-0 group/pin pt-10 -mt-10 pb-0.5 overflow-visible">
+    <div className="relative shrink-0 group/pin pt-3 -mt-3 pb-0.5 overflow-visible">
       <div
         draggable
         role="button"
@@ -157,7 +157,7 @@ export function TopbarPins({
       data-foldder-topbar-pins
       className={
         embedded && fullWidthRow
-          ? "pointer-events-auto relative z-[1] mx-auto flex w-max max-w-full min-h-0 items-center gap-1.5 overflow-visible rounded-xl border border-white/5 bg-white/5 px-1.5 py-1 shadow-sm backdrop-blur-md"
+          ? "pointer-events-auto relative z-[1] mx-auto flex w-max max-w-full min-h-0 items-center gap-1.5 overflow-visible rounded-xl border border-white/25 bg-white/[0.08] px-1.5 py-1 shadow-sm backdrop-blur-xl"
           : embedded
             ? "pointer-events-auto relative z-[1] flex min-h-0 min-w-0 flex-[1.15] items-center justify-start px-1"
             : "pointer-events-auto relative z-[1] flex min-h-[36px] min-w-0 flex-1 items-center justify-center px-1.5"
@@ -172,12 +172,12 @@ export function TopbarPins({
             ? "flex min-h-0 w-full min-w-0 flex-nowrap items-center gap-1.5"
             : embedded
               ? "flex min-h-[32px] w-full max-w-none flex-wrap items-center gap-1 px-0.5 py-0.5"
-              : "flex min-h-[36px] w-full max-w-[min(420px,40vw)] flex-wrap items-center gap-1 rounded-xl border border-white/10 bg-white/5 px-1 py-0.5 shadow-sm backdrop-blur-md"
+              : "flex min-h-[36px] w-full max-w-[min(420px,40vw)] flex-wrap items-center gap-1 rounded-xl border border-white/25 bg-white/[0.08] px-1 py-0.5 shadow-sm backdrop-blur-xl"
         }
-        title="Topbar — accesos directos (máx. 5). Arrastra o doble clic para añadir al lienzo. Clic derecho en un icono para quitarlo."
         onDragEnter={allowDrop}
         onDragOver={allowDrop}
         onDrop={handleDrop}
+        aria-label="Accesos directos del topbar, máximo cinco. Arrastra o doble clic para añadir al lienzo. Clic derecho en un icono para quitarlo."
       >
         {pinnedTypes.length === 0 && (
           <span className="whitespace-nowrap px-1 text-[9px] font-bold uppercase tracking-widest text-white/40">

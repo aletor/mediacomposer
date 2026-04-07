@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useRef, useEffect, useLayoutEffect } from 'react';
 import {
   ReactFlow,
   Controls,
@@ -13,8 +13,10 @@ import {
   OnConnect,
   ReactFlowProvider,
   useReactFlow,
+  useUpdateNodeInternals,
   useNodesState,
   useEdgesState,
+  useOnViewportChange,
   SelectionMode,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -54,6 +56,11 @@ import {
 } from './TopbarPins';
 import { readResponseJson } from '@/lib/read-response-json';
 import { FOLDDER_FIT_VIEW_EASE } from '@/lib/fit-view-ease';
+import {
+  isDocumentFullscreen,
+  subscribeFullscreenChange,
+  toggleDocumentFullscreen,
+} from '@/lib/fullscreen';
 import './spaces.css';
 import { NODE_REGISTRY } from './nodeRegistry';
 import {
@@ -62,6 +69,7 @@ import {
   computeLibraryDropPosition,
   findTopNodeUnderFlowPoint,
   findEmptyPositionForNewNode,
+  preferredCenterRightOfRightmostNode,
   planDuplicateBelowMultiInput,
   orderedSourcesForSharedTarget,
   positionNewNodeRightOfSources,
@@ -81,7 +89,10 @@ import {
   X,
   Edit2,
   Maximize,
+  Maximize2,
+  Minimize2,
   LayoutGrid,
+  ChevronDown,
   Layers,
   Move,
   Sparkles,
@@ -132,6 +143,70 @@ const AUTH_HIGHLIGHTS: {
 ];
 
 const initialNodes: Node[] = [];
+
+/** Fondos del lienzo: local + URLs directas (CDN). */
+const CANVAS_BG_STORAGE_KEY = 'foldder-canvas-bg-id';
+
+type CanvasBackgroundOption = { id: string; label: string; url: string };
+
+const CANVAS_BACKGROUNDS: CanvasBackgroundOption[] = [
+  { id: 'studio', label: 'Estudio (actual)', url: '/studio_back.jpg' },
+  {
+    id: 'magicdecor-mosaic',
+    label: 'Mosaico Mughal',
+    url: 'https://cdn.magicdecor.in/com/2023/12/13184932/Mughal-Marvels-Mosaic-Wallpaper-710x488.jpg',
+  },
+  {
+    id: 'unsplash-city-night',
+    label: 'Ciudad nocturna',
+    url: 'https://images.unsplash.com/photo-1485470733090-0aae1788d5af?fm=jpg&q=60&w=3000&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxzZWFyY2h8MTN8fGdhbWluZyUyMHdhbGxwYXBlcnxlbnwwfHwwfHx8MA%3D%3D',
+  },
+  {
+    id: 'ftcdn-abstract',
+    label: 'Abstracto',
+    url: 'https://t3.ftcdn.net/jpg/04/83/77/82/360_F_483778295_PmGDVnK5jSPiHD0aVDVPsaycL7RDVqIr.jpg',
+  },
+  {
+    id: 'unsplash-earth-space',
+    label: 'Tierra · espacio (Unsplash)',
+    url: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?fm=jpg&q=60&w=3000&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxzZWFyY2h8NHx8Zm9uZG8lMjBkZSUyMHBhbnRhbGxhJTIwNGt8ZW58MHx8MHx8fDA%3D',
+  },
+  {
+    id: 'pixelstalk-landscape-hd',
+    label: 'Paisaje Full HD',
+    url: 'https://www.pixelstalk.net/wp-content/uploads/wallpapers/Landscape-Wallpapers-Full-HD.jpg',
+  },
+  {
+    id: 'pixabay-mountain-5242534',
+    label: 'Montañas · Pixabay',
+    url: 'https://cdn.pixabay.com/photo/2020/05/31/12/41/mountain-5242534_1280.jpg',
+  },
+  {
+    id: 'wallpapershome-thumb-8164',
+    label: 'Miniatura HD · Wallpapershome',
+    url: 'https://wallpapershome.com/images/pages/pic_h/8164.jpg',
+  },
+  {
+    id: 'wallpaperbat-fantasy-webp',
+    label: 'Fantasía ultrahd',
+    url: 'https://wallpaperbat.com/img/12457956-beautiful-fantasy-wallpaper-ultra-hd.webp',
+  },
+  {
+    id: 'pixabay-sea-3652697',
+    label: 'Mar · Pixabay',
+    url: 'https://cdn.pixabay.com/photo/2018/09/03/23/56/sea-3652697_1280.jpg',
+  },
+  {
+    id: 'infobae-horizon',
+    label: 'Horizonte HD',
+    url: 'https://www.infobae.com/resizer/v2/HA5THUH7O5G55D7G26I3QBQCCE.jpg?auth=6929fa20734fb29457770ab17cb4c935aa12166f0f536e0b95846e1a837c0adc&smart=true&width=1200&height=675&quality=85',
+  },
+  {
+    id: 'getwallpapers-texture-882333',
+    label: 'Textura HD',
+    url: 'https://getwallpapers.com/wallpaper/full/f/5/6/882333-full-size-texture-hd-wallpapers-1920x1080-full-hd.jpg',
+  },
+];
 
 const FINAL_NODE_ID = 'final_output_permanent';
 
@@ -229,6 +304,7 @@ const SpacesContent = () => {
   liveNodesRef.current = nodes;
   liveEdgesRef.current = edges;
   const { screenToFlowPosition, setViewport, fitView, getViewport } = useReactFlow();
+  const updateNodeInternals = useUpdateNodeInternals();
   
   // Persistence state
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
@@ -247,6 +323,14 @@ const SpacesContent = () => {
   const [projectToDelete, setProjectToDelete] = useState<any | null>(null);
   const [navigationStack, setNavigationStack] = useState<string[]>([]);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, nodeId?: string } | null>(null);
+
+  /** Zoom actual del lienzo (React Flow) — HUD fijo abajo-derecha */
+  const [canvasZoom, setCanvasZoom] = useState(0.7);
+
+  /** Fondo visual del lienzo (persistido) */
+  const [canvasBgId, setCanvasBgId] = useState<string>('studio');
+  const [canvasBgMenuOpen, setCanvasBgMenuOpen] = useState(false);
+  const canvasBgMenuRef = useRef<HTMLDivElement>(null);
 
   /** Tras soltar un nodo desde la librería en el lienzo, el panel queda colapsado hasta volver a la franja izquierda */
   const [sidebarLockedCollapsed, setSidebarLockedCollapsed] = useState(false);
@@ -300,6 +384,48 @@ const SpacesContent = () => {
       /* ignore */
     }
   }, [topbarPinnedTypes]);
+
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(CANVAS_BG_STORAGE_KEY);
+      if (v && CANVAS_BACKGROUNDS.some((b) => b.id === v)) setCanvasBgId(v);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CANVAS_BG_STORAGE_KEY, canvasBgId);
+    } catch {
+      /* ignore */
+    }
+  }, [canvasBgId]);
+
+  useEffect(() => {
+    if (!canvasBgMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target;
+      if (!(t instanceof globalThis.Node)) return;
+      if (canvasBgMenuRef.current && !canvasBgMenuRef.current.contains(t)) {
+        setCanvasBgMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [canvasBgMenuOpen]);
+
+  const reactFlowCanvasStyle = useMemo((): React.CSSProperties => {
+    const bg = CANVAS_BACKGROUNDS.find((b) => b.id === canvasBgId) ?? CANVAS_BACKGROUNDS[0];
+    return {
+      backgroundColor: '#f8fafc',
+      backgroundImage: `url("${bg.url}")`,
+      backgroundSize: 'cover',
+      backgroundPosition: 'center',
+      backgroundRepeat: 'no-repeat',
+      backgroundAttachment: 'fixed',
+    };
+  }, [canvasBgId]);
 
   const handleTopbarDropFromSidebar = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -357,6 +483,19 @@ const SpacesContent = () => {
   }, [setViewport]);
 
   /** Encuadra solo los nodos indicados (normalmente uno: el recién añadido), sin fit a todo el grafo */
+  const [browserFullscreen, setBrowserFullscreen] = useState(false);
+
+  useEffect(() => {
+    setBrowserFullscreen(isDocumentFullscreen());
+    return subscribeFullscreenChange(() => setBrowserFullscreen(isDocumentFullscreen()));
+  }, []);
+
+  const togglePageFullscreen = useCallback(() => {
+    void toggleDocumentFullscreen().catch((err) => {
+      console.warn('[fullscreen]', err);
+    });
+  }, []);
+
   const fitViewToNodeIds = useCallback(
     (ids: string[], duration = 650, options?: { padding?: number }) => {
       const unique = [...new Set(ids.filter(Boolean))];
@@ -893,22 +1032,38 @@ const SpacesContent = () => {
         ...es.filter((e: any) => !edgesToRemove.has(e.id)),
         ...autoEdges,
       ]);
+      queueMicrotask(() => {
+        updateNodeInternals(newId);
+        autoEdges.forEach((e: any) => {
+          updateNodeInternals(e.source);
+          updateNodeInternals(e.target);
+        });
+      });
+      requestAnimationFrame(() => {
+        updateNodeInternals(newId);
+        autoEdges.forEach((e: any) => {
+          updateNodeInternals(e.source);
+          updateNodeInternals(e.target);
+        });
+      });
     }, 50);
 
     // Encuadrar el nodo nuevo también si no hubo auto-conexión (antes solo con aristas)
     setTimeout(() => {
       fitViewToNodeIds([newId], 700);
     }, autoEdges.length > 0 ? 100 : 80);
-  }, [screenToFlowPosition, nodes, edges, setNodes, setEdges, pushHistory, takeSnapshot, fitViewToNodeIds]);
+  }, [screenToFlowPosition, nodes, edges, setNodes, setEdges, pushHistory, takeSnapshot, fitViewToNodeIds, updateNodeInternals]);
 
-  /** Doble clic en pin del topbar: nodo suelto en hueco del lienzo (sin auto-conexión) + fit al nodo */
+  /** Doble clic en pin del topbar o en mosaico del sidebar: hueco libre (prioridad a la derecha del nodo más a la derecha) + fit */
   const addNodeFromTopbarPinDoubleClick = useCallback(
     (reactFlowType: string) => {
       if (!NODE_REGISTRY[reactFlowType]) return;
-      const center = screenToFlowPosition({
+      const viewportCenter = screenToFlowPosition({
         x: window.innerWidth / 2,
         y: window.innerHeight / 2,
       });
+      const preferred = preferredCenterRightOfRightmostNode(nodes, reactFlowType);
+      const center = preferred ?? viewportCenter;
       const position = findEmptyPositionForNewNode(reactFlowType, nodes, center);
       const newId = `node_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
       const newNode = {
@@ -1466,7 +1621,17 @@ const SpacesContent = () => {
   // Problem: ReactFlow's zoom listener is on .react-flow__pane, which is a
   // DOM SIBLING of .react-flow__nodes — events from inside nodes don't bubble
   // to it. So we must manually call setViewport when wheel fires over inputs.
-  const viewportRef = useRef({ zoom: 1, x: 0, y: 0 });
+  const viewportRef = useRef({ zoom: 0.7, x: -559, y: 134 });
+
+  const setViewportZoomCssVar = useCallback((zoom: number) => {
+    const z = Math.max(0.05, Math.min(4, Number.isFinite(zoom) ? zoom : 1));
+    document.documentElement.style.setProperty('--foldder-viewport-zoom', String(z));
+  }, []);
+
+  useLayoutEffect(() => {
+    setViewportZoomCssVar(viewportRef.current.zoom);
+  }, [setViewportZoomCssVar]);
+
   useEffect(() => {
     const onWheel = (e: WheelEvent) => {
       if (canvasViewModeRef.current === 'cards') return;
@@ -1505,13 +1670,31 @@ const SpacesContent = () => {
     window.addEventListener('wheel', onWheel, { capture: true, passive: false });
     return () => window.removeEventListener('wheel', onWheel, { capture: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setViewport]);
+  }, [setViewport, setViewportZoomCssVar]);
 
-  // Keep viewportRef in sync with ReactFlow viewport changes (drag, pinch, etc.)
-  // so our manual zoom starts from the correct position.
-  const onMoveHandler = useCallback((evt: any, vp: any) => {
-    viewportRef.current = vp;
-  }, []);
+  // Ref + CSS var + HUD de zoom: cualquier cambio de viewport (rueda, pinch, fitView, setViewport…)
+  const onViewportChangeFromFlow = useCallback(
+    (vp: { x: number; y: number; zoom: number }) => {
+      viewportRef.current = vp;
+      if (typeof vp.zoom === 'number' && Number.isFinite(vp.zoom)) {
+        setViewportZoomCssVar(vp.zoom);
+        setCanvasZoom(vp.zoom);
+      }
+    },
+    [setViewportZoomCssVar]
+  );
+
+  useOnViewportChange({ onChange: onViewportChangeFromFlow });
+
+  const onCanvasInit = useCallback(() => {
+    requestAnimationFrame(() => {
+      try {
+        onViewportChangeFromFlow(getViewport());
+      } catch {
+        /* ignore */
+      }
+    });
+  }, [getViewport, onViewportChangeFromFlow]);
 
 
   // Access Security
@@ -2219,9 +2402,26 @@ const SpacesContent = () => {
         pushHistory(nodes, next);
         return next;
       });
+      queueMicrotask(() => {
+        updateNodeInternals(params.source);
+        updateNodeInternals(params.target);
+      });
+      requestAnimationFrame(() => {
+        updateNodeInternals(params.source);
+        updateNodeInternals(params.target);
+      });
+      // Multi-ranura / medición DOM: asegurar bounds de handles tras pintar (si no, la arista no se renderiza).
+      setTimeout(() => {
+        updateNodeInternals(params.source);
+        updateNodeInternals(params.target);
+      }, 0);
+      setTimeout(() => {
+        updateNodeInternals(params.source);
+        updateNodeInternals(params.target);
+      }, 50);
       fitViewToNodeIds([params.target], 600);
     },
-    [setEdges, nodes, pushHistory, fitViewToNodeIds]
+    [setEdges, nodes, pushHistory, fitViewToNodeIds, updateNodeInternals]
   );
 
   // ── Handle→Node type suggestions ─────────────────────────────────────────
@@ -2330,12 +2530,21 @@ const SpacesContent = () => {
       pushHistory(next, [...edges, newEdge]);
       return next;
     });
-    // Delay edge slightly so ReactFlow's drag-cancel doesn't wipe it
+    // Delay edge slightly so ReactFlow's drag-cancel doesn't wipe it; luego recalcular handles (Enhancer, etc.)
     setTimeout(() => {
       setEdges((eds: any) => [...eds, newEdge]);
+      const refreshHandles = () => {
+        updateNodeInternals(newNodeId);
+        updateNodeInternals(fromNodeId);
+      };
+      queueMicrotask(refreshHandles);
+      requestAnimationFrame(() => {
+        refreshHandles();
+        requestAnimationFrame(refreshHandles);
+      });
       fitViewToNodeIds([newNodeId], 600);
     }, 30);
-  }, [edges, nodes, screenToFlowPosition, setNodes, setEdges, pushHistory, fitViewToNodeIds]);
+  }, [edges, nodes, screenToFlowPosition, setNodes, setEdges, pushHistory, fitViewToNodeIds, updateNodeInternals]);
 
 
 
@@ -3124,6 +3333,7 @@ const SpacesContent = () => {
             windowMode={windowMode}
             onLibraryDragStart={handleLibraryDragStart}
             onLibraryDragEnd={handleLibraryDragEnd}
+            onLibraryTileDoubleClick={addNodeFromTopbarPinDoubleClick}
             sidebarLockedCollapsed={sidebarLockedCollapsed}
             onSidebarStripMouseEnter={() => setSidebarLockedCollapsed(false)}
           />
@@ -3166,6 +3376,7 @@ const SpacesContent = () => {
           </div>
         )}
         <ReactFlow
+          onInit={onCanvasInit}
           nodes={flowNodes}
           edges={edges}
           onNodesChange={(changes) => {
@@ -3198,7 +3409,7 @@ const SpacesContent = () => {
           onNodeDragStart={onNodeDragStart}
           onNodeDragStop={onNodeDragStop}
           onConnectEnd={onConnectEnd}
-          onMove={onMoveHandler}
+          elevateEdgesOnSelect
 
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
@@ -3220,11 +3431,20 @@ const SpacesContent = () => {
           nodesConnectable={canvasViewMode === 'free'}
 
           className={`spaces-canvas${spaceHeld || middlePanHeld ? ' spaces-canvas--space-pan' : ''}${canvasViewMode === 'cards' ? ' spaces-canvas--cards-mode' : ''}`}
-
-
+          style={reactFlowCanvasStyle}
         >
           <Background color="#111" gap={40} size={1} />
         </ReactFlow>
+
+        {isAuthenticated && (
+          <div
+            className="pointer-events-none fixed bottom-4 right-4 z-[90] select-none rounded-lg border border-white/15 bg-white/[0.06] px-2.5 py-1.5 font-mono text-[11px] tabular-nums text-slate-800 shadow-sm backdrop-blur-xl backdrop-saturate-150"
+            aria-live="polite"
+            title="Zoom del lienzo"
+          >
+            {(canvasZoom * 100).toFixed(0)}%
+          </div>
+        )}
 
         {/* Password Overlay */}
         {!isAuthenticated && (
@@ -3363,8 +3583,8 @@ const SpacesContent = () => {
         >
           <div className="flex w-full min-w-0 items-center gap-2 sm:gap-3">
             {isAuthenticated && !windowMode && (
-              <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
-                <div className="flex shrink-0 items-center gap-1.5" aria-hidden>
+              <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
+                <div className="shrink-0" aria-hidden>
                   <svg
                     width={34}
                     height={34}
@@ -3382,11 +3602,8 @@ const SpacesContent = () => {
                     <rect x="17" y="18" width="20" height="5" rx="2" fill="white" />
                     <rect x="17" y="28" width="15" height="5" rx="2" fill="white" />
                   </svg>
-                  <span className="text-[7px] font-black uppercase tracking-[0.14em] text-slate-500">
-                    Beta
-                  </span>
                 </div>
-                <div className="min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.06] px-2 py-1 shadow-sm backdrop-blur-md">
+                <div className="min-w-0 flex-1 rounded-xl border border-white/25 bg-white/[0.08] px-2 py-1 shadow-sm backdrop-blur-xl">
                   <AgentHUD
                     variant="topbar"
                     onGenerate={onGenerateAssistant}
@@ -3404,60 +3621,136 @@ const SpacesContent = () => {
             >
               {/* Quick Actions */}
               <div className="flex shrink-0 gap-1.5">
-                <div className="flex overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] backdrop-blur-md">
+                <div className="flex overflow-hidden rounded-xl border border-white/25 bg-white/[0.08] shadow-sm backdrop-blur-xl">
                   <button
                     type="button"
                     onClick={exitCardsViewMode}
                     title="Modo lienzo: arrastra y redimensiona nodos"
                     className={`flex h-10 w-10 items-center justify-center transition-all ${
                       canvasViewMode === 'free'
-                        ? 'bg-white/15 text-white shadow-inner'
-                        : 'text-white/45 hover:bg-white/10 hover:text-white/80'
+                        ? 'bg-slate-800/95 text-white shadow-inner backdrop-blur-sm'
+                        : 'text-slate-700 hover:bg-white/[0.18] hover:text-slate-900'
                     }`}
                   >
-                    <Move size={16} className={canvasViewMode === 'free' ? 'text-emerald-400' : ''} />
+                    <Move size={16} className={canvasViewMode === 'free' ? 'text-white' : 'text-slate-700'} />
                   </button>
                   <button
                     type="button"
                     onClick={enterCardsViewMode}
                     title="Modo cartas: un nodo a pantalla completa; ← → o Tab cambian la carta con zoom suave (sin cables ni conectores)."
-                    className={`flex h-10 w-10 items-center justify-center border-l border-white/10 transition-all ${
+                    className={`flex h-10 w-10 items-center justify-center border-l border-white/20 transition-all ${
                       canvasViewMode === 'cards'
-                        ? 'bg-white/15 text-white shadow-inner'
-                        : 'text-white/45 hover:bg-white/10 hover:text-white/80'
+                        ? 'bg-slate-800/95 text-white shadow-inner backdrop-blur-sm'
+                        : 'text-slate-700 hover:bg-white/[0.18] hover:text-slate-900'
                     }`}
                   >
-                    <Layers size={16} className={canvasViewMode === 'cards' ? 'text-amber-400' : ''} />
+                    <Layers size={16} className={canvasViewMode === 'cards' ? 'text-white' : 'text-slate-700'} />
                   </button>
                 </div>
+                <div className="relative" ref={canvasBgMenuRef}>
+                  <button
+                    type="button"
+                    onClick={() => setCanvasBgMenuOpen((o) => !o)}
+                    title="Fondo del lienzo y ordenar nodos"
+                    aria-expanded={canvasBgMenuOpen}
+                    className="group relative flex h-10 w-10 items-center justify-center rounded-xl border border-white/25 bg-white/[0.08] text-slate-700 shadow-sm backdrop-blur-xl transition-all hover:scale-105 hover:bg-white/[0.15] hover:text-slate-900"
+                  >
+                    <LayoutGrid size={16} className="text-slate-700 group-hover:text-slate-900" />
+                    <ChevronDown
+                      size={12}
+                      className={`absolute bottom-1 right-1 text-slate-600 transition-transform ${canvasBgMenuOpen ? 'rotate-180' : ''}`}
+                      aria-hidden
+                    />
+                  </button>
+                  {canvasBgMenuOpen && (
+                    <div
+                      className="absolute right-0 top-[calc(100%+6px)] z-[220] w-[min(94vw,380px)] overflow-hidden rounded-xl border border-white/25 bg-white/[0.94] py-1.5 shadow-xl backdrop-blur-xl dark:bg-slate-900/95"
+                      role="menu"
+                      aria-label="Fondo del lienzo"
+                    >
+                      <div className="max-h-[min(58vh,440px)] overflow-y-auto px-2">
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                          {CANVAS_BACKGROUNDS.map((bg) => (
+                            <button
+                              key={bg.id}
+                              type="button"
+                              role="menuitem"
+                              aria-label={bg.label}
+                              onClick={() => {
+                                setCanvasBgId(bg.id);
+                                setCanvasBgMenuOpen(false);
+                              }}
+                              className={`block w-full rounded-none border border-slate-200/90 bg-slate-50/80 p-0 transition-colors hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-800/80 dark:hover:bg-slate-700 ${
+                                canvasBgId === bg.id
+                                  ? 'ring-2 ring-slate-500 ring-offset-1 ring-offset-white dark:ring-offset-slate-900'
+                                  : ''
+                              }`}
+                            >
+                              <span
+                                className="block aspect-[4/3] w-full bg-slate-200 bg-cover bg-center dark:bg-slate-700"
+                                style={{ backgroundImage: `url("${bg.url}")` }}
+                              />
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="mt-1 border-t border-slate-200/80 px-1.5 pt-1.5 dark:border-slate-600/80">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            autoLayoutNodes();
+                            setCanvasBgMenuOpen(false);
+                          }}
+                          className="flex w-full items-center justify-center gap-2 rounded-lg bg-slate-800 py-2 text-xs font-semibold text-white transition-colors hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600"
+                        >
+                          <LayoutGrid size={14} aria-hidden />
+                          Ordenar nodos
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <button
-                  onClick={autoLayoutNodes}
-                  title="Order Nodes"
-                  className="w-10 h-10 bg-white/5 hover:bg-white/10 backdrop-blur-md border border-white/5 rounded-xl text-white flex items-center justify-center transition-all hover:scale-105 group"
+                  type="button"
+                  onClick={togglePageFullscreen}
+                  title={
+                    browserFullscreen
+                      ? 'Salir de pantalla completa (Esc)'
+                      : 'Pantalla completa (ocultar barra del navegador)'
+                  }
+                  aria-pressed={browserFullscreen}
+                  className="group flex h-10 w-10 items-center justify-center rounded-xl border border-white/25 bg-white/[0.08] text-slate-700 shadow-sm backdrop-blur-xl transition-all hover:scale-105 hover:bg-white/[0.15] hover:text-slate-900"
                 >
-                  <LayoutGrid size={16} className="text-emerald-400 group-hover:text-emerald-300" />
-                </button>
-                <button
-                  onClick={() => fitView({ padding: FIT_VIEW_PADDING, duration: fitAnim(800), ...FOLDDER_FIT_VIEW_EASE })}
-                  title="Fit View"
-                  className="w-10 h-10 bg-white/5 hover:bg-white/10 backdrop-blur-md border border-white/5 rounded-xl text-white flex items-center justify-center transition-all hover:scale-105 group"
-                >
-                  <Maximize size={16} className="text-cyan-400 group-hover:text-cyan-300" />
+                  {browserFullscreen ? (
+                    <Minimize2 size={16} className="text-slate-700 group-hover:text-slate-900" aria-hidden />
+                  ) : (
+                    <Maximize2 size={16} className="text-slate-700 group-hover:text-slate-900" aria-hidden />
+                  )}
                 </button>
                 <button
                   onClick={() => setShowLoadModal(true)}
                   title="My Spaces"
-                  className="w-10 h-10 bg-white/5 hover:bg-white/10 backdrop-blur-md border border-white/5 rounded-xl text-white flex items-center justify-center transition-all hover:scale-105 group"
+                  className="group flex h-10 w-10 items-center justify-center rounded-xl border border-white/25 bg-white/[0.08] text-slate-700 shadow-sm backdrop-blur-xl transition-all hover:scale-105 hover:bg-white/[0.15] hover:text-slate-900"
                 >
-                  <FolderOpen size={16} className="text-rose-400 group-hover:text-rose-300" />
+                  <FolderOpen size={16} className="text-slate-700 group-hover:text-slate-900" />
                 </button>
                 <button
-                  onClick={() => activeProjectId ? saveProject() : setShowSaveModal(true)}
+                  type="button"
+                  onClick={() => (activeProjectId ? void saveProject() : setShowSaveModal(true))}
                   disabled={isSaving}
-                  className={`h-10 px-4 ${activeProjectId ? 'bg-rose-600/20 text-rose-400 border-rose-500/30' : 'bg-rose-600 text-white'} hover:brightness-110 backdrop-blur-xl border border-white/10 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center gap-2 transition-all hover:scale-105 disabled:opacity-50 shadow-xl shadow-rose-900/10`}
+                  title={
+                    activeProjectId
+                      ? 'Guardar cambios en el proyecto actual'
+                      : 'Guardar proyecto (elige nombre si es nuevo)'
+                  }
+                  className={`flex h-10 items-center gap-2 rounded-xl border px-4 text-[9px] font-black uppercase tracking-widest shadow-sm backdrop-blur-xl transition-all hover:scale-105 disabled:opacity-50 ${
+                    activeProjectId
+                      ? 'border-rose-400/45 bg-rose-500/[0.10] text-rose-900 hover:bg-rose-500/[0.18]'
+                      : 'border-rose-400/35 bg-rose-600/88 text-white hover:bg-rose-600'
+                  }`}
                 >
-                  {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                  <span className="hidden sm:inline">{activeProjectId ? 'Commit' : 'Save'}</span>
+                  {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} className={activeProjectId ? 'text-rose-800' : ''} />}
+                  <span className="hidden sm:inline">Guardar</span>
                 </button>
               </div>
             </div>

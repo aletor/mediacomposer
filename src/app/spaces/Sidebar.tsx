@@ -87,6 +87,8 @@ type SidebarProps = {
   windowMode?: boolean;
   onLibraryDragStart?: (nodeType: string) => void;
   onLibraryDragEnd?: () => void;
+  /** Doble clic en un mosaico: mismo comportamiento que doble clic en pin del topbar */
+  onLibraryTileDoubleClick?: (nodeType: string) => void;
   /** Si true, el panel no se abre por hover hasta que el ratón entre en la franja izquierda */
   sidebarLockedCollapsed?: boolean;
   onSidebarStripMouseEnter?: () => void;
@@ -96,6 +98,7 @@ const Sidebar = ({
   windowMode = false,
   onLibraryDragStart,
   onLibraryDragEnd,
+  onLibraryTileDoubleClick,
   sidebarLockedCollapsed = false,
   onSidebarStripMouseEnter,
 }: SidebarProps) => {
@@ -134,6 +137,17 @@ const Sidebar = ({
     clearLibraryTipTimer();
     setLibraryTip(null);
   }, [clearLibraryTipTimer]);
+
+  const handleLibraryTileDoubleClick = useCallback(
+    (e: React.MouseEvent, nodeType: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      clearLibraryTipTimer();
+      setLibraryTip(null);
+      onLibraryTileDoubleClick?.(nodeType);
+    },
+    [clearLibraryTipTimer, onLibraryTileDoubleClick]
+  );
 
   const libraryTipPortal =
     libraryTip && SIDEBAR_HOVER_HELP[libraryTip.type]
@@ -177,7 +191,7 @@ const Sidebar = ({
         <div className="type-group items-start">
           {meta.inputs.length > 0 ? (
             meta.inputs.map((input, idx) => (
-              <div key={idx} className={`type-dot ${input.type} active`} title={`Input: ${input.label} (${input.type})`} />
+              <div key={idx} className={`type-dot ${input.type} active`} aria-hidden />
             ))
           ) : (
             <div className="type-dot" />
@@ -186,7 +200,7 @@ const Sidebar = ({
         <div className="type-group items-end">
           {meta.outputs.length > 0 ? (
             meta.outputs.map((output, idx) => (
-              <div key={idx} className={`type-dot ${output.type} active`} title={`Output: ${output.label} (${output.type})`} />
+              <div key={idx} className={`type-dot ${output.type} active`} aria-hidden />
             ))
           ) : (
             <div className="type-dot" />
@@ -271,7 +285,12 @@ const Sidebar = ({
               onDragEnd={() => onLibraryDragEnd?.()}
               onMouseEnter={(e) => onLibraryTileEnter(e, item.type)}
               onMouseLeave={onLibraryTileLeave}
-              title={`${item.label} · ${NODE_KEYS[item.type] || ''}`}
+              onDoubleClick={(e) => handleLibraryTileDoubleClick(e, item.type)}
+              aria-label={
+                NODE_KEYS[item.type]
+                  ? `${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type]}.`
+                  : `${item.label}. Arrastra al lienzo. Doble clic para añadir.`
+              }
               style={{
                 flexShrink: 0,
                 width: 40,
@@ -309,7 +328,7 @@ const Sidebar = ({
       {/* Collapsed: solo la «F» del logo — misma zona que el antiguo HUD flotante */}
       <div
         className="pointer-events-none fixed left-6 top-6 z-[10004] transition-opacity duration-300 opacity-100 group-hover/sidebar:opacity-0"
-        title="Foldder"
+        aria-label="Foldder"
       >
         <FoldderLogoFMark size={40} />
       </div>
@@ -357,7 +376,8 @@ const Sidebar = ({
                     onDragStart={(e) => onDragStart(e, item.type)} onDragEnd={() => onLibraryDragEnd?.()} draggable
                     onMouseEnter={(e) => onLibraryTileEnter(e, item.type)}
                     onMouseLeave={onLibraryTileLeave}
-                    title={`${item.label} · ${NODE_KEYS[item.type]}`}
+                    onDoubleClick={(e) => handleLibraryTileDoubleClick(e, item.type)}
+                    aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type]}.`}
                   >
                     <KeyBadge nodeType={item.type} />
                     <span className={item.color}><NodeIcon type={item.type} size={25} /></span>
@@ -387,7 +407,8 @@ const Sidebar = ({
                     onDragStart={(e) => onDragStart(e, item.type)} onDragEnd={() => onLibraryDragEnd?.()} draggable
                     onMouseEnter={(e) => onLibraryTileEnter(e, item.type)}
                     onMouseLeave={onLibraryTileLeave}
-                    title={`${item.label} · ${NODE_KEYS[item.type]}`}
+                    onDoubleClick={(e) => handleLibraryTileDoubleClick(e, item.type)}
+                    aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type]}.`}
                   >
                     <KeyBadge nodeType={item.type} />
                     <span className={item.color}><NodeIcon type={item.type} size={25} /></span>
@@ -415,7 +436,8 @@ const Sidebar = ({
                     onDragStart={(e) => onDragStart(e, item.type)} onDragEnd={() => onLibraryDragEnd?.()} draggable
                     onMouseEnter={(e) => onLibraryTileEnter(e, item.type)}
                     onMouseLeave={onLibraryTileLeave}
-                    title={`${item.label} · ${NODE_KEYS[item.type]}`}
+                    onDoubleClick={(e) => handleLibraryTileDoubleClick(e, item.type)}
+                    aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type]}.`}
                   >
                     <KeyBadge nodeType={item.type} />
                     <span className={item.color}><NodeIcon type={item.type} size={25} /></span>
@@ -445,7 +467,8 @@ const Sidebar = ({
                     onDragStart={(e) => onDragStart(e, item.type)} onDragEnd={() => onLibraryDragEnd?.()} draggable
                     onMouseEnter={(e) => onLibraryTileEnter(e, item.type)}
                     onMouseLeave={onLibraryTileLeave}
-                    title={`${item.label} · ${NODE_KEYS[item.type]}`}
+                    onDoubleClick={(e) => handleLibraryTileDoubleClick(e, item.type)}
+                    aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type]}.`}
                   >
                     <KeyBadge nodeType={item.type} />
                     <span className={item.color}><NodeIcon type={item.type} size={25} /></span>

@@ -22,7 +22,7 @@
 }
 
 .custom-node {
-  background: rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.3);
   backdrop-filter: blur(24px);
   border: 1px solid rgba(255, 255, 255, 0.6);
   border-radius: 24px;
@@ -265,6 +265,11 @@
 .describer-node .node-header { color: #6366f1; }
 .background-node .node-header { color: #f59e0b; }
 .composer-node .node-header { color: #06b6d4; }
+
+/* El preview usa un dataURL 1920×1080: sin min-width:0 el flex del nodo hereda ancho intrínseco enorme */
+.composer-node {
+  min-width: 0;
+}
 /* Global Action Button Style */
 .action-btn, .execute-btn {
   width: 100%;
@@ -369,16 +374,23 @@
   transform: translateY(-12px);
 }
 
+/* Sincronizada desde page.tsx (onMove / rueda sobre inputs) — compensa zoom del lienzo */
+:root {
+  --foldder-viewport-zoom: 0.7;
+}
+
+/* Tamaño ~constante en pantalla vía dimensiones en flujo (sin scale en el handle).
+   scale() rompía el cálculo de posiciones de aristas en React Flow (cables invisibles / mal alineados). */
 .react-flow__handle {
-  width: 17px;
-  height: 17px;
+  width: calc(17px / var(--foldder-viewport-zoom, 1)) !important;
+  height: calc(17px / var(--foldder-viewport-zoom, 1)) !important;
   border-radius: 50% !important;
-  background: #ffffff !important;
-  border-width: 3px !important;
-  transform-origin: center center; /* scale from center — prevents hover jump */
-  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  background: transparent !important;
+  border-width: calc(3px / var(--foldder-viewport-zoom, 1)) !important;
+  transform-origin: center center;
+  transition: box-shadow 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275), border-color 0.2s;
   pointer-events: all;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  box-shadow: none;
 }
 
 .handle-prompt { border-color: #3b82f6 !important; }
@@ -392,16 +404,26 @@
 .handle-rose   { border-color: #f43f5e !important; }
 .handle-emerald{ border-color: #10b981 !important; }
 
-/* Handle hover: MUST compose with ReactFlow's own translate transform per side */
-/* ReactFlow uses translateX(±50%) / translateY(±50%) to center handles on the node border */
-/* If we only write transform:scale, we lose that translate → handle jumps inward */
-.react-flow__handle-left:hover  { transform: translateX(-50%) scaleX(1.4) scaleY(1.4) !important; }
-.react-flow__handle-right:hover { transform: translateX(50%)  scaleX(1.4) scaleY(1.4) !important; }
-.react-flow__handle-top:hover   { transform: translateY(-50%) scaleX(1.4) scaleY(1.4) !important; }
-.react-flow__handle-bottom:hover{ transform: translateY(50%)  scaleX(1.4) scaleY(1.4) !important; }
+/* Misma composición que @xyflow/react/style.css: si falta el eje Y/X, los bounds del handle fallan y las aristas no se dibujan (getEdgePosition → null). */
+.react-flow__handle-left {
+  transform: translate(-50%, -50%) !important;
+}
+.react-flow__handle-right {
+  transform: translate(50%, -50%) !important;
+}
+.react-flow__handle-top {
+  transform: translate(-50%, -50%) !important;
+}
+.react-flow__handle-bottom {
+  transform: translate(-50%, 50%) !important;
+}
+.react-flow__handle:not(.react-flow__handle-left):not(.react-flow__handle-right):not(.react-flow__handle-top):not(.react-flow__handle-bottom) {
+  transform: none !important;
+}
+
 .react-flow__handle:hover {
-  background: #fff !important;
-  box-shadow: 0 3px 12px rgba(0,0,0,0.28);
+  background: transparent !important;
+  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.14);
 }
 
 /* Animations */
@@ -647,7 +669,15 @@ body.nb-studio-open .spaces-sidebar:hover {
 }
 
 /* Edge & Wire disconnection styles */
+/* Con elevateEdgesOnSelect, el <svg> de la arista gana z-index alto y tapaba el botón (EdgeLabelRenderer).
+   La capa de etiquetas debe quedar por encima del trazo para pointer-events en el disconnect. */
+.spaces-canvas .react-flow__edgelabel-renderer {
+  z-index: 10000;
+}
+
 .edgebutton {
+  position: relative;
+  z-index: 1;
   width: 22px;
   height: 22px;
   background: #000;
@@ -868,12 +898,13 @@ body.nb-studio-open .spaces-sidebar:hover {
   }
 }
 
-/* Modo cartas: ocultar cables y línea de conexión (el estado de edges se mantiene en JS) */
+/* Modo cartas: antes se ocultaban los cables con display:none → las conexiones existían en datos pero no se veían.
+   Se mantienen visibles (ligeramente suaves) para que coincida con el estado "conectado". */
 .spaces-canvas--cards-mode .react-flow__edges {
-  display: none !important;
+  opacity: 0.92;
 }
 .spaces-canvas--cards-mode .react-flow__connectionline {
-  display: none !important;
+  opacity: 0.85;
 }
 .spaces-canvas--cards-mode .react-flow__handle {
   display: none !important;

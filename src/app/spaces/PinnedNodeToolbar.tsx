@@ -54,7 +54,7 @@ export function PinnedNodeToolbar({
     >
       <div
         className="flex flex-wrap items-center gap-1 min-h-[40px] w-full px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/[0.07] backdrop-blur-md border border-white/10 shadow-sm"
-        title="Accesos rápidos — arrastra nodos desde la librería (máx. 5)"
+        aria-label="Accesos rápidos. Arrastra nodos desde la librería, máximo cinco."
       >
         {pinnedTypes.length === 0 && (
           <span className="text-[8px] font-bold text-white/35 uppercase tracking-widest px-1 py-0.5">
@@ -78,7 +78,7 @@ export function PinnedNodeToolbar({
               }}
               onDragEnd={() => onLibraryDragEnd?.()}
               className="group/pin flex items-center gap-1 shrink-0 pl-1 pr-0.5 py-0.5 rounded-lg bg-white/[0.08] hover:bg-white/15 border border-white/10 hover:border-white/20 cursor-grab active:cursor-grabbing active:scale-[0.98] transition-all max-w-[118px]"
-              title={`${meta.label} — arrastra al lienzo`}
+              aria-label={`${meta.label}. Arrastra al lienzo.`}
             >
               <NodeIcon type={type} size={15} className="shrink-0 text-white/90" />
               <span className="text-[7px] font-bold text-white/85 uppercase tracking-[0.06em] truncate leading-none">
@@ -92,7 +92,7 @@ export function PinnedNodeToolbar({
                 }}
                 onMouseDown={(e) => e.stopPropagation()}
                 className="opacity-0 group-hover/pin:opacity-100 p-0.5 rounded hover:bg-white/15 shrink-0 transition-opacity"
-                title="Quitar de la barra"
+                aria-label="Quitar de la barra"
               >
                 <X size={10} className="text-white/45 hover:text-white/80" />
               </button>

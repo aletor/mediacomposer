@@ -371,6 +371,35 @@ export function findEmptyPositionForNewNode(
   return { x: baseX + 500, y: baseY + 500 };
 }
 
+/**
+ * Centro preferido (misma convención que `findEmptyPositionForNewNode`: baseX = cx − 160, baseY = cy − 120)
+ * para intentar colocar el nodo nuevo justo a la derecha del nodo más a la derecha del lienzo.
+ * Si no hay nodos, devuelve null (usar centro del viewport en flujo).
+ */
+export function preferredCenterRightOfRightmostNode(
+  nodeList: Node[],
+  newType: string
+): { x: number; y: number } | null {
+  if (nodeList.length === 0) return null;
+  const gap = 120;
+  const nh = estimateNodeHeight({ type: newType } as Node);
+  let bestRight = -Infinity;
+  let anchor: Node | null = null;
+  for (const n of nodeList) {
+    const w = estimateNodeWidth(n);
+    const r = n.position.x + w;
+    if (r > bestRight) {
+      bestRight = r;
+      anchor = n;
+    }
+  }
+  if (!anchor) return null;
+  const ah = estimateNodeHeight(anchor);
+  const baseX = bestRight + gap;
+  const baseY = anchor.position.y + ah / 2 - nh / 2;
+  return { x: baseX + 160, y: baseY + 120 };
+}
+
 /** Top-most node whose bounding box contains the flow point (last in array wins = drawn on top in RF). */
 export function findTopNodeUnderFlowPoint(
   flowPoint: { x: number; y: number },

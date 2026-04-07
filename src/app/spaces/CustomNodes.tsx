@@ -2,7 +2,7 @@
 
 import React, { memo, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Handle, Position, NodeProps, BaseEdge, EdgeLabelRenderer, getBezierPath, EdgeProps, useReactFlow, useNodes, useEdges, NodeResizer, type Node } from '@xyflow/react';
+import { Handle, Position, NodeProps, BaseEdge, EdgeLabelRenderer, getBezierPath, EdgeProps, useReactFlow, useUpdateNodeInternals, useNodes, useEdges, NodeResizer, type Node } from '@xyflow/react';
 import { 
   Video, 
   Type, 
@@ -516,13 +516,15 @@ export const UrlImageNode = memo(({ id, data, selected }: NodeProps<any>) => {
 });
 
 // --- IMAGE COMPOSER NODE ---
-
-// --- IMAGE COMPOSER NODE ---
+/** Lienzo fijo del compositor; la caja por defecto de cada imagen conectada cubre todo el artboard (object-contain). Antes 960×540 dejaba la imagen pequeña en una esquina. */
+const COMPOSER_ARTBOARD_W = 1920;
+const COMPOSER_ARTBOARD_H = 1080;
 
 export const ImageComposerNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const nodes = useNodes();
   const edges = useEdges();
   const { setNodes } = useReactFlow();
+  const updateNodeInternals = useUpdateNodeInternals();
 
   const nodeData = data as BaseNodeData & {
     layers?: ComposerLayer[];          // internal layers (rects, colors, texts)
@@ -573,8 +575,8 @@ export const ImageComposerNode = memo(({ id, data, selected }: NodeProps<any>) =
         color: srcNode?.data.color as string | undefined,
         x: layerCfg?.x ?? 0,
         y: layerCfg?.y ?? 0,
-        w: layerCfg?.w ?? 960,
-        h: layerCfg?.h ?? 540,
+        w: layerCfg?.w ?? COMPOSER_ARTBOARD_W,
+        h: layerCfg?.h ?? COMPOSER_ARTBOARD_H,
         opacity: layerCfg?.opacity ?? 1,
         visible: layerCfg?.visible !== false,
         locked: layerCfg?.locked ?? false,
@@ -588,6 +590,10 @@ export const ImageComposerNode = memo(({ id, data, selected }: NodeProps<any>) =
     const lastNum = ids.length > 0 ? parseInt(ids[ids.length - 1].replace('slot-', '')) : -1;
     return [...new Set([...ids, `slot-${lastNum + 1}`])];
   }, [connectedInputs]);
+
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [id, handleIds.join(','), updateNodeInternals]);
 
   // All layers for rendering (internal first = bottom, image inputs on top)
   const allLayersForRender = useMemo(() => {
@@ -630,14 +636,15 @@ export const ImageComposerNode = memo(({ id, data, selected }: NodeProps<any>) =
     const render = async () => {
       if (allLayersForRender.length === 0) return;
       const canvas = document.createElement('canvas');
-      canvas.width = 1920; canvas.height = 1080;
+      canvas.width = COMPOSER_ARTBOARD_W;
+      canvas.height = COMPOSER_ARTBOARD_H;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
-      ctx.clearRect(0, 0, 1920, 1080);
+      ctx.clearRect(0, 0, COMPOSER_ARTBOARD_W, COMPOSER_ARTBOARD_H);
 
       for (const layer of allLayersForRender) {
         ctx.globalAlpha = layer.opacity ?? 1;
-        const lx = layer.x ?? 0, ly = layer.y ?? 0, lw = layer.w ?? 1920, lh = layer.h ?? 1080;
+        const lx = layer.x ?? 0, ly = layer.y ?? 0, lw = layer.w ?? COMPOSER_ARTBOARD_W, lh = layer.h ?? COMPOSER_ARTBOARD_H;
         if (layer.type === 'color') {
           ctx.fillStyle = (layer as any).color || '#000';
           ctx.fillRect(lx, ly, lw, lh);
@@ -748,13 +755,20 @@ export const ImageComposerNode = memo(({ id, data, selected }: NodeProps<any>) =
   const selectedId = nodeData.selectedLayerId;
 
   return (
-    <div className={`custom-node composer-node`} style={{ minWidth: 340 }}>
+    <div
+      className="custom-node composer-node min-w-0 max-w-full"
+      style={{ minWidth: 340 }}
+    >
       <NodeResizer minWidth={340} minHeight={300} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Composer" />
 
       {/* Input handles */}
       {handleIds.map((hId: string, index: number) => (
-        <div key={hId} className="handle-wrapper handle-left" style={{ top: `${(index + 1) * (100 / (handleIds.length + 1))}%` }}>
+        <div
+          key={hId}
+          className="handle-wrapper handle-left"
+          style={{ top: `${((index + 1) / 9) * 100}%` }}
+        >
           <Handle type="target" position={Position.Left} id={hId} className="handle-image" />
           <span className="handle-label">Layer {index + 1}</span>
         </div>
@@ -773,12 +787,17 @@ export const ImageComposerNode = memo(({ id, data, selected }: NodeProps<any>) =
         </button>
       </div>
 
-      {/* Mini canvas preview */}
-      <div className="relative w-full bg-[#080808]" style={{ flex: '1 1 0', minHeight: 120, overflow: 'hidden' }}>
+      {/* Mini canvas preview — min-w-0: flex no usa el ancho intrínseco del dataURL 1920×1080 */}
+      <div className="relative flex min-h-[120px] min-w-0 w-full max-w-full flex-1 items-center justify-center overflow-hidden bg-[#080808]">
         {nodeData.value ? (
-          <img src={nodeData.value} className="w-full h-full object-contain" alt="composition" />
+          <img
+            src={nodeData.value}
+            alt="composition"
+            className="max-h-full max-w-full object-contain"
+            style={{ width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '100%' }}
+          />
         ) : (
-          <div className="flex flex-col items-center justify-center h-full gap-2 opacity-20">
+          <div className="flex h-full min-h-[120px] w-full flex-col items-center justify-center gap-2 opacity-20">
             <Layers size={28} className="text-zinc-400" />
             <span className="text-[7px] font-black uppercase tracking-widest text-zinc-500">Connect layers or add shapes</span>
           </div>
@@ -1027,7 +1046,7 @@ const ComposerStudio = ({ layers: initLayers, imageLayers, onUpdateLayers, onClo
       return imageLayers.map((il: any) => ({
         id: il.id, type: 'image' as const,
         label: il.label || 'Image Input',
-        x: il.x ?? 0, y: il.y ?? 0, w: il.w ?? 960, h: il.h ?? 540,
+        x: il.x ?? 0, y: il.y ?? 0, w: il.w ?? COMPOSER_ARTBOARD_W, h: il.h ?? COMPOSER_ARTBOARD_H,
         opacity: il.opacity ?? 1, visible: il.visible !== false, locked: false,
         _src: il.src, _isImageInput: true,
       } as any));
@@ -1048,7 +1067,7 @@ const ComposerStudio = ({ layers: initLayers, imageLayers, onUpdateLayers, onClo
           id: savedL.id, type: 'image' as const,
           label: actual.label || savedL.label || 'Image Input',
           x: savedL.x ?? 0, y: savedL.y ?? 0,
-          w: savedL.w ?? 960, h: savedL.h ?? 540,
+          w: savedL.w ?? COMPOSER_ARTBOARD_W, h: savedL.h ?? COMPOSER_ARTBOARD_H,
           opacity: savedL.opacity ?? 1,
           visible: savedL.visible !== false,
           locked: savedL.locked ?? false,
@@ -1065,7 +1084,7 @@ const ComposerStudio = ({ layers: initLayers, imageLayers, onUpdateLayers, onClo
       .map((il: any) => ({
         id: il.id, type: 'image' as const,
         label: il.label || 'Image Input',
-        x: il.x ?? 0, y: il.y ?? 0, w: il.w ?? 960, h: il.h ?? 540,
+        x: il.x ?? 0, y: il.y ?? 0, w: il.w ?? COMPOSER_ARTBOARD_W, h: il.h ?? COMPOSER_ARTBOARD_H,
         opacity: il.opacity ?? 1, visible: il.visible !== false, locked: false,
         _src: il.src, _isImageInput: true,
       } as any));
@@ -2346,6 +2365,7 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const nodes = useNodes();
   const edges = useEdges();
   const { setNodes } = useReactFlow();
+  const updateNodeInternals = useUpdateNodeInternals();
   const [loading, setLoading] = useState(false);
 
   // Fixed 8 slots — always in DOM so ReactFlow can always draw edges to them
@@ -2361,6 +2381,10 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const connectedHandleIds = new Set(connectedEdges.map((e: any) => e.targetHandle));
   // How many handles to visually show (connected + 1 empty, min 1, max 8)
   const visibleCount = Math.min(connectedEdges.length + 1, ALL_HANDLES.length);
+
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [id, connectedEdges.length, visibleCount, updateNodeInternals]);
 
   // Live concatenation
   const concatenated = useMemo(() =>
@@ -2403,8 +2427,9 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
             key={hId}
             className="handle-wrapper handle-left"
             style={{
-              top: `${(index + 1) * (100 / (visibleCount + 1))}%`,
-              visibility: visible ? 'visible' : 'hidden',
+              top: `${((index + 1) / (ALL_HANDLES.length + 1)) * 100}%`,
+              // No usar visibility:hidden: puede impedir que XYFlow registre handleBounds y las aristas no existen en pantalla.
+              opacity: visible ? 1 : 0,
               pointerEvents: visible ? 'auto' : 'none',
             }}
           >
