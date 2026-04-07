@@ -64,6 +64,7 @@ import {
   findEmptyPositionForNewNode,
   planDuplicateBelowMultiInput,
   orderedSourcesForSharedTarget,
+  positionNewNodeRightOfSources,
 } from './connection-utils';
 import { NodeIconMono } from './foldder-icons';
 import { 
@@ -804,6 +805,23 @@ const SpacesContent = () => {
               };
         position = computeLibraryDropPosition(anchor, type, plan);
       }
+    }
+
+    // Varios orígenes → nodo multi-ranura: colocar a la derecha del grupo (no en un hueco “libre” que suele quedar a la izquierda)
+    const sourcesIntoNew = selectedNodes.filter((n) =>
+      autoEdges.some((e: any) => e.source === n.id && e.target === newId)
+    );
+    if (
+      sourcesIntoNew.length > 1 &&
+      MULTI_SLOT_NODES[type] &&
+      type !== 'spaceOutput'
+    ) {
+      const sortedSources = [...sourcesIntoNew].sort((a, b) => {
+        if (a.position.y !== b.position.y) return a.position.y - b.position.y;
+        if (a.position.x !== b.position.x) return a.position.x - b.position.x;
+        return String(a.id).localeCompare(String(b.id));
+      });
+      position = positionNewNodeRightOfSources(sortedSources, type);
     }
 
     const newNode = {

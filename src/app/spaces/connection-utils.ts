@@ -418,3 +418,32 @@ export function computeLibraryDropPosition(
     y: existing.position.y,
   };
 }
+
+/**
+ * Coloca un nodo nuevo a la derecha del bloque formado por varias fuentes (mismo gap que library drop).
+ * Centrado en vertical respecto al bounding box de las fuentes.
+ */
+export function positionNewNodeRightOfSources(
+  sources: Node[],
+  newType: string
+): { x: number; y: number } {
+  const gap = 120;
+  const nh = estimateNodeHeight({ type: newType } as Node);
+  if (sources.length === 0) {
+    return { x: 0, y: 0 };
+  }
+  let maxRight = -Infinity;
+  let minTop = Infinity;
+  let maxBottom = -Infinity;
+  for (const n of sources) {
+    const w = estimateNodeWidth(n);
+    const h = estimateNodeHeight(n);
+    maxRight = Math.max(maxRight, n.position.x + w);
+    minTop = Math.min(minTop, n.position.y);
+    maxBottom = Math.max(maxBottom, n.position.y + h);
+  }
+  return {
+    x: maxRight + gap,
+    y: (minTop + maxBottom) / 2 - nh / 2,
+  };
+}
