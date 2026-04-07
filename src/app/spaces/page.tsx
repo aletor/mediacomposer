@@ -82,11 +82,26 @@ import {
   Maximize,
   LayoutGrid,
   Layers,
+  Move,
   Sparkles,
   Download,
   Brain,
+  Type,
+  Film,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+
+/** Tras el splash «Bienvenido», si el lienzo sigue vacío: atajos visibles 3 s. */
+const EMPTY_CANVAS_SHORTCUT_HINT: {
+  label: string;
+  keyLabel: string;
+  Icon: LucideIcon;
+}[] = [
+  { label: 'Prompt', keyLabel: 'P', Icon: Type },
+  { label: 'Nano Banana', keyLabel: 'N', Icon: Sparkles },
+  { label: 'Video', keyLabel: 'V', Icon: Film },
+  { label: 'Export', keyLabel: 'E', Icon: Download },
+];
 
 const AUTH_HIGHLIGHTS: {
   icon: LucideIcon;
@@ -128,6 +143,9 @@ const FIT_VIEW_PADDING = 0.14;
 /** Al encuadrar uno o pocos nodos (doble clic, nodo nuevo, etc.): un poco más de margen que el fit a todo el grafo */
 const FIT_VIEW_PADDING_NODE_FOCUS = 0.8;
 
+/** Modo cartas: margen al encuadrar el nodo activo. */
+const FIT_VIEW_PADDING_CARDS = 0.35;
+
 /** Animaciones de encuadre ~2× más rápidas (mitad de ms, mínimo 40). */
 function fitAnim(ms: number): number {
   return Math.max(40, Math.round(ms / 2));
@@ -155,6 +173,13 @@ function getNodeLayoutDimensions(n: Node): { w: number; h: number } {
     }
   }
   return { w: Math.max(96, w), h: Math.max(72, h) };
+}
+
+function sortNodesCardsOrder<T extends { id: string; position: { x: number; y: number } }>(arr: T[]): T[] {
+  return [...arr].sort(
+    (a, b) =>
+      a.position.y !== b.position.y ? a.position.y - b.position.y : a.position.x - b.position.x
+  );
 }
 
 const nodeTypes: any = {
@@ -332,14 +357,15 @@ const SpacesContent = () => {
 
   /** Encuadra solo los nodos indicados (normalmente uno: el recién añadido), sin fit a todo el grafo */
   const fitViewToNodeIds = useCallback(
-    (ids: string[], duration = 650) => {
+    (ids: string[], duration = 650, options?: { padding?: number }) => {
       const unique = [...new Set(ids.filter(Boolean))];
       if (unique.length === 0) return;
       const d = fitAnim(duration);
+      const padding = options?.padding ?? FIT_VIEW_PADDING_NODE_FOCUS;
       setTimeout(() => {
         void fitView({
           nodes: unique.map((id) => ({ id })) as Node[],
-          padding: FIT_VIEW_PADDING_NODE_FOCUS,
+          padding,
           duration: d,
           interpolate: 'smooth',
         });
@@ -350,7 +376,119 @@ const SpacesContent = () => {
 
   // ── Window Viewer Mode ─────────────────────────────────────────────────────
   const [windowMode, setWindowMode] = useState(false);
+
+  /** `free`: grafo interactivo habitual. `cards`: un nodo a pantalla completa; ←/→ cambian la carta. */
+  const [canvasViewMode, setCanvasViewMode] = useState<'free' | 'cards'>('free');
+  const [cardsFocusIndex, setCardsFocusIndex] = useState(0);
+  /** Alterna animación CSS al cambiar de carta (mismo keyframe con dos nombres). */
+  const [cardsIntroTick, setCardsIntroTick] = useState(0);
+  const cardsAnchorRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const cardsNavKeyRef = useRef<string>('');
+  const freeLayoutSnapshotRef = useRef<Record<string, { x: number; y: number }>>({});
+  const canvasViewModeRef = useRef<'free' | 'cards'>('free');
+  canvasViewModeRef.current = canvasViewMode;
+
+  const enterCardsViewMode = useCallback(() => {
+    if (canvasViewModeRef.current === 'cards') return;
+    if (nodes.length === 0) return;
+    freeLayoutSnapshotRef.current = Object.fromEntries(
+      nodes.map((n) => [n.id, { ...n.position }])
+    );
+    const el = document.querySelector('.react-flow__renderer');
+    let cx = window.innerWidth / 2;
+    let cy = window.innerHeight / 2;
+    if (el) {
+      const r = el.getBoundingClientRect();
+      cx = r.left + r.width / 2;
+      cy = r.top + r.height / 2;
+    }
+    cardsAnchorRef.current = screenToFlowPosition({ x: cx, y: cy });
+    const ordered = [...nodes].sort(
+      (a, b) =>
+        a.position.y !== b.position.y ? a.position.y - b.position.y : a.position.x - b.position.x
+    );
+    const sel = nodes.find((n) => n.selected);
+    const fi = sel ? ordered.findIndex((n) => n.id === sel.id) : 0;
+    setCardsFocusIndex(fi >= 0 ? fi : 0);
+    setCanvasViewMode('cards');
+  }, [nodes, screenToFlowPosition]);
+
+  const exitCardsViewMode = useCallback(() => {
+    if (canvasViewModeRef.current === 'free') return;
+    setNodes((nds) =>
+      nds.map((n) => {
+        const p = freeLayoutSnapshotRef.current[n.id];
+        const style: Record<string, unknown> = n.style ? { ...(n.style as object) } : {};
+        if ('zIndex' in style) delete style.zIndex;
+        const next = {
+          ...n,
+          style: Object.keys(style).length ? (style as React.CSSProperties) : undefined,
+        };
+        if (p) return { ...next, position: p };
+        return next;
+      })
+    );
+    setCanvasViewMode('free');
+    setTimeout(() => {
+      void fitView({
+        padding: FIT_VIEW_PADDING,
+        duration: fitAnim(800),
+        interpolate: 'smooth',
+      });
+    }, 90);
+  }, [setNodes, fitView]);
+
+  useEffect(() => {
+    if (canvasViewMode !== 'cards') return;
+    if (nodes.length === 0) return;
+    setCardsFocusIndex((i) => Math.min(i, nodes.length - 1));
+  }, [nodes.length, canvasViewMode]);
+
+  /** Encuadre pantalla completa del nodo activo + disparar zoom-in solo al cambiar de carta. */
+  useEffect(() => {
+    if (canvasViewMode !== 'cards') {
+      cardsNavKeyRef.current = '';
+      return;
+    }
+    if (nodes.length === 0) return;
+    const ordered = sortNodesCardsOrder(nodes);
+    const f = Math.min(Math.max(0, cardsFocusIndex), ordered.length - 1);
+    const id = ordered[f]?.id;
+    if (!id) return;
+    const navKey = `${f}:${id}`;
+    if (cardsNavKeyRef.current === navKey) return;
+    cardsNavKeyRef.current = navKey;
+    setCardsIntroTick((t) => t + 1);
+    const delayMs = 90;
+    const t = setTimeout(() => {
+      fitViewToNodeIds([id], 560, { padding: FIT_VIEW_PADDING_CARDS });
+    }, delayMs);
+    return () => clearTimeout(t);
+  }, [canvasViewMode, cardsFocusIndex, nodes, fitViewToNodeIds]);
+
   const [showWelcome, setShowWelcome] = useState(false); // triggered after auth
+  const [showEmptyShortcutsHint, setShowEmptyShortcutsHint] = useState(false);
+  const emptyShortcutsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (emptyShortcutsTimerRef.current) {
+        clearTimeout(emptyShortcutsTimerRef.current);
+        emptyShortcutsTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (showEmptyShortcutsHint && nodes.length > 0) {
+      setShowEmptyShortcutsHint(false);
+      if (emptyShortcutsTimerRef.current) {
+        clearTimeout(emptyShortcutsTimerRef.current);
+        emptyShortcutsTimerRef.current = null;
+      }
+    }
+  }, [nodes.length, showEmptyShortcutsHint]);
+
   /** Which node supplies `data.value` for the fullscreen viewer (opened via node header buttons). */
   const [viewerSourceNodeId, setViewerSourceNodeId] = useState<string | null>(null);
 
@@ -803,6 +941,12 @@ const SpacesContent = () => {
   // ── Node click: global z-order counter — each click brings that node above all others
   // Every previously clicked node keeps its own relative position in the stack.
   const onNodeClick = useCallback((_evt: React.MouseEvent, node: any) => {
+    if (canvasViewModeRef.current === 'cards') {
+      const ordered = sortNodesCardsOrder(liveNodesRef.current);
+      const idx = ordered.findIndex((n) => n.id === node.id);
+      if (idx >= 0) setCardsFocusIndex(idx);
+      return;
+    }
     lastClickedRef.current = (lastClickedRef.current ?? 0) + 1;
     const nextZ = lastClickedRef.current;
     setNodes(nds => nds.map(n =>
@@ -951,6 +1095,8 @@ const SpacesContent = () => {
     fitViewToNodeIds,
     pushHistory,
     handleEscape: () => navigationEscapeRef.current(),
+    setCardsFocusIndex,
+    canvasViewModeRef,
   });
   keyboardShortcutsRef.current = {
     addNodeAtCenter,
@@ -964,6 +1110,8 @@ const SpacesContent = () => {
     fitViewToNodeIds,
     pushHistory,
     handleEscape: () => navigationEscapeRef.current(),
+    setCardsFocusIndex,
+    canvasViewModeRef,
   };
 
   useEffect(() => {
@@ -1097,6 +1245,31 @@ const SpacesContent = () => {
           e.preventDefault();
         }
         return;
+      }
+
+      // Modo cartas: Tab y ← / → ciclan el nodo al frente (baraja)
+      if (keyboardShortcutsRef.current.canvasViewModeRef.current === 'cards') {
+        const nDeck = liveNodesRef.current.length;
+        if (nDeck > 0) {
+          if (e.key === 'Tab') {
+            e.preventDefault();
+            const dir = e.shiftKey ? -1 : 1;
+            keyboardShortcutsRef.current.setCardsFocusIndex((f: number) => (f + dir + nDeck) % nDeck);
+            return;
+          }
+          if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+            if (typeof document !== 'undefined' && document.querySelector('[data-foldder-studio-canvas]')) return;
+            e.preventDefault();
+            const dir = e.key === 'ArrowRight' ? 1 : -1;
+            keyboardShortcutsRef.current.setCardsFocusIndex((f: number) => (f + dir + nDeck) % nDeck);
+            return;
+          }
+          if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            if (typeof document !== 'undefined' && document.querySelector('[data-foldder-studio-canvas]')) return;
+            e.preventDefault();
+            return;
+          }
+        }
       }
 
       // Tab / Shift+Tab — mismo grafo que flechas ← / →
@@ -1306,6 +1479,8 @@ const SpacesContent = () => {
   const viewportRef = useRef({ zoom: 1, x: 0, y: 0 });
   useEffect(() => {
     const onWheel = (e: WheelEvent) => {
+      if (canvasViewModeRef.current === 'cards') return;
+
       const target = e.target as HTMLElement;
       const tag = target.tagName;
       const isInput =
@@ -2436,6 +2611,60 @@ const SpacesContent = () => {
 
   const flowNodes = useMemo(() => {
     const compatSet = new Set(libraryCompatibleIds);
+
+    if (canvasViewMode === 'cards' && nodes.length > 0) {
+      const ordered = sortNodesCardsOrder(nodes);
+      const n = ordered.length;
+      const f = Math.min(Math.max(0, cardsFocusIndex), n - 1);
+      const anchor = cardsAnchorRef.current;
+      const introParity = cardsIntroTick % 2;
+      const introClass = introParity === 0 ? 'foldder-cards-intro-a' : 'foldder-cards-intro-b';
+
+      return nodes.map((node: any) => {
+        const isCompat = compatSet.has(node.id);
+        const isHover = node.id === libraryDropTargetId;
+        const stackIdx = ordered.findIndex((x) => x.id === node.id);
+        if (stackIdx === -1) {
+          const cls = [node.className, isCompat && 'library-drop-compatible', isHover && 'library-drop-highlight']
+            .filter(Boolean)
+            .join(' ');
+          return { ...node, className: cls || undefined };
+        }
+
+        const isFocused = stackIdx === f;
+        const cls = [
+          node.className,
+          isCompat && 'library-drop-compatible',
+          isHover && 'library-drop-highlight',
+          isFocused && 'foldder-cards-front',
+          isFocused && introClass,
+        ]
+          .filter(Boolean)
+          .join(' ');
+
+        if (!isFocused) {
+          return {
+            ...node,
+            hidden: true,
+            selected: false,
+            className: cls || undefined,
+          };
+        }
+
+        return {
+          ...node,
+          hidden: false,
+          position: { x: anchor.x, y: anchor.y },
+          zIndex: 200,
+          draggable: false,
+          selectable: true,
+          selected: true,
+          className: cls || undefined,
+          style: { ...(node.style || {}), zIndex: 200 },
+        };
+      });
+    }
+
     return nodes.map((n: any) => {
       const isCompat = compatSet.has(n.id);
       const isHover = n.id === libraryDropTargetId;
@@ -2447,7 +2676,7 @@ const SpacesContent = () => {
         className: cls || undefined,
       };
     });
-  }, [nodes, libraryDropTargetId, libraryCompatibleIds]);
+  }, [nodes, libraryDropTargetId, libraryCompatibleIds, canvasViewMode, cardsFocusIndex, cardsIntroTick]);
 
   const isValidConnection = useCallback((connection: any) => {
     const sourceNode = nodes.find((n) => n.id === connection.source);
@@ -2660,7 +2889,19 @@ const SpacesContent = () => {
           pointerEvents: 'none',
           animation: 'welcomeFade 4s ease forwards',
         }}
-        onAnimationEnd={() => { setShowWelcome(false); }}
+        onAnimationEnd={() => {
+          setShowWelcome(false);
+          if (liveNodesRef.current.length === 0) {
+            setShowEmptyShortcutsHint(true);
+            if (emptyShortcutsTimerRef.current) {
+              clearTimeout(emptyShortcutsTimerRef.current);
+            }
+            emptyShortcutsTimerRef.current = setTimeout(() => {
+              setShowEmptyShortcutsHint(false);
+              emptyShortcutsTimerRef.current = null;
+            }, 3000);
+          }
+        }}
         >
           <style>{`
             @keyframes welcomeFade {
@@ -2684,6 +2925,42 @@ const SpacesContent = () => {
           </span>
         </div>
       )}
+
+      {/* Atajos minimalistas: solo tras bienvenida si el lienzo sigue vacío (3 s) */}
+      {isAuthenticated &&
+        showEmptyShortcutsHint &&
+        !windowMode &&
+        nodes.length === 0 && (
+          <div
+            className="foldder-empty-shortcuts-anchor pointer-events-none fixed inset-x-0 z-[19950] flex justify-center px-3"
+            style={{ bottom: 'max(5.25rem, 11vh)' }}
+            aria-live="polite"
+          >
+            <div className="foldder-empty-shortcuts-popover text-black">
+              <ul className="m-0 list-none p-0">
+                {EMPTY_CANVAS_SHORTCUT_HINT.map(({ label, keyLabel, Icon }) => (
+                  <li
+                    key={label}
+                    className="foldder-empty-shortcuts-row flex items-center gap-2.5 py-1 pl-1 pr-1"
+                  >
+                    <Icon
+                      className="shrink-0 text-black opacity-90"
+                      size={12}
+                      strokeWidth={1.35}
+                      aria-hidden
+                    />
+                    <span className="min-w-0 flex-1 truncate font-medium tracking-tight text-black/85">
+                      {label}
+                    </span>
+                    <kbd className="foldder-empty-shortcuts-kbd shrink-0 font-mono text-black/80">
+                      {keyLabel}
+                    </kbd>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
 
       {/* ── WINDOW VIEWER PANEL ─────────────────────────────────────────────── */}
       {windowMode && (
@@ -2947,12 +3224,17 @@ const SpacesContent = () => {
           proOptions={{ hideAttribution: true }}
           multiSelectionKeyCode="Shift"
           panOnDrag={spaceHeld ? true : [1]}
-          selectionOnDrag={!spaceHeld}
+          selectionOnDrag={!spaceHeld && canvasViewMode === 'free'}
           selectionMode={SelectionMode.Partial}
           panOnScroll={false}
+          zoomOnScroll={canvasViewMode !== 'cards'}
+          zoomOnPinch={canvasViewMode !== 'cards'}
+          zoomActivationKeyCode={canvasViewMode === 'cards' ? null : undefined}
           zoomOnDoubleClick={false}
+          nodesDraggable={canvasViewMode === 'free'}
+          nodesConnectable={canvasViewMode === 'free'}
 
-          className={`spaces-canvas${spaceHeld || middlePanHeld ? ' spaces-canvas--space-pan' : ''}`}
+          className={`spaces-canvas${spaceHeld || middlePanHeld ? ' spaces-canvas--space-pan' : ''}${canvasViewMode === 'cards' ? ' spaces-canvas--cards-mode' : ''}`}
 
 
         >
@@ -3137,6 +3419,32 @@ const SpacesContent = () => {
             >
               {/* Quick Actions */}
               <div className="flex shrink-0 gap-1.5">
+                <div className="flex overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] backdrop-blur-md">
+                  <button
+                    type="button"
+                    onClick={exitCardsViewMode}
+                    title="Modo lienzo: arrastra y redimensiona nodos"
+                    className={`flex h-10 w-10 items-center justify-center transition-all ${
+                      canvasViewMode === 'free'
+                        ? 'bg-white/15 text-white shadow-inner'
+                        : 'text-white/45 hover:bg-white/10 hover:text-white/80'
+                    }`}
+                  >
+                    <Move size={16} className={canvasViewMode === 'free' ? 'text-emerald-400' : ''} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={enterCardsViewMode}
+                    title="Modo cartas: un nodo a pantalla completa; ← → o Tab cambian la carta con zoom suave (sin cables ni conectores)."
+                    className={`flex h-10 w-10 items-center justify-center border-l border-white/10 transition-all ${
+                      canvasViewMode === 'cards'
+                        ? 'bg-white/15 text-white shadow-inner'
+                        : 'text-white/45 hover:bg-white/10 hover:text-white/80'
+                    }`}
+                  >
+                    <Layers size={16} className={canvasViewMode === 'cards' ? 'text-amber-400' : ''} />
+                  </button>
+                </div>
                 <button
                   onClick={autoLayoutNodes}
                   title="Order Nodes"

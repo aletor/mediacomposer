@@ -867,3 +867,122 @@ body.nb-studio-open .spaces-sidebar:hover {
     column-gap: 0.5rem !important;
   }
 }
+
+/* Modo cartas: ocultar cables y línea de conexión (el estado de edges se mantiene en JS) */
+.spaces-canvas--cards-mode .react-flow__edges {
+  display: none !important;
+}
+.spaces-canvas--cards-mode .react-flow__connectionline {
+  display: none !important;
+}
+.spaces-canvas--cards-mode .react-flow__handle {
+  display: none !important;
+  pointer-events: none !important;
+}
+
+/* Sin rollover de etiquetas de tipo de conexión (handles) en modo cartas */
+.spaces-canvas--cards-mode .handle-label {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+.spaces-canvas--cards-mode .custom-node:hover .handle-label {
+  opacity: 0 !important;
+  transform: none !important;
+}
+.spaces-canvas--cards-mode .react-flow__resize-control {
+  display: none !important;
+}
+
+/* Zoom-in ligero al mostrar cada carta (dos nombres de keyframe para poder reiniciar la animación al cambiar) */
+@keyframes foldderCardsIntroA {
+  from {
+    opacity: 0.9;
+    transform: scale(0.93);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes foldderCardsIntroB {
+  from {
+    opacity: 0.9;
+    transform: scale(0.93);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.spaces-canvas--cards-mode .react-flow__node.foldder-cards-front.foldder-cards-intro-a .custom-node {
+  animation: foldderCardsIntroA 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: center center;
+}
+.spaces-canvas--cards-mode .react-flow__node.foldder-cards-front.foldder-cards-intro-b .custom-node {
+  animation: foldderCardsIntroB 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: center center;
+}
+
+/* ── Popover de atajos tras bienvenida (lienzo vacío) ───────────────────── */
+@keyframes foldderEmptyShortcutsIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.foldder-empty-shortcuts-popover {
+  position: relative;
+  min-width: 9.5rem;
+  max-width: min(14rem, 92vw);
+  padding: 0.35rem 0.45rem 0.45rem;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.52);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 12px 28px -8px rgba(15, 23, 42, 0.12);
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  animation: foldderEmptyShortcutsIn 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Pico inferior tipo popover */
+.foldder-empty-shortcuts-popover::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 5px solid rgba(255, 255, 255, 0.58);
+  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.35));
+}
+
+.foldder-empty-shortcuts-row {
+  font-size: 0.625rem;
+  line-height: 1.2;
+}
+
+.foldder-empty-shortcuts-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.1rem;
+  padding: 0.1rem 0.28rem;
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.06);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7);
+}
