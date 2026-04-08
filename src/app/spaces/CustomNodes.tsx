@@ -1,8 +1,8 @@
 "use client";
 
-import React, { memo, useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { memo, useState, useEffect, useMemo, useCallback, useRef, type ComponentProps } from 'react';
 import { createPortal } from 'react-dom';
-import { Handle, Position, NodeProps, BaseEdge, EdgeLabelRenderer, getBezierPath, EdgeProps, useReactFlow, useUpdateNodeInternals, useNodes, useEdges, NodeResizer, type Node } from '@xyflow/react';
+import { Position, NodeProps, BaseEdge, EdgeLabelRenderer, getBezierPath, EdgeProps, useReactFlow, useUpdateNodeInternals, useNodes, useEdges, NodeResizer, useNodeId, type Node } from '@xyflow/react';
 import { 
   Video, 
   Type, 
@@ -58,6 +58,11 @@ import {
   FOLDDER_INTERNAL_CATEGORY_TO_ICON,
   type FoldderIconKey,
 } from './foldder-icons';
+import {
+  FoldderDataHandle,
+  foldderDataTypeFromHandleClass,
+  foldderMediaInputDataType,
+} from './FoldderDataHandle';
 
 interface BaseNodeData {
   value?: string;
@@ -84,9 +89,11 @@ function ViewerOpenButton({ nodeId, disabled, className }: { nodeId: string; dis
       style={{
         padding: 3,
         borderRadius: 6,
-        background: 'rgba(251,191,36,0.2)',
-        border: '1px solid rgba(251,191,36,0.4)',
-        color: '#fbbf24',
+        background: 'rgba(255,255,255,0.12)',
+        border: '1px solid rgba(255,255,255,0.28)',
+        color: '#fff',
+        textShadow: '0 1px 2px rgba(0,0,0,0.45)',
+        filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.35))',
         opacity: disabled ? 0.35 : 1,
         pointerEvents: disabled ? 'none' : 'auto',
       }}
@@ -264,6 +271,34 @@ export const ButtonEdge = ({
   );
 };
 
+/** Tras soltar el resize: encuadra solo este nodo (mismo criterio que foco tras crear nodo). */
+const NODE_RESIZE_END_FIT_PADDING = 0.8;
+
+function FoldderNodeResizer(props: ComponentProps<typeof NodeResizer>) {
+  const nodeId = useNodeId();
+  const { fitView } = useReactFlow();
+  const { onResizeEnd, ...rest } = props;
+  return (
+    <NodeResizer
+      {...rest}
+      onResizeEnd={(event, params) => {
+        onResizeEnd?.(event, params);
+        if (nodeId) {
+          requestAnimationFrame(() => {
+            void fitView({
+              nodes: [{ id: nodeId }],
+              padding: NODE_RESIZE_END_FIT_PADDING,
+              duration: 560,
+              interpolate: 'smooth',
+              ...FOLDDER_FIT_VIEW_EASE,
+            });
+          });
+        }
+      }}
+    />
+  );
+}
+
 // --- CORE INPUT NODES ---
 
 export const BackgroundNode = memo(({ id, data, selected }: NodeProps<any>) => {
@@ -280,7 +315,7 @@ export const BackgroundNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   return (
     <div className={`custom-node background-node` }>
-            <NodeResizer minWidth={280} minHeight={200} isVisible={selected} />
+            <FoldderNodeResizer minWidth={280} minHeight={200} isVisible={selected} />
 <NodeLabel id={id} label={nodeData.label} defaultLabel="Background" />
       <div className="node-header">
         <NodeIcon type="background" selected={selected} size={16} /> CANVAS
@@ -336,7 +371,7 @@ export const BackgroundNode = memo(({ id, data, selected }: NodeProps<any>) => {
       </div>
       <div className="handle-wrapper handle-right">
         <span className="handle-label">Image out</span>
-        <Handle type="source" position={Position.Right} id="image" className="handle-image" />
+        <FoldderDataHandle type="source" position={Position.Right} id="image" dataType="image" />
       </div>
     </div>
   );
@@ -420,9 +455,9 @@ export const UrlImageNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   return (
     <div className={`custom-node url-image-node border-cyan-500/30 ${loading ? 'node-glow-running' : ''}`} style={{ minWidth: 280 }}>
-      <NodeResizer minWidth={280} minHeight={320} isVisible={selected} />
+      <FoldderNodeResizer minWidth={280} minHeight={320} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Image Search" />
-      <div className="node-header text-cyan-400">
+      <div className="node-header">
         <NodeIcon type="urlImage" loading={loading} selected={selected} size={16} />
         <span className="flex-1">CAROUSEL</span>
         {loading && <Loader2 size={12} className="animate-spin shrink-0" />}
@@ -509,7 +544,7 @@ export const UrlImageNode = memo(({ id, data, selected }: NodeProps<any>) => {
       </div>
       <div className="handle-wrapper handle-right">
         <span className="handle-label">Image Out</span>
-        <Handle type="source" position={Position.Right} id="image" className="handle-image" />
+        <FoldderDataHandle type="source" position={Position.Right} id="image" dataType="image" />
       </div>
     </div>
   );
@@ -759,7 +794,7 @@ export const ImageComposerNode = memo(({ id, data, selected }: NodeProps<any>) =
       className="custom-node composer-node min-w-0 max-w-full"
       style={{ minWidth: 340 }}
     >
-      <NodeResizer minWidth={340} minHeight={300} isVisible={selected} />
+      <FoldderNodeResizer minWidth={340} minHeight={300} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Composer" />
 
       {/* Input handles */}
@@ -769,7 +804,7 @@ export const ImageComposerNode = memo(({ id, data, selected }: NodeProps<any>) =
           className="handle-wrapper handle-left"
           style={{ top: `${((index + 1) / 9) * 100}%` }}
         >
-          <Handle type="target" position={Position.Left} id={hId} className="handle-image" />
+          <FoldderDataHandle type="target" position={Position.Left} id={hId} dataType="image" />
           <span className="handle-label">Layer {index + 1}</span>
         </div>
       ))}
@@ -781,7 +816,7 @@ export const ImageComposerNode = memo(({ id, data, selected }: NodeProps<any>) =
         <div className="node-badge">{allLayersForRender.length} layers</div>
         <button
           onClick={() => setIsStudioOpen(true)}
-          className="node-badge !bg-cyan-500/20 !text-cyan-400 hover:!bg-cyan-500/40 transition-colors pointer-events-auto cursor-pointer flex items-center gap-1.5 border-none outline-none nodrag"
+          className="node-badge !bg-white/12 !text-white hover:!bg-white/22 transition-colors pointer-events-auto cursor-pointer flex items-center gap-1.5 border border-white/15 outline-none nodrag"
         >
           <Maximize2 size={10} /> STUDIO
         </button>
@@ -873,7 +908,7 @@ export const ImageComposerNode = memo(({ id, data, selected }: NodeProps<any>) =
 
       <div className="handle-wrapper handle-right" style={{ top: '50%' }}>
         <span className="handle-label">Output</span>
-        <Handle type="source" position={Position.Right} id="image" className="handle-image" />
+        <FoldderDataHandle type="source" position={Position.Right} id="image" dataType="image" />
       </div>
 
       {isStudioOpen && createPortal(
@@ -1845,7 +1880,7 @@ export const ImageExportNode = memo(({ id, data, selected }: NodeProps<any>) => 
 
   return (
     <div className={`custom-node export-node border-rose-500/30` }>
-            <NodeResizer minWidth={280} minHeight={180} isVisible={selected} />
+            <FoldderNodeResizer minWidth={280} minHeight={180} isVisible={selected} />
 <NodeLabel id={id} label={data.label} defaultLabel="Export" />
 
       {/* Hidden iframe — receives the form POST response (Content-Disposition: attachment) */}
@@ -1874,10 +1909,10 @@ export const ImageExportNode = memo(({ id, data, selected }: NodeProps<any>) => 
       </form>
 
       <div className="handle-wrapper handle-left">
-        <Handle type="target" position={Position.Left} id="image" className="handle-image" />
+        <FoldderDataHandle type="target" position={Position.Left} id="image" dataType="image" />
         <span className="handle-label">Image Input</span>
       </div>
-      <div className="node-header text-rose-400">
+      <div className="node-header">
         <NodeIcon type="imageExport" selected={selected} loading={isExporting} size={16} /> IMAGE EXPORT
       </div>
       <div className="node-content">
@@ -2032,8 +2067,6 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
     }
   };
 
-  const handleClass = nodeData.type ? `handle-${nodeData.type}` : 'handle-video';
-
   const hasMedia = !!nodeData.value;
   const isVisual = nodeData.type === 'image' || nodeData.type === 'video';
 
@@ -2042,15 +2075,15 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
       className="custom-node"
       style={{ padding: 0, minWidth: 280, borderRadius: 18, overflow: 'visible' }}
     >
-      <NodeResizer minWidth={280} minHeight={320} isVisible={selected} />
+      <FoldderNodeResizer minWidth={280} minHeight={320} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel={nodeData.type ? `${nodeData.type.charAt(0).toUpperCase() + nodeData.type.slice(1)} Input` : 'Media Input'} />
 
       {/* Persistent header */}
-      <div className="node-header" style={{ color: getTitleColor() }}>
+      <div className="node-header">
         <NodeIcon type="mediaInput" iconKey={mediaIconKey()} selected={selected} loading={isUploading} size={16} />
         <span className="min-w-0 flex-1 font-black tracking-tighter uppercase">{nodeData.type || 'Media'} Input</span>
         {nodeData.type && (
-          <span className="shrink-0 text-[8px] bg-white/10 px-2 py-0.5 rounded-full font-black uppercase tracking-widest text-gray-400">
+          <span className="shrink-0 text-[8px] bg-white/10 px-2 py-0.5 rounded-full font-black uppercase tracking-widest text-white/75">
             {nodeData.source || 'upload'}
           </span>
         )}
@@ -2257,7 +2290,7 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
       <div className="handle-wrapper handle-right" style={{ top: '50%' }}>
         <span className="handle-label">Media Asset</span>
-        <Handle type="source" position={Position.Right} id="media" className={handleClass} />
+        <FoldderDataHandle type="source" position={Position.Right} id="media" dataType={foldderMediaInputDataType(nodeData.type)} />
       </div>
     </div>
   );
@@ -2269,7 +2302,7 @@ export const PromptNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const { setNodes } = useReactFlow();
   return (
     <div className={`custom-node prompt-node`} style={{ minWidth: 280 }}>
-      <NodeResizer minWidth={280} minHeight={160} isVisible={selected} />
+      <FoldderNodeResizer minWidth={280} minHeight={160} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Prompt" />
       <div className="node-header">
         <NodeIcon type="promptInput" selected={selected} size={16} /> PROMPT
@@ -2286,7 +2319,7 @@ export const PromptNode = memo(({ id, data, selected }: NodeProps<any>) => {
       </div>
       <div className="handle-wrapper handle-right">
         <span className="handle-label">Prompt out</span>
-        <Handle type="source" position={Position.Right} id="prompt" className="handle-prompt" />
+        <FoldderDataHandle type="source" position={Position.Right} id="prompt" dataType="prompt" />
       </div>
     </div>
   );
@@ -2324,16 +2357,11 @@ export const ConcatenatorNode = memo(({ id, data, selected }: NodeProps<any>) =>
 
   return (
     <div className={`custom-node tool-node` } style={{ minWidth: 240 }}>
-      <NodeResizer minWidth={240} minHeight={180} maxWidth={600} maxHeight={520} isVisible={selected} />
+      <FoldderNodeResizer minWidth={240} minHeight={180} maxWidth={600} maxHeight={520} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Concatenator" />
       {handleIds.map((hId: any, index: number) => (
         <div key={hId} className="handle-wrapper handle-left" style={{ top: `${(index + 1) * (100 / (handleIds.length + 1))}%` }}>
-          <Handle 
-            type="target" 
-            position={Position.Left} 
-            id={hId} 
-            className={`handle-prompt ${connectedInputs.some(e => e.targetHandle === hId) ? 'active' : ''}`} 
-          />
+          <FoldderDataHandle type="target" position={Position.Left} id={hId} dataType="prompt" />
           <span className="handle-label">In {index + 1}</span>
         </div>
       ))}
@@ -2354,7 +2382,7 @@ export const ConcatenatorNode = memo(({ id, data, selected }: NodeProps<any>) =>
       
       <div className="handle-wrapper handle-right">
         <span className="handle-label">Result</span>
-        <Handle type="source" position={Position.Right} id="prompt" className="handle-prompt" />
+        <FoldderDataHandle type="source" position={Position.Right} id="prompt" dataType="prompt" />
       </div>
     </div>
   );
@@ -2415,7 +2443,7 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   return (
     <div className={`custom-node tool-node` } style={{ minWidth: 280 }}>
-      <NodeResizer minWidth={280} minHeight={200} maxWidth={620} maxHeight={660} isVisible={selected} />
+      <FoldderNodeResizer minWidth={280} minHeight={200} maxWidth={620} maxHeight={660} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Enhancer" />
 
       {/* Always render all 8 handles; hide extras beyond connected+1 */}
@@ -2433,11 +2461,12 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
               pointerEvents: visible ? 'auto' : 'none',
             }}
           >
-            <Handle
+            <FoldderDataHandle
               type="target"
               position={Position.Left}
               id={hId}
-              className={`handle-prompt ${connected ? '' : 'opacity-40'}`}
+              dataType="prompt"
+              className={connected ? '' : 'opacity-40'}
             />
             <span className="handle-label" style={{ fontSize: 7 }}>
               {connected ? `P${index + 1} ✓` : `P${index + 1}`}
@@ -2482,7 +2511,7 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
       <div className="handle-wrapper handle-right">
         <span className="handle-label">Enhanced</span>
-        <Handle type="source" position={Position.Right} id="prompt" className="handle-prompt" />
+        <FoldderDataHandle type="source" position={Position.Right} id="prompt" dataType="prompt" />
       </div>
     </div>
   );
@@ -2537,14 +2566,14 @@ export const GrokNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   return (
     <div className={`custom-node processor-node ${status === 'running' ? 'node-glow-running' : ''}`} style={{ minWidth: 300 }}>
-      <NodeResizer minWidth={300} minHeight={280} maxWidth={620} maxHeight={620} isVisible={selected} />
+      <FoldderNodeResizer minWidth={300} minHeight={280} maxWidth={620} maxHeight={620} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Grok Imagine" />
       <div className="handle-wrapper handle-left" style={{ top: '30%' }}>
-        <Handle type="target" position={Position.Left} id="video" className="handle-video" />
+        <FoldderDataHandle type="target" position={Position.Left} id="video" dataType="video" />
         <span className="handle-label">Video in</span>
       </div>
       <div className="handle-wrapper handle-left" style={{ top: '70%' }}>
-        <Handle type="target" position={Position.Left} id="prompt" className="handle-prompt" />
+        <FoldderDataHandle type="target" position={Position.Left} id="prompt" dataType="prompt" />
         <span className="handle-label">Prompt in</span>
       </div>
       <div className="node-header">
@@ -2571,7 +2600,7 @@ export const GrokNode = memo(({ id, data, selected }: NodeProps<any>) => {
       </div>
       <div className="handle-wrapper handle-right">
         <span className="handle-label">Video out</span>
-        <Handle type="source" position={Position.Right} id="video" className="handle-video" />
+        <FoldderDataHandle type="source" position={Position.Right} id="video" dataType="video" />
       </div>
     </div>
   );
@@ -4205,14 +4234,14 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
   return (
     <div className={`custom-node processor-node ${status === 'running' ? 'node-glow-running' : ''}`}
          style={{ minWidth: 240 }}>
-      <NodeResizer minWidth={240} minHeight={280} isVisible={selected} />
+      <FoldderNodeResizer minWidth={240} minHeight={280} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Nano Banana" />
 
       {/* ── Handles ── */}
       {REF_SLOTS.map((slot, i) => (
         <div key={slot.id} className="handle-wrapper handle-left"
              style={{ top: slot.top, opacity: i === 0 || connectedSlots[i - 1] ? 1 : 0.35 }}>
-          <Handle type="target" position={Position.Left} id={slot.id} className="handle-image" />
+          <FoldderDataHandle type="target" position={Position.Left} id={slot.id} dataType="image" />
           <span className="handle-label" style={{
             color: connectedSlots[i] ? '#f59e0b' : undefined,
             fontWeight: connectedSlots[i] ? '900' : undefined,
@@ -4222,12 +4251,12 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
         </div>
       ))}
       <div className="handle-wrapper handle-left" style={{ top: '94%' }}>
-        <Handle type="target" position={Position.Left} id="prompt" className="handle-prompt" />
+        <FoldderDataHandle type="target" position={Position.Left} id="prompt" dataType="prompt" />
         <span className="handle-label">Prompt</span>
       </div>
       <div className="handle-wrapper handle-right" style={{ top: '50%' }}>
         <span className="handle-label">Image out</span>
-        <Handle type="source" position={Position.Right} id="image" className="handle-image" />
+        <FoldderDataHandle type="source" position={Position.Right} id="image" dataType="image" />
       </div>
 
       {/* ── Header ── */}
@@ -4238,13 +4267,11 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
           state={resolveFoldderNodeState({ error: status === 'error', loading: status === 'running', done: !!result })}
           size={16}
         />
-        <span className="flex-1 text-yellow-700">Nano Banana</span>
-        <div className={`node-badge ${modelInfo.bg} ${modelInfo.color} border ${modelInfo.borderColor}`}>
-          {modelInfo.badge}
-        </div>
+        <span className="flex-1">Nano Banana</span>
+        <div className="node-badge border border-white/15">{modelInfo.badge}</div>
         <button
           onClick={() => setShowStudio(true)}
-          className="node-badge !bg-yellow-500/20 !text-yellow-600 hover:!bg-yellow-500/35 transition-colors pointer-events-auto cursor-pointer flex items-center gap-1.5 border-none outline-none nodrag"
+          className="node-badge !bg-white/12 !text-white hover:!bg-white/22 transition-colors pointer-events-auto cursor-pointer flex items-center gap-1.5 border border-white/15 outline-none nodrag"
         >
           <Maximize2 size={10} /> STUDIO
         </button>
@@ -4478,13 +4505,13 @@ export const TextOverlayNode = memo(({ id, data, selected }: NodeProps<any>) => 
 
   return (
     <div className={`custom-node tool-node` } style={{ minWidth: 300 }}>
-      <NodeResizer minWidth={300} minHeight={280} maxWidth={700} maxHeight={720} isVisible={selected} />
+      <FoldderNodeResizer minWidth={300} minHeight={280} maxWidth={700} maxHeight={720} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Text Overlay" />
 
       <div className="node-header bg-gradient-to-r from-purple-600/20 to-pink-600/20">
         <NodeIcon type="textOverlay" selected={selected} size={16} />
         <span>Text Overlay</span>
-        <div className="node-badge bg-purple-500/10 text-purple-400 border border-purple-500/30">TEXT</div>
+        <div className="node-badge border border-white/15">TEXT</div>
       </div>
 
       <div className="node-content space-y-3">
@@ -4625,7 +4652,7 @@ export const TextOverlayNode = memo(({ id, data, selected }: NodeProps<any>) => 
       {/* Output handle */}
       <div className="handle-wrapper handle-right">
         <span className="handle-label">Image out</span>
-        <Handle type="source" position={Position.Right} id="image" className="handle-image" />
+        <FoldderDataHandle type="source" position={Position.Right} id="image" dataType="image" />
       </div>
     </div>
   );
@@ -4745,10 +4772,10 @@ export const BackgroundRemoverNode = memo(({ id, data, selected }: NodeProps<any
 
   return (
     <div className={`custom-node mask-node ${status === 'running' ? 'node-glow-running' : ''}`} style={{ minWidth: 320 }}>
-      <NodeResizer minWidth={320} minHeight={320} maxWidth={700} maxHeight={700} isVisible={selected} />
+      <FoldderNodeResizer minWidth={320} minHeight={320} maxWidth={700} maxHeight={700} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Background Remover" />
       <div className="handle-wrapper handle-left">
-        <Handle type="target" position={Position.Left} id="media" className="handle-image" />
+        <FoldderDataHandle type="target" position={Position.Left} id="media" dataType="image" />
         <span className="handle-label">Media Input</span>
       </div>
       
@@ -4860,15 +4887,15 @@ export const BackgroundRemoverNode = memo(({ id, data, selected }: NodeProps<any
 
       <div className="flex flex-col gap-2 absolute right-[-14px] top-[40px] nodrag">
           <div className="relative group/h mb-4">
-             <Handle type="source" position={Position.Right} id="mask" className="handle-mask !right-0 shadow-[0_0_10px_rgba(34,211,238,0.5)] cursor-crosshair" />
+             <FoldderDataHandle type="source" position={Position.Right} id="mask" dataType="mask" className="!right-0 shadow-[0_0_10px_rgba(34,211,238,0.5)] cursor-crosshair" />
              <span className="absolute left-6 top-1/2 -translate-y-1/2 text-[7px] font-black uppercase text-cyan-400 bg-black/90 px-1 border border-cyan-400/20 rounded opacity-0 group-hover/h:opacity-100 transition-opacity whitespace-nowrap">MASK</span>
           </div>
           <div className="relative group/h mb-4">
-             <Handle type="source" position={Position.Right} id="rgba" className="handle-image !right-0 shadow-[0_0_10px_rgba(236,72,153,0.5)] cursor-crosshair" />
+             <FoldderDataHandle type="source" position={Position.Right} id="rgba" dataType="image" className="!right-0 shadow-[0_0_10px_rgba(236,72,153,0.5)] cursor-crosshair" />
              <span className="absolute left-6 top-1/2 -translate-y-1/2 text-[7px] font-black uppercase text-pink-500 bg-black/90 px-1 border border-pink-500/20 rounded opacity-0 group-hover/h:opacity-100 transition-opacity whitespace-nowrap">CUTOUT</span>
           </div>
           <div className="relative group/h">
-             <Handle type="source" position={Position.Right} id="bbox" className="handle-txt !right-0 shadow-[0_0_10px_rgba(245,158,11,0.5)] cursor-crosshair" />
+             <FoldderDataHandle type="source" position={Position.Right} id="bbox" dataType="txt" className="!right-0 shadow-[0_0_10px_rgba(245,158,11,0.5)] cursor-crosshair" />
              <span className="absolute left-6 top-1/2 -translate-y-1/2 text-[7px] font-black uppercase text-amber-500 bg-slate-100/50 px-1 border border-amber-500/20 rounded opacity-0 group-hover/h:opacity-100 transition-opacity whitespace-nowrap">BBOX</span>
           </div>
       </div>
@@ -5122,13 +5149,13 @@ export const SpaceNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
       {/* Main node card */}
       <div className={`custom-node space-node border-cyan-500/30` } style={{ position: 'relative', zIndex: 0 }}>
-            <NodeResizer minWidth={280} minHeight={180} isVisible={selected} />
+            <FoldderNodeResizer minWidth={280} minHeight={180} isVisible={selected} />
 <NodeLabel id={id} label={nodeData.label} defaultLabel="Space" />
       
       {/* Input handle only if space has an internal InputNode */}
       {nodeData.hasInput !== false && (
         <div className="handle-wrapper handle-left">
-          <Handle type="target" position={Position.Left} id="in" className={getInputHandleClass()} />
+          <FoldderDataHandle type="target" position={Position.Left} id="in" dataType={foldderDataTypeFromHandleClass(getInputHandleClass())} />
           <span className="handle-label">Data In</span>
         </div>
       )}
@@ -5188,7 +5215,7 @@ export const SpaceNode = memo(({ id, data, selected }: NodeProps<any>) => {
       {nodeData.hasOutput !== false && (
         <div className="handle-wrapper handle-right">
           <span className="handle-label">Result Out</span>
-          <Handle type="source" position={Position.Right} id="out" className={getHandleClass()} />
+          <FoldderDataHandle type="source" position={Position.Right} id="out" dataType={foldderDataTypeFromHandleClass(getHandleClass())} />
         </div>
       )}
     </div>
@@ -5225,7 +5252,7 @@ export const SpaceInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   return (
     <div className={`custom-node space-io-node ${theme.border}`}>
-            <NodeResizer minWidth={200} minHeight={120} isVisible={selected} />
+            <FoldderNodeResizer minWidth={200} minHeight={120} isVisible={selected} />
 <NodeLabel id={id} label={nodeData.label} defaultLabel="Input" />
       <div className="node-header">
         <NodeIcon type="spaceInput" selected={selected} size={16} />
@@ -5238,7 +5265,7 @@ export const SpaceInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
         <span className="text-[9px] font-black text-gray-500 uppercase tracking-widest">Entry Point</span>
       </div>
       <div className="handle-wrapper handle-right">
-        <Handle type="source" position={Position.Right} id="out" className={getHandleClass()} />
+        <FoldderDataHandle type="source" position={Position.Right} id="out" dataType={foldderDataTypeFromHandleClass(getHandleClass())} />
       </div>
     </div>
   );
@@ -5277,11 +5304,11 @@ export const SpaceOutputNode = memo(({ id, data, selected }: NodeProps<any>) => 
 
   return (
     <div className={`custom-node space-io-node ${theme.border}`} style={{ padding: 0, overflow: 'visible', minWidth: 200 }}>
-            <NodeResizer minWidth={200} minHeight={120} isVisible={selected} />
+            <FoldderNodeResizer minWidth={200} minHeight={120} isVisible={selected} />
 <NodeLabel id={id} label={nodeData.label} defaultLabel="Output" />
 
       <div className="handle-wrapper handle-left">
-        <Handle type="target" position={Position.Left} id="in" className={getHandleClass()} />
+        <FoldderDataHandle type="target" position={Position.Left} id="in" dataType={foldderDataTypeFromHandleClass(getHandleClass())} />
       </div>
 
       {/* Header */}
@@ -5418,9 +5445,9 @@ export const MediaDescriberNode = memo(({ id, data, selected }: NodeProps<any>) 
 
   return (
     <div className={`custom-node describer-node ${status === 'running' ? 'node-glow-running' : ''}`} style={{ minWidth: 300 }}>
-      <NodeResizer minWidth={300} minHeight={300} maxWidth={700} maxHeight={720} isVisible={selected} />
+      <FoldderNodeResizer minWidth={300} minHeight={300} maxWidth={700} maxHeight={720} isVisible={selected} />
       <div className="handle-wrapper handle-left">
-        <Handle type="target" position={Position.Left} id="media" />
+        <FoldderDataHandle type="target" position={Position.Left} id="media" dataType="image" />
         <span className="handle-label">Media in</span>
       </div>
       
@@ -5451,7 +5478,7 @@ export const MediaDescriberNode = memo(({ id, data, selected }: NodeProps<any>) 
 
       <div className="handle-wrapper handle-right">
         <span className="handle-label">Description (Prompt)</span>
-        <Handle type="source" position={Position.Right} id="prompt" className="handle-prompt" />
+        <FoldderDataHandle type="source" position={Position.Right} id="prompt" dataType="prompt" />
       </div>
     </div>
   );
@@ -5595,24 +5622,24 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
 
   return (
     <div className={`custom-node processor-node ${status === 'running' ? 'node-glow-running' : ''}`} style={{ minWidth: 320 }}>
-      <NodeResizer minWidth={320} minHeight={320} isVisible={selected} />
+      <FoldderNodeResizer minWidth={320} minHeight={320} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Gemini Video" />
 
       {/* Handles */}
       <div className="handle-wrapper handle-left !top-[20%]">
-        <Handle type="target" position={Position.Left} id="firstFrame" className="handle-image" />
+        <FoldderDataHandle type="target" position={Position.Left} id="firstFrame" dataType="image" />
         <span className="handle-label text-emerald-600">First Frame</span>
       </div>
       <div className="handle-wrapper handle-left !top-[38%]">
-        <Handle type="target" position={Position.Left} id="lastFrame" className="handle-image" />
+        <FoldderDataHandle type="target" position={Position.Left} id="lastFrame" dataType="image" />
         <span className="handle-label text-emerald-600">Last Frame</span>
       </div>
       <div className="handle-wrapper handle-left !top-[56%]">
-        <Handle type="target" position={Position.Left} id="prompt" className="handle-prompt" />
+        <FoldderDataHandle type="target" position={Position.Left} id="prompt" dataType="prompt" />
         <span className="handle-label text-emerald-600">Prompt</span>
       </div>
       <div className="handle-wrapper handle-left !top-[74%]">
-        <Handle type="target" position={Position.Left} id="negativePrompt" className="handle-prompt border-rose-500/50" />
+        <FoldderDataHandle type="target" position={Position.Left} id="negativePrompt" dataType="prompt" className="border-rose-500/50" />
         <span className="handle-label text-rose-600">Negative</span>
       </div>
 
@@ -5705,7 +5732,7 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
 
       <div className="handle-wrapper handle-right" style={{ top: '50%' }}>
         <span className="handle-label text-cyan-400">Video Out</span>
-        <Handle type="source" position={Position.Right} id="video" className="handle-video" />
+        <FoldderDataHandle type="source" position={Position.Right} id="video" dataType="video" />
       </div>
     </div>
   );
@@ -5990,18 +6017,18 @@ export const PainterNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   return (
     <div className={`custom-node bg-[#141414] border-amber-900/30` } style={{ padding: 0, overflow: 'visible', minWidth: 280, minHeight: 280 }}>
-      <NodeResizer minWidth={280} minHeight={280} isVisible={selected} />
+      <FoldderNodeResizer minWidth={280} minHeight={280} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Painter" />
 
       <div className="handle-wrapper handle-left" style={{ top: '50%' }}>
-        <Handle type="target" position={Position.Left} id="image" className="handle-image" />
+        <FoldderDataHandle type="target" position={Position.Left} id="image" dataType="image" />
         <span className="handle-label">Base</span>
       </div>
 
       <div className="node-header bg-gradient-to-r from-amber-800/20 to-orange-900/20">
         <NodeIcon type="painter" selected={selected} size={16} />
         <span>Painter</span>
-        <span className="text-[7px] font-black uppercase tracking-widest text-amber-600/60 ml-auto">{ratio.label}</span>
+        <span className="text-[7px] font-black uppercase tracking-widest text-white/65 ml-auto">{ratio.label}</span>
       </div>
 
       {/* Small node: preview image only — no painting here */}
@@ -6050,7 +6077,7 @@ export const PainterNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
       <div className="handle-wrapper handle-right" style={{ top: '50%' }}>
         <span className="handle-label">Output</span>
-        <Handle type="source" position={Position.Right} id="image" className="handle-image" />
+        <FoldderDataHandle type="source" position={Position.Right} id="image" dataType="image" />
       </div>
 
       {/* Fullscreen — portal to body so it covers everything */}
@@ -6291,11 +6318,11 @@ export const CropNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   return (
     <div className={`custom-node bg-[#1e1e1e] border-slate-700 w-[340px]` }>
-            <NodeResizer minWidth={320} minHeight={340} isVisible={selected} />
+            <FoldderNodeResizer minWidth={320} minHeight={340} isVisible={selected} />
 <NodeLabel id={id} label={nodeData.label} defaultLabel="Crop Asset" />
       
       <div className="handle-wrapper handle-left">
-        <Handle type="target" position={Position.Left} id="image" className="handle-image" />
+        <FoldderDataHandle type="target" position={Position.Left} id="image" dataType="image" />
         <span className="handle-label text-emerald-500">Source Image</span>
       </div>
 
@@ -6383,7 +6410,7 @@ export const CropNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
       <div className="handle-wrapper handle-right">
         <span className="handle-label text-cyan-500">Cropped Out</span>
-        <Handle type="source" position={Position.Right} id="image" className="handle-image" />
+        <FoldderDataHandle type="source" position={Position.Right} id="image" dataType="image" />
       </div>
     </div>
   );
@@ -6696,10 +6723,10 @@ export const BezierMaskNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   return (
     <div className={`custom-node mask-node w-[360px]`}>
-            <NodeResizer minWidth={360} minHeight={400} isVisible={selected} />
+            <FoldderNodeResizer minWidth={360} minHeight={400} isVisible={selected} />
 <NodeLabel id={id} label={nodeData.label} defaultLabel="Bezier Mask" />
       <div className="handle-wrapper handle-left">
-        <Handle type="target" position={Position.Left} id="image" className="handle-image" />
+        <FoldderDataHandle type="target" position={Position.Left} id="image" dataType="image" />
         <span className="handle-label">Media Input</span>
       </div>
       
@@ -6708,7 +6735,7 @@ export const BezierMaskNode = memo(({ id, data, selected }: NodeProps<any>) => {
         <span>Bezier Mask</span>
         <button 
           onClick={() => setIsStudioOpen(true)}
-          className="ml-auto bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-tighter hover:bg-cyan-500/30 transition-all flex items-center gap-1.5"
+          className="ml-auto bg-white/12 text-white border border-white/20 px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-tighter hover:bg-white/20 transition-all flex items-center gap-1.5"
         >
           <Maximize2 size={10} /> Studio Mode
         </button>
@@ -6765,11 +6792,11 @@ export const BezierMaskNode = memo(({ id, data, selected }: NodeProps<any>) => {
       {/* OUTPUT HANDLES - Same absolute style as BackgroundRemoverNode */}
       <div className="flex flex-col gap-2 absolute right-[-14px] top-[40px] nodrag">
         <div className="relative group/h mb-4">
-          <Handle type="source" position={Position.Right} id="mask" className="handle-mask !right-0 shadow-[0_0_10px_rgba(148,163,184,0.5)] cursor-crosshair" />
+          <FoldderDataHandle type="source" position={Position.Right} id="mask" dataType="mask" className="!right-0 shadow-[0_0_10px_rgba(148,163,184,0.5)] cursor-crosshair" />
           <span className="absolute left-6 top-1/2 -translate-y-1/2 text-[7px] font-black uppercase text-slate-400 bg-black/90 px-1 border border-slate-400/20 rounded opacity-0 group-hover/h:opacity-100 transition-opacity whitespace-nowrap">MASK</span>
         </div>
         <div className="relative group/h">
-          <Handle type="source" position={Position.Right} id="rgba" className="handle-image !right-0 shadow-[0_0_10px_rgba(6,182,212,0.5)] cursor-crosshair" />
+          <FoldderDataHandle type="source" position={Position.Right} id="rgba" dataType="image" className="!right-0 shadow-[0_0_10px_rgba(6,182,212,0.5)] cursor-crosshair" />
           <span className="absolute left-6 top-1/2 -translate-y-1/2 text-[7px] font-black uppercase text-cyan-400 bg-black/90 px-1 border border-cyan-400/20 rounded opacity-0 group-hover/h:opacity-100 transition-opacity whitespace-nowrap">RGBA</span>
         </div>
       </div>

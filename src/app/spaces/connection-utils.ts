@@ -322,7 +322,8 @@ export function planDuplicateBelowMultiInput(
 
 /**
  * Busca posición top-left para un nodo nuevo sin solapar cajas aproximadas de los existentes.
- * Parte del mismo anclaje que addNodeAtCenter (centro − offset) y espira hacia fuera si hace falta.
+ * Parte del mismo anclaje que addNodeAtCenter (centro − offset). Si el hueco preferido está ocupado,
+ * explora primero hacia la derecha (misma fila), luego izquierda, luego filas arriba/abajo, y al final espiral.
  */
 export function findEmptyPositionForNewNode(
   newType: string,
@@ -356,6 +357,34 @@ export function findEmptyPositionForNewNode(
 
   if (!overlapsPlacement(baseX, baseY)) {
     return { x: baseX, y: baseY };
+  }
+
+  const stride = Math.max(40, Math.min(72, Math.round(nw * 0.22)));
+  const maxHorizontalSteps = 220;
+
+  for (let k = 1; k <= maxHorizontalSteps; k++) {
+    const xr = baseX + k * stride;
+    if (!overlapsPlacement(xr, baseY)) return { x: xr, y: baseY };
+  }
+  for (let k = 1; k <= maxHorizontalSteps; k++) {
+    const xl = baseX - k * stride;
+    if (!overlapsPlacement(xl, baseY)) return { x: xl, y: baseY };
+  }
+
+  const rowStride = Math.max(stride, Math.round(nh * 0.45));
+  for (let row = 1; row <= 80; row++) {
+    for (const sign of [1, -1] as const) {
+      const yRow = baseY + sign * row * rowStride;
+      if (!overlapsPlacement(baseX, yRow)) return { x: baseX, y: yRow };
+      for (let k = 1; k <= maxHorizontalSteps; k++) {
+        const xr = baseX + k * stride;
+        if (!overlapsPlacement(xr, yRow)) return { x: xr, y: yRow };
+      }
+      for (let k = 1; k <= maxHorizontalSteps; k++) {
+        const xl = baseX - k * stride;
+        if (!overlapsPlacement(xl, yRow)) return { x: xl, y: yRow };
+      }
+    }
   }
 
   for (let i = 1; i < 6000; i++) {

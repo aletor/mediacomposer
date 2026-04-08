@@ -7,7 +7,7 @@ import { NodeIcon } from "./foldder-icons";
 /** Iconos en la barra flotante (solo glyphs, sin texto) — ~30% más pequeños que el tamaño “grande” previo */
 export const TOPBAR_PIN_ICON_SIZE = 28;
 
-const PIN_ICON_COLOR = "#171717";
+const PIN_ICON_COLOR = '#171717';
 
 export const MAX_TOPBAR_PINS = 5;
 export const TOPBAR_PINS_STORAGE_KEY = "foldder-topbar-pins";
@@ -29,6 +29,8 @@ type TopbarPinsProps = {
   onLibraryDragEnd?: () => void;
   /** Doble clic: añadir nodo al lienzo en hueco y encuadrar */
   onPinDoubleClick?: (nodeType: string) => void;
+  /** Arrastre desde librería/topbar: sin tooltip hover del pin */
+  paletteDragActive?: boolean;
   /** Dentro de una barra con borde padre: sin caja interior duplicada */
   embedded?: boolean;
   /** Segunda fila bajo el agente: ancho según contenido, centrado, estilo librería */
@@ -68,6 +70,7 @@ type PinChipProps = {
   onLibraryDragStart?: (nodeType: string) => void;
   onLibraryDragEnd?: () => void;
   onPinDoubleClick?: (nodeType: string) => void;
+  paletteDragActive?: boolean;
 };
 
 function TopbarPinChip({
@@ -79,6 +82,7 @@ function TopbarPinChip({
   onLibraryDragStart,
   onLibraryDragEnd,
   onPinDoubleClick,
+  paletteDragActive = false,
 }: PinChipProps) {
   return (
     <div className="relative shrink-0 group/pin pt-3 -mt-3 pb-0.5 overflow-visible">
@@ -116,7 +120,7 @@ function TopbarPinChip({
           className="shrink-0"
         />
       </div>
-      <PinHoverCard label={label} />
+      {!paletteDragActive && <PinHoverCard label={label} />}
     </div>
   );
 }
@@ -128,6 +132,7 @@ export function TopbarPins({
   onLibraryDragStart,
   onLibraryDragEnd,
   onPinDoubleClick,
+  paletteDragActive = false,
   embedded = false,
   fullWidthRow = false,
 }: TopbarPinsProps) {
@@ -200,6 +205,7 @@ export function TopbarPins({
                 onLibraryDragStart={onLibraryDragStart}
                 onLibraryDragEnd={onLibraryDragEnd}
                 onPinDoubleClick={onPinDoubleClick}
+                paletteDragActive={paletteDragActive}
               />
             );
           }
@@ -215,6 +221,7 @@ export function TopbarPins({
               onLibraryDragStart={onLibraryDragStart}
               onLibraryDragEnd={onLibraryDragEnd}
               onPinDoubleClick={onPinDoubleClick}
+              paletteDragActive={paletteDragActive}
             />
           );
         })}

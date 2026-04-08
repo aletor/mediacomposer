@@ -92,7 +92,17 @@ type SidebarProps = {
   /** Si true, el panel no se abre por hover hasta que el ratón entre en la franja izquierda */
   sidebarLockedCollapsed?: boolean;
   onSidebarStripMouseEnter?: () => void;
+  /** Arrastre desde librería/topbar: sin tooltips de ayuda rollover */
+  paletteDragActive?: boolean;
 };
+
+function SidebarLibraryNodeIcon({ type, size = 25 }: { type: string; size?: number }) {
+  return (
+    <span className="inline-flex items-center justify-center drop-shadow-[0_1px_3px_rgba(0,0,0,0.5)]">
+      <NodeIcon type={type} size={size} colorOverride="#ffffff" />
+    </span>
+  );
+}
 
 const Sidebar = ({
   windowMode = false,
@@ -101,6 +111,7 @@ const Sidebar = ({
   onLibraryTileDoubleClick,
   sidebarLockedCollapsed = false,
   onSidebarStripMouseEnter,
+  paletteDragActive = false,
 }: SidebarProps) => {
   const [libraryTip, setLibraryTip] = useState<{
     type: string;
@@ -120,8 +131,15 @@ const Sidebar = ({
 
   useEffect(() => () => clearLibraryTipTimer(), [clearLibraryTipTimer]);
 
+  useEffect(() => {
+    if (!paletteDragActive) return;
+    clearLibraryTipTimer();
+    setLibraryTip(null);
+  }, [paletteDragActive, clearLibraryTipTimer]);
+
   const onLibraryTileEnter = useCallback(
     (e: React.MouseEvent<HTMLDivElement>, nodeType: string) => {
+      if (paletteDragActive) return;
       if (!SIDEBAR_HOVER_HELP[nodeType]) return;
       clearLibraryTipTimer();
       const el = e.currentTarget;
@@ -130,7 +148,7 @@ const Sidebar = ({
         setLibraryTip({ type: nodeType, ...libraryTooltipPosition(el) });
       }, LIBRARY_TIP_SHOW_DELAY_MS);
     },
-    [clearLibraryTipTimer]
+    [clearLibraryTipTimer, paletteDragActive]
   );
 
   const onLibraryTileLeave = useCallback(() => {
@@ -222,7 +240,7 @@ const Sidebar = ({
           left: '6px',
           fontSize: '7px',
           fontWeight: 900,
-          color: '#94a3b8',
+          color: 'rgba(255,255,255,0.5)',
           lineHeight: 1,
           letterSpacing: '0.05em',
           fontFamily: 'monospace',
@@ -308,8 +326,8 @@ const Sidebar = ({
               }}
               className="hover:bg-white/10 hover:border-white/20 active:scale-95"
             >
-              <NodeIcon type={item.type} size={28} />
-              <span style={{ fontSize: 9.8, fontWeight: 700, color: 'rgba(255,255,255,0.45)', letterSpacing: '0.04em', lineHeight: 1 }}>
+              <SidebarLibraryNodeIcon type={item.type} size={28} />
+              <span style={{ fontSize: 9.8, fontWeight: 700, color: 'rgba(255,255,255,0.92)', letterSpacing: '0.04em', lineHeight: 1, textShadow: '0 1px 2px rgba(0,0,0,0.35)' }}>
                 {item.label}
               </span>
             </div>
@@ -355,21 +373,21 @@ const Sidebar = ({
       >
         <div className="h-full w-[200px] bg-white/5 backdrop-blur-2xl border-r border-white/8 flex flex-col min-h-0 shadow-[4px_0_40px_rgba(0,0,0,0.4)]">
           <div className="px-3 mb-4 pt-4 flex-1 min-h-0 overflow-y-auto custom-scrollbar">
-            <div className="text-[10px] font-black text-slate-500 uppercase tracking-[3px] mb-5 flex items-center gap-2 px-1">
-              <NodeIconMono iconKey="layout" size={13} className="shrink-0 text-slate-400" /> <span>Node Library</span>
+            <div className="text-[10px] font-black text-white/60 uppercase tracking-[3px] mb-5 flex items-center gap-2 px-1">
+              <NodeIconMono iconKey="layout" size={13} className="shrink-0 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" /> <span>Node Library</span>
             </div>
 
             {/* 📥 INGESTA */}
             <div className="mb-6">
-              <h3 className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-3 px-1 flex items-center gap-1.5 whitespace-nowrap overflow-hidden">
-                <NodeIconMono iconKey="asset" size={10} className="shrink-0" /> <span>Ingesta</span>
+              <h3 className="text-[8px] font-black text-white/55 uppercase tracking-widest mb-3 px-1 flex items-center gap-1.5 whitespace-nowrap overflow-hidden">
+                <NodeIconMono iconKey="asset" size={10} className="shrink-0 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" /> <span>Ingesta</span>
               </h3>
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  { type: 'mediaInput',  label: 'Asset',  color: 'text-emerald-400' },
-                  { type: 'promptInput', label: 'Prompt', color: 'text-emerald-400' },
-                  { type: 'background',  label: 'Canvas', color: 'text-emerald-400' },
-                  { type: 'urlImage',    label: 'Web',    color: 'text-emerald-400' },
+                  { type: 'mediaInput',  label: 'Asset' },
+                  { type: 'promptInput', label: 'Prompt' },
+                  { type: 'background',  label: 'Canvas' },
+                  { type: 'urlImage',    label: 'Web' },
                 ].map(item => (
                   <div key={item.type}
                     className="dndnode relative flex flex-col items-center justify-center gap-1 py-3 px-2 !bg-white/20 hover:!bg-white/30 border border-white/25 hover:border-emerald-400/50 rounded-2xl cursor-grab active:scale-95 transition-all text-center aspect-square"
@@ -380,8 +398,8 @@ const Sidebar = ({
                     aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type]}.`}
                   >
                     <KeyBadge nodeType={item.type} />
-                    <span className={item.color}><NodeIcon type={item.type} size={25} /></span>
-                    <span className="text-[9.8px] font-black text-slate-700">{item.label}</span>
+                    <SidebarLibraryNodeIcon type={item.type} />
+                    <span className="text-[9.8px] font-black text-white/95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.35)]">{item.label}</span>
                     <TypeIndicators nodeType={item.type} />
                   </div>
                 ))}
@@ -390,17 +408,17 @@ const Sidebar = ({
 
             {/* 🧠 INTELIGENCIA */}
             <div className="mb-6">
-              <h3 className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-3 px-1 flex items-center gap-1.5">
-                <NodeIconMono iconKey="grok" size={10} className="shrink-0" /> <span>Inteligencia</span>
+              <h3 className="text-[8px] font-black text-white/55 uppercase tracking-widest mb-3 px-1 flex items-center gap-1.5">
+                <NodeIconMono iconKey="grok" size={10} className="shrink-0 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" /> <span>Inteligencia</span>
               </h3>
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  { type: 'backgroundRemover', label: 'Matting', color: 'text-cyan-400' },
-                  { type: 'mediaDescriber',    label: 'Eye',     color: 'text-cyan-400' },
-                  { type: 'enhancer',          label: 'Enhance', color: 'text-cyan-400' },
-                  { type: 'grokProcessor',     label: 'Grok',    color: 'text-cyan-400' },
-                  { type: 'nanoBanana',        label: 'Nano',    color: 'text-cyan-400' },
-                  { type: 'geminiVideo',       label: 'Veo 3.1', color: 'text-cyan-400' },
+                  { type: 'backgroundRemover', label: 'Matting' },
+                  { type: 'mediaDescriber',    label: 'Eye' },
+                  { type: 'enhancer',          label: 'Enhance' },
+                  { type: 'grokProcessor',     label: 'Grok' },
+                  { type: 'nanoBanana',        label: 'Nano' },
+                  { type: 'geminiVideo',       label: 'Veo 3.1' },
                 ].map(item => (
                   <div key={item.type}
                     className="dndnode relative flex flex-col items-center justify-center gap-1 py-3 px-2 !bg-white/20 hover:!bg-white/30 border border-white/25 hover:border-cyan-400/50 rounded-2xl cursor-grab active:scale-95 transition-all text-center aspect-square"
@@ -411,8 +429,8 @@ const Sidebar = ({
                     aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type]}.`}
                   >
                     <KeyBadge nodeType={item.type} />
-                    <span className={item.color}><NodeIcon type={item.type} size={25} /></span>
-                    <span className="text-[9.8px] font-black text-slate-700">{item.label}</span>
+                    <SidebarLibraryNodeIcon type={item.type} />
+                    <span className="text-[9.8px] font-black text-white/95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.35)]">{item.label}</span>
                     <TypeIndicators nodeType={item.type} />
                   </div>
                 ))}
@@ -421,15 +439,15 @@ const Sidebar = ({
 
             {/* 🧩 LÓGICA */}
             <div className="mb-6">
-              <h3 className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-3 px-1 flex items-center gap-1.5">
-                <NodeIconMono iconKey="concat" size={10} className="shrink-0" /> <span>Lógica</span>
+              <h3 className="text-[8px] font-black text-white/55 uppercase tracking-widest mb-3 px-1 flex items-center gap-1.5">
+                <NodeIconMono iconKey="concat" size={10} className="shrink-0 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" /> <span>Lógica</span>
               </h3>
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  { type: 'concatenator', label: 'Concat', color: 'text-blue-400' },
-                  { type: 'space',        label: 'Space',  color: 'text-blue-400' },
-                  { type: 'spaceInput',   label: 'Entry', color: 'text-blue-400' },
-                  { type: 'spaceOutput',  label: 'Exit',  color: 'text-blue-400' },
+                  { type: 'concatenator', label: 'Concat' },
+                  { type: 'space',        label: 'Space' },
+                  { type: 'spaceInput',   label: 'Entry' },
+                  { type: 'spaceOutput',  label: 'Exit' },
                 ].map(item => (
                   <div key={item.type}
                     className="dndnode relative flex flex-col items-center justify-center gap-1 py-3 px-2 !bg-white/20 hover:!bg-white/30 border border-white/25 hover:border-blue-400/50 rounded-2xl cursor-grab active:scale-95 transition-all text-center aspect-square"
@@ -440,8 +458,8 @@ const Sidebar = ({
                     aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type]}.`}
                   >
                     <KeyBadge nodeType={item.type} />
-                    <span className={item.color}><NodeIcon type={item.type} size={25} /></span>
-                    <span className="text-[9.8px] font-black text-slate-700">{item.label}</span>
+                    <SidebarLibraryNodeIcon type={item.type} />
+                    <span className="text-[9.8px] font-black text-white/95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.35)]">{item.label}</span>
                     <TypeIndicators nodeType={item.type} />
                   </div>
                 ))}
@@ -450,17 +468,17 @@ const Sidebar = ({
 
             {/* 🎨 COMPOSICIÓN */}
             <div className="mb-3">
-              <h3 className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-3 px-1 flex items-center gap-1.5">
-                <NodeIconMono iconKey="canvas" size={10} className="shrink-0" /> <span>Composición</span>
+              <h3 className="text-[8px] font-black text-white/55 uppercase tracking-widest mb-3 px-1 flex items-center gap-1.5">
+                <NodeIconMono iconKey="canvas" size={10} className="shrink-0 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" /> <span>Composición</span>
               </h3>
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  { type: 'imageComposer', label: 'Layout',  color: 'text-amber-400' },
-                  { type: 'imageExport',   label: 'Export',  color: 'text-amber-400' },
-                  { type: 'painter',       label: 'Painter', color: 'text-amber-400' },
-                  { type: 'textOverlay',   label: 'Text',    color: 'text-amber-400' },
-                  { type: 'crop',          label: 'Crop',    color: 'text-amber-400' },
-                  { type: 'bezierMask',    label: 'Bezier',  color: 'text-amber-400' },
+                  { type: 'imageComposer', label: 'Layout' },
+                  { type: 'imageExport',   label: 'Export' },
+                  { type: 'painter',       label: 'Painter' },
+                  { type: 'textOverlay',   label: 'Text' },
+                  { type: 'crop',          label: 'Crop' },
+                  { type: 'bezierMask',    label: 'Bezier' },
                 ].map(item => (
                   <div key={item.type}
                     className="dndnode relative flex flex-col items-center justify-center gap-1 py-3 px-2 !bg-white/20 hover:!bg-white/30 border border-white/25 hover:border-amber-400/50 rounded-2xl cursor-grab active:scale-95 transition-all text-center aspect-square"
@@ -471,8 +489,8 @@ const Sidebar = ({
                     aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type]}.`}
                   >
                     <KeyBadge nodeType={item.type} />
-                    <span className={item.color}><NodeIcon type={item.type} size={25} /></span>
-                    <span className="text-[9.8px] font-black text-slate-700">{item.label}</span>
+                    <SidebarLibraryNodeIcon type={item.type} />
+                    <span className="text-[9.8px] font-black text-white/95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.35)]">{item.label}</span>
                     <TypeIndicators nodeType={item.type} />
                   </div>
                 ))}

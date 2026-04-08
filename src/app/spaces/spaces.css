@@ -143,14 +143,22 @@
   letter-spacing: 0.1em;
   font-size: 0.7rem;
   text-transform: uppercase;
-  color: #1a1a1b;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
   border-top-left-radius: 24px;
   border-top-right-radius: 24px;
 }
 
 .node-header svg:not(.foldder-node-icon) {
-  opacity: 0.8;
-  filter: drop-shadow(0 0 8px currentColor);
+  opacity: 0.95;
+  color: #fff;
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.5));
+}
+
+.node-header svg.foldder-node-icon {
+  color: #fff !important;
+  opacity: 1 !important;
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.5)) !important;
 }
 
 /* Foldder node icons: hover on card, micro scale + clarity (see foldder-icons.tsx) */
@@ -176,12 +184,13 @@
 
 .node-header .node-badge {
   margin-left: auto;
-  background: rgba(0, 0, 0, 0.05);
+  background: rgba(0, 0, 0, 0.2);
   padding: 3px 10px;
   border-radius: 8px;
   font-size: 7px;
   font-weight: 900;
-  color: #64748b;
+  color: rgba(255, 255, 255, 0.88);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.45);
   letter-spacing: 0.15em;
 }
 
@@ -256,16 +265,6 @@
   transform: scale(1.3);
 }
 
-/* Specific Node Types */
-.media-node .node-header { color: #f43f5e; }
-.prompt-node .node-header { color: #3b82f6; }
-.processor-node .node-header { color: #a855f7; }
-.tool-node .node-header { color: #10b981; }
-.mask-node .node-header { color: #06b6d4; }
-.describer-node .node-header { color: #6366f1; }
-.background-node .node-header { color: #f59e0b; }
-.composer-node .node-header { color: #06b6d4; }
-
 /* El preview usa un dataURL 1920×1080: sin min-width:0 el flex del nodo hereda ancho intrínseco enorme */
 .composer-node {
   min-width: 0;
@@ -314,46 +313,59 @@
 .processor-node .action-btn, .processor-node .execute-btn { background: linear-gradient(135deg, #a855f7, #9333ea); }
 .tool-node .action-btn, .tool-node .execute-btn { background: linear-gradient(135deg, #10b981, #059669); }
 .mask-node .action-btn, .mask-node .execute-btn { background: linear-gradient(135deg, #06b6d4, #0891b2); }
-/* Space cards: texto oscuro sobre cabecera clara (legible en lienzo blanco / cristal) */
+/* Space: cabecera oscura para mantener título/icono blancos legibles */
 .space-node .node-header {
-  color: #0f172a;
-  background: rgba(255, 255, 255, 0.72);
-  border-bottom-color: rgba(15, 23, 42, 0.08);
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  background: rgba(15, 23, 42, 0.5);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
 }
 .space-io-node .node-header {
-  color: #0f172a;
-  background: rgba(255, 255, 255, 0.72);
-  border-bottom-color: rgba(15, 23, 42, 0.08);
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  background: rgba(15, 23, 42, 0.5);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
 }
 .space-io-node.border-rose-500\/30 .node-header {
-  color: #0f172a;
-  background: rgba(255, 255, 255, 0.72);
-  border-bottom-color: rgba(15, 23, 42, 0.08);
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  background: rgba(15, 23, 42, 0.5);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
 }
 
-/* Handle styling */
+/* Handle styling — icono justo fuera del borde del nodo, mismo hueco izq./der. */
 .handle-wrapper {
   position: absolute;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   pointer-events: none;
   z-index: 10;
+  width: max-content;
 }
 
-.handle-left {
-  left: 0;
-  transform: translateX(-50%);
-  flex-direction: row;
+/* Izquierda: borde derecho del bloque alineado al borde izquierdo del nodo; contenido crece hacia la izquierda.
+   Orden DOM suele ser [Handle, Label] → row-reverse pone la etiqueta más al exterior que el handle. */
+.handle-wrapper.handle-left {
+  right: 100%;
+  left: auto;
+  margin-right: var(--foldder-handle-outside-gap);
+  flex-direction: row-reverse;
 }
 
-.handle-right {
-  right: 0;
-  transform: translateX(50%);
+/* Derecha: borde izquierdo del bloque al borde derecho del nodo; contenido hacia la derecha.
+   Orden DOM [Label, Handle] + row-reverse → handle junto al nodo, etiqueta fuera. */
+.handle-wrapper.handle-right {
+  left: 100%;
+  right: auto;
+  margin-left: var(--foldder-handle-outside-gap);
   flex-direction: row-reverse;
 }
 
 .handle-label {
+  position: relative;
+  z-index: 50;
+  flex-shrink: 0;
   font-size: 7px;
   font-weight: 900;
   color: #1e293b;
@@ -365,27 +377,32 @@
   border-radius: 6px;
   white-space: nowrap;
   opacity: 0;
-  transition: all 0.3s;
+  transition: opacity 0.25s ease, transform 0.25s ease;
   box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+  pointer-events: none;
 }
 
 .custom-node:hover .handle-label {
   opacity: 1;
-  transform: translateY(-12px);
+  transform: translateY(-10px);
+}
+
+/* Etiqueta a la derecha del nodo: sube en la misma dirección sin solapar el icono */
+.handle-wrapper.handle-right .handle-label {
+  transform-origin: center bottom;
 }
 
 /* Sincronizada desde page.tsx (onMove / rueda sobre inputs) — compensa zoom del lienzo */
 :root {
+  --foldder-handle-outside-gap: 6px;
   --foldder-viewport-zoom: 0.7;
   /* Por debajo de este zoom (60%), los handles dejan de compensarse del todo y encogen en pantalla con el nodo */
   --foldder-handle-zoom-floor: 0.6;
 }
 
 /* Tamaño ~constante en pantalla vía dimensiones en flujo (sin scale en el handle).
-   scale() rompía el cálculo de posiciones de aristas en React Flow (cables invisibles / mal alineados).
-   Con zoom >= --foldder-handle-zoom-floor: divisor = zoom (tamaño visual estable).
-   Con zoom menor: divisor = suelo → tamaño en pantalla ∝ zoom (como el nodo). */
-.react-flow__handle {
+   Legacy: puntos circulares si algún handle no usa .foldder-data-handle */
+.react-flow__handle:not(.foldder-data-handle) {
   width: calc(17px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 0.6))) !important;
   height: calc(17px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 0.6))) !important;
   border-radius: 50% !important;
@@ -397,16 +414,79 @@
   box-shadow: none;
 }
 
-.handle-prompt { border-color: #3b82f6 !important; }
-.handle-video  { border-color: #f43f5e !important; }
-.handle-image  { border-color: #ec4899 !important; }
-.handle-sound  { border-color: #a855f7 !important; }
-.handle-mask   { border-color: #06b6d4 !important; }
-.handle-pdf    { border-color: #f97316 !important; }
-.handle-txt    { border-color: #f59e0b !important; }
-.handle-url    { border-color: #10b981 !important; }
-.handle-rose   { border-color: #f43f5e !important; }
-.handle-emerald{ border-color: #10b981 !important; }
+.react-flow__handle:not(.foldder-data-handle).handle-prompt { border-color: #3b82f6 !important; }
+.react-flow__handle:not(.foldder-data-handle).handle-video  { border-color: #f43f5e !important; }
+.react-flow__handle:not(.foldder-data-handle).handle-image  { border-color: #ec4899 !important; }
+.react-flow__handle:not(.foldder-data-handle).handle-sound  { border-color: #a855f7 !important; }
+.react-flow__handle:not(.foldder-data-handle).handle-mask   { border-color: #06b6d4 !important; }
+.react-flow__handle:not(.foldder-data-handle).handle-pdf    { border-color: #f97316 !important; }
+.react-flow__handle:not(.foldder-data-handle).handle-txt    { border-color: #f59e0b !important; }
+.react-flow__handle:not(.foldder-data-handle).handle-url    { border-color: #10b981 !important; }
+.react-flow__handle:not(.foldder-data-handle).handle-rose   { border-color: #f43f5e !important; }
+.react-flow__handle:not(.foldder-data-handle).handle-emerald{ border-color: #10b981 !important; }
+
+/* Conectores con icono: cuadrado redondeado; anillo de color solo si está conectado.
+   border-radius compensado como ancho/alto para radio ~constante en pantalla al hacer zoom */
+.foldder-data-handle.react-flow__handle {
+  position: relative;
+  z-index: 1;
+  width: calc(24px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 0.6))) !important;
+  height: calc(24px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 0.6))) !important;
+  border-radius: calc(6px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 0.6))) !important;
+  background: rgba(15, 23, 42, 0.92) !important;
+  border-style: solid !important;
+  border-width: 1px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+  box-sizing: border-box !important;
+}
+
+.foldder-data-handle:not(.foldder-data-handle--connected) {
+  border-color: rgba(148, 163, 184, 0.45) !important;
+  box-shadow: none !important;
+}
+
+.foldder-data-handle__icon-wrap {
+  width: 72%;
+  height: 72%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.foldder-data-handle__icon-wrap .foldder-node-icon-wrap {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Sin max fijo en px: el recuadro ya compensa el zoom; el glyph debe ocupar ~72% del handle siempre */
+.foldder-data-handle__icon-wrap svg.foldder-node-icon {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  flex-shrink: 0;
+}
+
+.foldder-data-handle--connected.handle-prompt { border-color: #3b82f6 !important; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.45) !important; }
+.foldder-data-handle--connected.handle-video  { border-color: #f43f5e !important; box-shadow: 0 0 0 2px rgba(244, 63, 94, 0.45) !important; }
+.foldder-data-handle--connected.handle-image  { border-color: #ec4899 !important; box-shadow: 0 0 0 2px rgba(236, 72, 153, 0.45) !important; }
+.foldder-data-handle--connected.handle-sound  { border-color: #a855f7 !important; box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.45) !important; }
+.foldder-data-handle--connected.handle-mask   { border-color: #06b6d4 !important; box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.45) !important; }
+.foldder-data-handle--connected.handle-pdf    { border-color: #f97316 !important; box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.45) !important; }
+.foldder-data-handle--connected.handle-txt    { border-color: #f59e0b !important; box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.45) !important; }
+.foldder-data-handle--connected.handle-url    { border-color: #10b981 !important; box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.45) !important; }
+.foldder-data-handle--connected.handle-rose   { border-color: #f43f5e !important; box-shadow: 0 0 0 2px rgba(244, 63, 94, 0.45) !important; }
+.foldder-data-handle--connected.handle-emerald{ border-color: #10b981 !important; box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.45) !important; }
+.foldder-data-handle--connected.handle-generic { border-color: rgba(226, 232, 240, 0.85) !important; box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.4) !important; }
 
 /* Misma composición que @xyflow/react/style.css: si falta el eje Y/X, los bounds del handle fallan y las aristas no se dibujan (getEdgePosition → null). */
 .react-flow__handle-left {
@@ -425,9 +505,27 @@
   transform: none !important;
 }
 
-.react-flow__handle:hover {
+/* El bloque .handle-wrapper está fuera del nodo (right/left: 100%). XYFlow ancla Left/Right al borde exterior del wrapper; hay que invertir para que el centro del handle quede en el borde del nodo. */
+.handle-wrapper.handle-left .react-flow__handle-left {
+  left: auto !important;
+  right: 0 !important;
+  top: 50% !important;
+  transform: translate(50%, -50%) !important;
+}
+.handle-wrapper.handle-right .react-flow__handle-right {
+  right: auto !important;
+  left: 0 !important;
+  top: 50% !important;
+  transform: translate(-50%, -50%) !important;
+}
+
+.react-flow__handle:not(.foldder-data-handle):hover {
   background: transparent !important;
   box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.14);
+}
+
+.foldder-data-handle:hover {
+  filter: brightness(1.08);
 }
 
 /* Animations */
@@ -580,38 +678,7 @@ body.nb-studio-open .spaces-sidebar:hover {
   letter-spacing: 0.15em;
 }
 
-.dndnode {
-  padding: 12px;
-  background: #f8fafc;
-  border: 1px solid #f1f5f9;
-  border-radius: 18px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  cursor: grab;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  font-size: 0.6rem;
-  font-weight: 800;
-  color: #555;
-  position: relative;
-  overflow: hidden;
-  text-align: center;
-  aspect-ratio: 1/1;
-}
-
-.dndnode:hover {
-  background: #fff;
-  border-color: #3b82f6;
-  color: #1e293b;
-  transform: translateY(-4px) scale(1.05);
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
-}
-
-.dndnode svg {
-  color: #1e293b;
-}
+/* Los mosaicos usan clases Tailwind en Sidebar; no forzar tema claro ni slate en SVG */
 
 .type-indicator-container {
   display: flex;

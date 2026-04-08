@@ -262,6 +262,12 @@ function foldderWheelLooksLikeMouse(e: WheelEvent, dtFromPreviousMs: number): bo
  */
 const FIT_VIEW_PADDING = 0.14;
 
+/**
+ * Solo al arrastrar un tipo desde el sidebar o el topbar (con parpadeo de compatibles): `FIT_VIEW_PADDING` × 5
+ * para ver mucho más lienzo vacío al colocar. No afecta al resto de “ajustar a ventana”.
+ */
+const FIT_VIEW_PADDING_LIBRARY_DRAG = FIT_VIEW_PADDING * 5;
+
 /** Al encuadrar uno o pocos nodos (doble clic, nodo nuevo, etc.): un poco más de margen que el fit a todo el grafo */
 const FIT_VIEW_PADDING_NODE_FOCUS = 0.8;
 
@@ -392,6 +398,8 @@ const SpacesContent = () => {
   const libraryCanvasDropSucceededRef = useRef(false);
   /** true si se soltó en el topbar de accesos directos (no restaurar viewport) */
   const libraryTopbarDropSucceededRef = useRef(false);
+  /** Arrastre activo desde librería o topbar: oculta tooltips rollover y evita solapes de UI */
+  const [paletteDragActive, setPaletteDragActive] = useState(false);
 
   const [topbarPinnedTypes, setTopbarPinnedTypes] = useState<string[]>([]);
   const skipTopbarPinsSaveOnce = useRef(true);
@@ -492,6 +500,7 @@ const SpacesContent = () => {
 
   const handleLibraryDragStart = useCallback(
     (nodeType: string) => {
+      setPaletteDragActive(true);
       libraryDragViewportRef.current = getViewport();
       libraryCanvasDropSucceededRef.current = false;
       libraryTopbarDropSucceededRef.current = false;
@@ -506,13 +515,18 @@ const SpacesContent = () => {
       // Mismo tick que dragstart + setState + fitView cancela el drop HTML5 hacia el topbar (Chrome).
       queueMicrotask(() => {
         setLibraryCompatibleIds(compatible);
-        fitView({ padding: FIT_VIEW_PADDING, duration: fitAnim(420), ...FOLDDER_FIT_VIEW_EASE });
+        fitView({
+          padding: FIT_VIEW_PADDING_LIBRARY_DRAG,
+          duration: fitAnim(420),
+          ...FOLDDER_FIT_VIEW_EASE,
+        });
       });
     },
     [fitView, getViewport, nodes, edges]
   );
 
   const handleLibraryDragEnd = useCallback(() => {
+    setPaletteDragActive(false);
     const saved = libraryDragViewportRef.current;
     const dropOk =
       libraryCanvasDropSucceededRef.current || libraryTopbarDropSucceededRef.current;
@@ -1038,7 +1052,11 @@ const SpacesContent = () => {
                 sourceHandle: primary.sourceHandle,
                 targetHandle: primary.targetHandle,
               };
-        position = computeLibraryDropPosition(anchor, type, plan);
+        const raw = computeLibraryDropPosition(anchor, type, plan);
+        position = findEmptyPositionForNewNode(type, nodes, {
+          x: raw.x + 160,
+          y: raw.y + 120,
+        });
       }
     }
 
@@ -1056,7 +1074,11 @@ const SpacesContent = () => {
         if (a.position.x !== b.position.x) return a.position.x - b.position.x;
         return String(a.id).localeCompare(String(b.id));
       });
-      position = positionNewNodeRightOfSources(sortedSources, type);
+      const rawMulti = positionNewNodeRightOfSources(sortedSources, type);
+      position = findEmptyPositionForNewNode(type, nodes, {
+        x: rawMulti.x + 160,
+        y: rawMulti.y + 120,
+      });
     }
 
     const newNode = {
@@ -3038,64 +3060,91 @@ const SpacesContent = () => {
       // Handle Native File Drops
       if (files.length > 0) {
         libraryCanvasDropSucceededRef.current = true;
-        files.forEach(async (file, index) => {
-          const type = (name: string, mime: string): any => {
-            if (mime.startsWith('video/') || name.match(/\.(mp4|mov|avi|webm|mkv)$/i)) return 'video';
-            if (mime.startsWith('image/') || name.match(/\.(jpg|jpeg|png|webp|avif|gif|svg)$/i)) return 'image';
-            if (mime.startsWith('audio/') || name.match(/\.(mp3|wav|ogg|flac|m4a)$/i)) return 'audio';
-            if (mime === 'application/pdf' || name.endsWith('.pdf')) return 'pdf';
-            if (mime.startsWith('text/') || name.endsWith('.txt')) return 'txt';
-            return 'url';
-          };
+        const inferMediaType = (name: string, mime: string): string => {
+          if (mime.startsWith('video/') || name.match(/\.(mp4|mov|avi|webm|mkv)$/i)) return 'video';
+          if (mime.startsWith('image/') || name.match(/\.(jpg|jpeg|png|webp|avif|gif|svg)$/i)) return 'image';
+          if (mime.startsWith('audio/') || name.match(/\.(mp3|wav|ogg|flac|m4a)$/i)) return 'audio';
+          if (mime === 'application/pdf' || name.endsWith('.pdf')) return 'pdf';
+          if (mime.startsWith('text/') || name.endsWith('.txt')) return 'txt';
+          return 'url';
+        };
 
-          const fileType = type(file.name, file.type);
+        let virtualNodes: Node[] = [...nodes];
+        for (let index = 0; index < files.length; index++) {
+          const file = files[index];
+          const fileType = inferMediaType(file.name, file.type);
+          const preferredCenter = {
+            x: position.x + index * 20 + 160,
+            y: position.y + index * 20 + 120,
+          };
+          const placement = findEmptyPositionForNewNode('mediaInput', virtualNodes, preferredCenter);
           const nodeId = `node_${Date.now()}_${index}_${Math.floor(Math.random() * 1000)}`;
-          
+          virtualNodes = [
+            ...virtualNodes,
+            {
+              id: nodeId,
+              type: 'mediaInput',
+              position: placement,
+              data: {},
+            } as Node,
+          ];
+
           const newNode = {
             id: nodeId,
             type: 'mediaInput',
-            position: { x: position.x + (index * 20), y: position.y + (index * 20) },
-            data: { 
-              value: '', 
-              type: fileType, 
+            position: placement,
+            data: {
+              value: '',
+              type: fileType,
               label: file.name,
               loading: true,
-              source: 'upload'
+              source: 'upload',
             },
           };
 
           setNodes((nds) => [...nds, newNode]);
 
-          // Trigger Upload
-          const formData = new FormData();
-          formData.append('file', file);
-          try {
-            const res = await fetch('/api/runway/upload', { method: 'POST', body: formData });
-            const json = await readResponseJson<{ url?: string; s3Key?: string }>(
-              res,
-              'POST /api/runway/upload'
-            );
-            if (json?.url) {
-              setNodes((nds) => nds.map((n) => n.id === nodeId ? {
-                ...n,
-                data: {
-                  ...n.data,
-                  value: json.url,
-                  s3Key: json.s3Key, // Store physical key for cleanup
-                  loading: false,
-                  metadata: {
-                    size: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
-                    resolution: (fileType === 'video' || fileType === 'image') ? 'Auto-detected' : '-',
-                    codec: file.type.split('/')[1]?.toUpperCase() || 'RAW'
-                  }
-                }
-              } : n));
+          void (async () => {
+            const formData = new FormData();
+            formData.append('file', file);
+            try {
+              const res = await fetch('/api/runway/upload', { method: 'POST', body: formData });
+              const json = await readResponseJson<{ url?: string; s3Key?: string }>(
+                res,
+                'POST /api/runway/upload'
+              );
+              if (json?.url) {
+                setNodes((nds) =>
+                  nds.map((n) =>
+                    n.id === nodeId
+                      ? {
+                          ...n,
+                          data: {
+                            ...n.data,
+                            value: json.url,
+                            s3Key: json.s3Key,
+                            loading: false,
+                            metadata: {
+                              size: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
+                              resolution: fileType === 'video' || fileType === 'image' ? 'Auto-detected' : '-',
+                              codec: file.type.split('/')[1]?.toUpperCase() || 'RAW',
+                            },
+                          },
+                        }
+                      : n
+                  )
+                );
+              }
+            } catch (err) {
+              console.error('Auto-drop upload error:', err);
+              setNodes((nds) =>
+                nds.map((n) =>
+                  n.id === nodeId ? { ...n, data: { ...n.data, loading: false, error: true } } : n
+                )
+              );
             }
-          } catch (err) {
-            console.error("Auto-drop upload error:", err);
-            setNodes((nds) => nds.map((n) => n.id === nodeId ? { ...n, data: { ...n.data, loading: false, error: true } } : n));
-          }
-        });
+          })();
+        }
         setTimeout(() => {
           fitView({ padding: FIT_VIEW_PADDING, duration: fitAnim(800), ...FOLDDER_FIT_VIEW_EASE });
         }, 100);
@@ -3114,11 +3163,15 @@ const SpacesContent = () => {
       if (targetNode && plan && snapTargetId === targetNode.id) {
         libraryCanvasDropSucceededRef.current = true;
         const dropPos = computeLibraryDropPosition(targetNode, reactFlowType, plan);
+        const placement = findEmptyPositionForNewNode(reactFlowType, nodes, {
+          x: dropPos.x + 160,
+          y: dropPos.y + 120,
+        });
         const newId = `node_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
         const newNode = {
           id: newId,
           type: reactFlowType,
-          position: dropPos,
+          position: placement,
           data: { value: '', label: `${reactFlowType} node` },
         };
 
@@ -3162,10 +3215,14 @@ const SpacesContent = () => {
       }
 
       libraryCanvasDropSucceededRef.current = true;
+      const placement = findEmptyPositionForNewNode(reactFlowType, nodes, {
+        x: position.x + 160,
+        y: position.y + 120,
+      });
       const newNode = {
         id: `node_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
         type: reactFlowType,
-        position,
+        position: placement,
         data: { value: '', label: `${reactFlowType} node` },
       };
 
@@ -3436,6 +3493,7 @@ const SpacesContent = () => {
             onLibraryTileDoubleClick={addNodeFromTopbarPinDoubleClick}
             sidebarLockedCollapsed={sidebarLockedCollapsed}
             onSidebarStripMouseEnter={() => setSidebarLockedCollapsed(false)}
+            paletteDragActive={paletteDragActive}
           />
         </div>
       )}
@@ -3687,14 +3745,14 @@ const SpacesContent = () => {
           <div className="flex w-full min-w-0 items-center gap-2 sm:gap-3">
             {isAuthenticated && !windowMode && (
               <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
-                <div className="shrink-0" aria-hidden>
+                <div className="flex shrink-0 items-center self-center" aria-hidden>
                   <svg
                     width={34}
                     height={34}
                     viewBox="0 0 60 60"
                     fill="none"
                     xmlns="http://www.w3.org/2000/svg"
-                    className="drop-shadow-md"
+                    className="block shrink-0 drop-shadow-md"
                   >
                     <path
                       d="M4 8 Q4 4 8 4 L48 4 L56 12 L56 52 Q56 56 52 56 L8 56 Q4 56 4 52 Z"
@@ -3706,7 +3764,7 @@ const SpacesContent = () => {
                     <rect x="17" y="28" width="15" height="5" rx="2" fill="white" />
                   </svg>
                 </div>
-                <div className="min-w-0 flex-1 rounded-xl border border-white/25 bg-white/[0.08] px-2 py-1 shadow-sm backdrop-blur-xl">
+                <div className="flex min-h-[40px] min-w-0 flex-1 items-center rounded-xl border border-white/25 bg-white/[0.08] px-2 py-1 shadow-sm backdrop-blur-xl">
                   <AgentHUD
                     variant="topbar"
                     onGenerate={onGenerateAssistant}
@@ -3892,6 +3950,7 @@ const SpacesContent = () => {
               onLibraryDragStart={handleLibraryDragStart}
               onLibraryDragEnd={handleLibraryDragEnd}
               onPinDoubleClick={addNodeFromTopbarPinDoubleClick}
+              paletteDragActive={paletteDragActive}
             />
           </div>
         )}
