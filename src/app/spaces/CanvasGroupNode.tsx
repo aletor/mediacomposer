@@ -164,7 +164,7 @@ export const CanvasGroupNode = memo(function CanvasGroupNode({ id, data, selecte
 
   const shell = collapsed ? (
     <div
-      className={`custom-node relative w-full overflow-visible rounded-2xl ${GROUP_FRAME_CLASS} ${
+      className={`custom-node relative w-full overflow-visible rounded-lg ${GROUP_FRAME_CLASS} ${
         selected ? "ring-2 ring-violet-400/40" : ""
       }`}
       style={{ minHeight: 90, boxSizing: "border-box" }}
@@ -263,7 +263,7 @@ export const CanvasGroupNode = memo(function CanvasGroupNode({ id, data, selecte
     </div>
   ) : (
     <div
-      className={`custom-node relative overflow-hidden rounded-2xl ${GROUP_FRAME_CLASS} ${
+      className={`custom-node relative overflow-hidden rounded-lg ${GROUP_FRAME_CLASS} ${
         selected ? "ring-2 ring-violet-400/40" : ""
       }`}
       style={{ width: "100%", height: "100%", minWidth: 200, minHeight: 120 }}

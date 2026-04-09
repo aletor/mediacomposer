@@ -26,6 +26,37 @@ function resolveS3KeyFromNodeData(data: Record<string, unknown>): string | null 
   return null;
 }
 
+function collectPresignKeysFromNodeData(d: Record<string, unknown>, keys: Set<string>) {
+  const k = resolveS3KeyFromNodeData(d);
+  if (k) keys.add(k);
+  const gh = d.generationHistory;
+  if (!Array.isArray(gh)) return;
+  for (const item of gh) {
+    if (typeof item !== "string") continue;
+    const fromUrl = tryExtractKnowledgeFilesKeyFromUrl(item);
+    if (fromUrl) keys.add(fromUrl);
+  }
+}
+
+function hydrateGenerationHistoryUrls(
+  d: Record<string, unknown>,
+  urls: Record<string, string>
+): Record<string, unknown> {
+  const gh = d.generationHistory;
+  if (!Array.isArray(gh) || gh.length === 0) return d;
+  let changed = false;
+  const next = gh.map((item) => {
+    if (typeof item !== "string") return item;
+    const kk = tryExtractKnowledgeFilesKeyFromUrl(item);
+    if (kk && urls[kk]) {
+      changed = true;
+      return urls[kk];
+    }
+    return item;
+  });
+  return changed ? { ...d, generationHistory: next } : d;
+}
+
 /**
  * Tras cargar un proyecto: renueva `data.value` con URLs prefirmadas válidas usando `s3Key`
  * o la clave inferida de una URL antigua del mismo prefijo.
@@ -38,8 +69,7 @@ export async function hydrateSpacesMapWithFreshUrls(
     const s = space as { nodes?: Node[] };
     for (const n of s.nodes || []) {
       const d = (n.data || {}) as Record<string, unknown>;
-      const k = resolveS3KeyFromNodeData(d);
-      if (k) keys.add(k);
+      collectPresignKeysFromNodeData(d, keys);
     }
   }
   if (keys.size === 0) return spaces;
@@ -64,12 +94,13 @@ export async function hydrateSpacesMapWithFreshUrls(
     out[spaceKey] = {
       ...space,
       nodes: space.nodes.map((n) => {
-        const d = { ...(n.data || {}) } as Record<string, unknown>;
+        let d = { ...(n.data || {}) } as Record<string, unknown>;
         const k = resolveS3KeyFromNodeData(d);
         if (k && urls[k]) {
           d.value = urls[k];
           d.s3Key = k;
         }
+        d = hydrateGenerationHistoryUrls(d, urls);
         return { ...n, data: d };
       }),
     };

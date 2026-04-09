@@ -90,6 +90,29 @@ export function parseCanvasGroupOutHandle(
   return { memberId: rest.slice(0, i), handleId: rest.slice(i + CG_SEP.length) };
 }
 
+/**
+ * `data.value` del nodo que alimenta una arista (texto prompt, URL de imagen, etc.).
+ * Si el origen es un `canvasGroup` plegado, la arista usa `sourceHandle` `g_out_*` apuntando al
+ * miembro; el nodo grupo no tiene `value` — hay que leer del hijo.
+ */
+export function resolvePromptValueFromEdgeSource(
+  edge: Pick<Edge, "source" | "sourceHandle">,
+  nodes: Node[]
+): string {
+  const src = nodes.find((n) => n.id === edge.source);
+  if (!src) return "";
+  if (src.type === "canvasGroup" && edge.sourceHandle?.startsWith("g_out_")) {
+    const p = parseCanvasGroupOutHandle(edge.sourceHandle);
+    if (!p) return "";
+    const inner = nodes.find((n) => n.id === p.memberId);
+    if (!inner?.data) return "";
+    const v = (inner.data as { value?: unknown }).value;
+    return typeof v === "string" ? v : "";
+  }
+  const v = (src.data as { value?: unknown })?.value;
+  return typeof v === "string" ? v : "";
+}
+
 export type CanvasGroupBackup = {
   /** Aristas originales (cruce + internas) antes del colapso */
   crossingEdges: Edge[];
@@ -308,6 +331,36 @@ export function recomputeCanvasGroupFrames(nodes: Node[]): Node[] {
       data: nextData,
       style: { ...ensureCanvasGroupZIndex(n.style), width: groupW, height: groupH } as Node["style"],
     };
+  });
+}
+
+/**
+ * Con el grupo colapsado, los miembros van con `hidden: true`. Las aristas solo internas
+ * (ambos extremos dentro del mismo grupo) siguen en el estado del grafo para poder expandir
+ * sin perder datos, pero React Flow no puede medir bien los handles de nodos ocultos: las
+ * curvas y los botones X de `ButtonEdge` quedan en coordenadas basura. No las pintamos hasta
+ * que el usuario expanda el marco.
+ */
+export function filterEdgesForCollapsedCanvasGroups(nodes: Node[], edges: Edge[]): Edge[] {
+  const collapsedMemberSets: Set<string>[] = [];
+  for (const n of nodes) {
+    if (n.type !== "canvasGroup") continue;
+    if (!(n.data as { collapsed?: boolean })?.collapsed) continue;
+    const members = new Set<string>();
+    const mids = (n.data as { memberIds?: string[] })?.memberIds;
+    if (Array.isArray(mids)) for (const id of mids) members.add(id);
+    for (const c of nodes) {
+      if (c.parentId === n.id) members.add(c.id);
+    }
+    if (members.size > 0) collapsedMemberSets.push(members);
+  }
+  if (collapsedMemberSets.length === 0) return edges;
+
+  return edges.filter((e) => {
+    for (const members of collapsedMemberSets) {
+      if (members.has(e.source) && members.has(e.target)) return false;
+    }
+    return true;
   });
 }
 

@@ -22,10 +22,11 @@
 }
 
 .custom-node {
+  position: relative;
   background: rgba(255, 255, 255, 0.3);
   backdrop-filter: blur(24px);
-  border: 1px solid rgba(255, 255, 255, 0.6);
-  border-radius: 24px;
+  border: none;
+  border-radius: 12px;
   padding: 0;
   color: #1a1a1b;
   /* Fill the ReactFlow node wrapper so NodeResizer can control height */
@@ -44,9 +45,65 @@
 }
 
 /*
- * Grupos en el lienzo (canvasGroup): el marco ya trae gradiente + borde discontinuo en el componente.
- * La capa blanca/blur global duplicaba opacidad; además z-index &lt; 0 en el nodo quedaba *detrás* del
- * background-image del lienzo (reglas de stacking). El TS fuerza zIndex ≥ 0 en canvas-group-logic.
+ * Vidrio y cabecera: `--foldder-node-header-tint-color` (como Image Export: gris neutro).
+ * `--foldder-node-output-color` sigue siendo el color semántico (aristas/handles); no teñir la tarjeta en azul de prompt.
+ */
+.react-flow__node .custom-node:not(.canvas-group-frame) {
+  border: none;
+  /* ~30% más transparente que antes (α del vidrio 0.32 → ~0.22) */
+  background: color-mix(
+    in srgb,
+    var(--foldder-node-header-tint-color, var(--foldder-node-output-color, #94a3b8)) 12%,
+    rgba(255, 255, 255, 0.224)
+  );
+}
+
+.react-flow__node .custom-node:not(.canvas-group-frame) .node-header {
+  color: #ffffff;
+  background: color-mix(
+    in srgb,
+    var(--foldder-node-header-tint-color, var(--foldder-node-output-color, #94a3b8)) 18%,
+    rgba(255, 255, 255, 0.1)
+  );
+  border-bottom: none;
+}
+
+.react-flow__node .custom-node:not(.canvas-group-frame) .node-header__title {
+  color: #ffffff;
+}
+
+.react-flow__node .custom-node:not(.canvas-group-frame) .node-header svg:not(.foldder-node-icon) {
+  color: #ffffff;
+  opacity: 0.98;
+}
+
+.react-flow__node .custom-node:not(.canvas-group-frame) .node-header svg.foldder-node-icon {
+  color: #ffffff !important;
+  opacity: 1 !important;
+}
+
+.react-flow__node .custom-node:not(.canvas-group-frame) .node-header .node-badge {
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+/* Space / E-S: conservar cabecera oscura e iconos blancos */
+.react-flow__node .custom-node.space-node .node-header,
+.react-flow__node .custom-node.space-io-node .node-header {
+  color: #fff;
+  background: rgba(15, 23, 42, 0.5);
+  border-bottom: none;
+}
+
+.react-flow__node .custom-node.space-node .node-header svg,
+.react-flow__node .custom-node.space-io-node .node-header svg {
+  color: #fff !important;
+  opacity: 0.95 !important;
+}
+
+/*
+ * Grupos en el lienzo (canvasGroup): marco discontinuo blanco + ligero vidrio.
+ * El TS fuerza zIndex ≥ 0 en canvas-group-logic.
  */
 .canvas-group-frame.custom-node {
   background: transparent !important;
@@ -56,12 +113,8 @@
   box-shadow: none !important;
 }
 .canvas-group-frame.custom-node:hover {
-  border-color: rgba(255, 255, 255, 0.55) !important;
+  border-color: rgba(255, 255, 255, 0.58) !important;
   box-shadow: none !important;
-}
-.react-flow__node.selected .canvas-group-frame.custom-node {
-  box-shadow: 0 0 0 2px rgba(74, 222, 128, 0.22) !important;
-  transform: none !important;
 }
 
 /* Re-enable text selection inside actual editable elements */
@@ -98,18 +151,32 @@
   box-shadow: none !important;
 }
 
-.custom-node:hover {
-  border-color: rgba(0, 0, 0, 0.05);
+.react-flow__node .custom-node:not(.canvas-group-frame):hover {
+  border: none;
+  box-shadow: 0 30px 60px -12px rgba(0, 0, 0, 0.12);
+}
+
+/* Hover fuera del lienzo (p. ej. previews): mismo relieve que antes */
+.custom-node:not(.canvas-group-frame):hover {
+  border: none;
   box-shadow: 0 30px 60px -12px rgba(0, 0, 0, 0.12);
 }
 
 /* ── Node selection (click / Shift+click) ─────────────────────────── */
-.react-flow__node.selected .custom-node {
-  border-color: rgba(74, 222, 128, 0.7);     /* green-400 */
+.react-flow__node.selected .custom-node:not(.canvas-group-frame) {
+  border: none;
   box-shadow:
-    0 0 0 2px rgba(74, 222, 128, 0.25),       /* soft aura */
+    0 0 0 2px rgba(255, 255, 255, 0.45),
     0 20px 40px -4px rgba(0, 0, 0, 0.10);
   transform: translateY(-2px) scale(1.005);
+}
+
+.react-flow__node.selected .canvas-group-frame.custom-node {
+  border: 1px dashed rgba(255, 255, 255, 0.65) !important;
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.45),
+    0 20px 40px -4px rgba(0, 0, 0, 0.1) !important;
+  transform: none !important;
 }
 
 /* Remove ReactFlow's default blue outline on selected nodes */
@@ -117,16 +184,57 @@
   outline: none !important;
 }
 
-/* Control, Mayús o Espacio mantenido: rollover antes de soltar — marco grueso (encuadre a nodo) */
-.react-flow__node.foldder-ctrl-overview-hover .custom-node {
+/*
+ * Nodo recién añadido: zoom desde el centro (scale 0.6→1) + fade-in, 2s.
+ * (Se eliminó únicamente el tramo de parpadeo.)
+ */
+@keyframes foldder-node-canvas-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.react-flow__node.foldder-node-canvas-intro .custom-node {
+  transform-origin: center center;
+  animation: foldder-node-canvas-enter 2s cubic-bezier(0.12, 0.9, 0.23, 1) both;
+}
+
+/* Todos los hijos de la tarjeta ignoran puntero → el hit cae en .custom-node (sigue funcionando el highlight por coordenadas) */
+.foldder-overview-mode-active .react-flow__node .custom-node * {
+  pointer-events: none !important;
+}
+.foldder-overview-mode-active .react-flow__node .react-flow__handle {
+  pointer-events: none !important;
+}
+
+/* Rollover nodo bajo cursor: marco + “zoom in” suave */
+@keyframes foldder-overview-hover-zoomin {
+  0% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  100% {
+    transform: scale(1.018);
+    filter: brightness(1.025);
+  }
+}
+
+.foldder-overview-mode-active .react-flow__node.foldder-ctrl-overview-hover .custom-node {
   outline: 4px solid rgba(34, 211, 238, 0.95);
   outline-offset: 4px;
   box-shadow:
     0 0 0 1px rgba(8, 47, 73, 0.45),
-    0 18px 44px -10px rgba(34, 211, 238, 0.38);
+    0 18px 44px -10px rgba(34, 211, 238, 0.42);
   z-index: 2;
   position: relative;
-  transform: none !important;
+  transform-origin: center center;
+  animation: foldder-overview-hover-zoomin 0.58s ease-in-out infinite alternate;
+  will-change: transform, filter;
 }
 
 /* Sidebar → canvas drag: parpadeo de todo el nodo (brillo/opacidad), sin acentuar bordes */
@@ -166,32 +274,42 @@
 }
 
 .node-header {
-  padding: 16px 20px;
+  padding: calc(16px * 0.7) calc(20px * 0.7);
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: calc(12px * 0.7);
   background: rgba(255, 255, 255, 0.1);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
-  font-weight: 900;
+  border-bottom: none;
+  font-weight: 300;
   letter-spacing: 0.1em;
-  font-size: 0.7rem;
+  /* Altura visual ~−30% vs bloque anterior; título −30% */
+  font-size: calc(0.7rem * 1.9 * 0.8 * 0.7);
   text-transform: uppercase;
   color: #fff;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
-  border-top-left-radius: 24px;
-  border-top-right-radius: 24px;
+  border-top-left-radius: 12px;
+  border-top-right-radius: 12px;
+  overflow: hidden;
+}
+
+.node-header__title {
+  line-height: 1.2;
+  font-weight: 300;
 }
 
 .node-header svg:not(.foldder-node-icon) {
   opacity: 0.95;
   color: #fff;
-  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.5));
 }
 
 .node-header svg.foldder-node-icon {
   color: #fff !important;
   opacity: 1 !important;
-  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.5)) !important;
+}
+
+/* Icono cabecera acorde al header compacto */
+.node-header .foldder-node-icon-wrap svg.foldder-node-icon {
+  width: calc(24px * 0.7) !important;
+  height: calc(24px * 0.7) !important;
 }
 
 /* Foldder node icons: hover on card, micro scale + clarity (see foldder-icons.tsx) */
@@ -218,12 +336,11 @@
 .node-header .node-badge {
   margin-left: auto;
   background: rgba(0, 0, 0, 0.2);
-  padding: 3px 10px;
-  border-radius: 8px;
-  font-size: 7px;
-  font-weight: 900;
+  padding: calc(3px * 0.7) calc(10px * 0.7);
+  border-radius: calc(4px * 0.7);
+  font-size: calc(10px * 0.8 * 0.7);
+  font-weight: 300;
   color: rgba(255, 255, 255, 0.88);
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.45);
   letter-spacing: 0.15em;
 }
 
@@ -258,7 +375,7 @@
   width: 100%;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
-  border-radius: 14px;
+  border-radius: 7px;
   padding: 12px;
   color: #1e293b;
   font-size: 0.85rem;
@@ -302,7 +419,16 @@
 .composer-node {
   min-width: 0;
 }
-/* Global Action Button Style */
+/* Global Action Button Style — degradado + destello en hover (gradiente animado, sin mover el botón) */
+@keyframes foldder-execute-shimmer {
+  0% {
+    background-position: 130% 0;
+  }
+  100% {
+    background-position: -130% 0;
+  }
+}
+
 .action-btn, .execute-btn {
   width: 100%;
   display: flex;
@@ -310,39 +436,101 @@
   justify-content: center;
   gap: 10px;
   padding: 14px;
-  background: #1e293b;
-  border-radius: 16px;
-  border: 1px solid rgba(0, 0, 0, 0.05);
-  color: white;
+  background: linear-gradient(135deg, #1d2433 0%, #2a3448 48%, #35425a 100%);
+  border-radius: 8px;
+  border: none;
+  color: #f8fafc;
   font-size: 11px;
   font-weight: 900;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background 0.35s ease;
   position: relative;
   overflow: hidden;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 14px rgba(29, 36, 51, 0.32);
 }
 
-.action-btn:hover:not(:disabled), .execute-btn:hover:not(:disabled) {
-  transform: translateY(-2px);
-  background: #0f172a;
-  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.2);
+.action-btn::after,
+.execute-btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0) 40%,
+    rgba(255, 255, 255, 0.28) 50%,
+    rgba(255, 255, 255, 0) 60%,
+    transparent 100%
+  );
+  background-size: 260% 100%;
+  background-position: 130% 0;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+  z-index: 0;
 }
 
-.action-btn:active:not(:disabled), .execute-btn:active:not(:disabled) {
-  transform: translateY(0);
+.action-btn > *,
+.execute-btn > * {
+  position: relative;
+  z-index: 1;
+}
+
+.action-btn:hover:not(:disabled)::after,
+.execute-btn:hover:not(:disabled)::after {
+  opacity: 1;
+  animation: foldder-execute-shimmer 1.15s ease-in-out infinite;
+}
+
+.action-btn:hover:not(:disabled),
+.execute-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #252d3f 0%, #364356 50%, #3d4d66 100%);
+}
+
+.action-btn:active:not(:disabled),
+.execute-btn:active:not(:disabled) {
+  transition-duration: 0.1s;
 }
 
 .action-btn:disabled, .execute-btn:disabled {
-  opacity: 0.3;
+  opacity: 0.35;
   cursor: not-allowed;
-  background: #64748b;
+  background: #475569;
 }
 
-.media-node .action-btn, .media-node .execute-btn { background: linear-gradient(135deg, #f43f5e, #e11d48); }
-.prompt-node .action-btn, .prompt-node .execute-btn { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+/* Botón principal: mismo matiz que cabecera/vidrio (`--foldder-node-header-tint-color`), como Export */
+.react-flow__node .custom-node:not(.canvas-group-frame) .execute-btn:not(:disabled),
+.react-flow__node .custom-node:not(.canvas-group-frame) .action-btn:not(:disabled) {
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--foldder-node-header-tint-color, var(--foldder-node-output-color, #64748b)) 72%, #0f172a) 0%,
+    color-mix(in srgb, var(--foldder-node-header-tint-color, var(--foldder-node-output-color, #64748b)) 58%, #1e293b) 45%,
+    color-mix(in srgb, var(--foldder-node-header-tint-color, var(--foldder-node-output-color, #64748b)) 48%, #1e293b) 100%
+  );
+  border: none;
+  color: #ffffff;
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--foldder-node-header-tint-color, var(--foldder-node-output-color, #64748b)) 28%, rgba(0, 0, 0, 0.35));
+}
+
+.react-flow__node .custom-node:not(.canvas-group-frame) .execute-btn:hover:not(:disabled),
+.react-flow__node .custom-node:not(.canvas-group-frame) .action-btn:hover:not(:disabled) {
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--foldder-node-header-tint-color, var(--foldder-node-output-color, #64748b)) 78%, #1e293b) 0%,
+    color-mix(in srgb, var(--foldder-node-header-tint-color, var(--foldder-node-output-color, #64748b)) 65%, #334155) 50%,
+    color-mix(in srgb, var(--foldder-node-header-tint-color, var(--foldder-node-output-color, #64748b)) 55%, #334155) 100%
+  );
+}
+
+.react-flow__node .custom-node:not(.canvas-group-frame) .execute-btn:disabled,
+.react-flow__node .custom-node:not(.canvas-group-frame) .action-btn:disabled {
+  background: #475569;
+  border: none;
+  box-shadow: none;
+}
 
 /* Prompt: altura = líneas (scrollHeight); sin resizer; sin padding inferior de más */
 .prompt-node--compact .node-content--prompt-fill {
@@ -360,7 +548,7 @@
   resize: none;
   overflow-x: hidden;
   overflow-y: auto;
-  border-radius: 0 0 22px 22px;
+  border-radius: 0 0 11px 11px;
   border-top: none;
   padding: 6px 12px 6px 12px;
   font-size: 0.8125rem;
@@ -369,35 +557,29 @@
   box-sizing: border-box;
 }
 .prompt-node--compact .node-header {
-  padding: 8px 14px;
-  gap: 8px;
+  padding: calc(8px * 0.7) calc(14px * 0.7);
+  gap: calc(8px * 0.7);
   min-height: 0;
   line-height: 1.15;
-  font-size: 0.62rem;
+  font-size: calc(0.62rem * 1.9 * 0.8 * 0.7);
   border-bottom: none;
-  border-radius: 22px 22px 0 0;
+  border-radius: 11px 11px 0 0;
 }
-.processor-node .action-btn, .processor-node .execute-btn { background: linear-gradient(135deg, #a855f7, #9333ea); }
-.tool-node .action-btn, .tool-node .execute-btn { background: linear-gradient(135deg, #10b981, #059669); }
-.mask-node .action-btn, .mask-node .execute-btn { background: linear-gradient(135deg, #06b6d4, #0891b2); }
 /* Space: cabecera oscura para mantener título/icono blancos legibles */
 .space-node .node-header {
   color: #fff;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
   background: rgba(15, 23, 42, 0.5);
-  border-bottom-color: rgba(255, 255, 255, 0.08);
+  border-bottom: none;
 }
 .space-io-node .node-header {
   color: #fff;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
   background: rgba(15, 23, 42, 0.5);
-  border-bottom-color: rgba(255, 255, 255, 0.08);
+  border-bottom: none;
 }
 .space-io-node.border-rose-500\/30 .node-header {
   color: #fff;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
   background: rgba(15, 23, 42, 0.5);
-  border-bottom-color: rgba(255, 255, 255, 0.08);
+  border-bottom: none;
 }
 
 /* Handle styling — icono justo fuera del borde del nodo, mismo hueco izq./der. */
@@ -433,27 +615,27 @@
   position: relative;
   z-index: 50;
   flex-shrink: 0;
-  font-size: 7px;
+  font-size: 6px;
   font-weight: 400;
   color: rgba(15, 23, 42, 0.88);
   text-transform: uppercase;
-  letter-spacing: 0.15em;
+  letter-spacing: 0.09em;
   background: rgba(255, 255, 255, 0.12);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  padding: 4px 8px;
-  border: 1px solid rgba(255, 255, 255, 0.32);
-  border-radius: 6px;
+  padding: 2px 5px;
+  border: none;
+  border-radius: 4px;
   white-space: nowrap;
   opacity: 0;
   transition: opacity 0.25s ease, transform 0.25s ease;
-  box-shadow: 0 2px 14px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 1px 8px rgba(15, 23, 42, 0.06);
   pointer-events: none;
 }
 
 .custom-node:hover .handle-label {
   opacity: 1;
-  transform: translateY(-10px);
+  transform: translateY(-6px);
 }
 
 /* Etiqueta a la derecha del nodo: sube en la misma dirección sin solapar el icono */
@@ -465,18 +647,18 @@
 :root {
   --foldder-handle-outside-gap: 6px;
   --foldder-viewport-zoom: 0.7;
-  /* Por debajo de este zoom (60%), los handles dejan de compensarse del todo y encogen en pantalla con el nodo */
-  --foldder-handle-zoom-floor: 0.6;
+  /* Por debajo de este zoom (137%), los handles dejan de compensarse del todo y encogen en pantalla con el nodo */
+  --foldder-handle-zoom-floor: 1.37;
 }
 
 /* Tamaño ~constante en pantalla vía dimensiones en flujo (sin scale en el handle).
    Legacy: puntos circulares si algún handle no usa .foldder-data-handle */
 .react-flow__handle:not(.foldder-data-handle) {
-  width: calc(17px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 0.6))) !important;
-  height: calc(17px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 0.6))) !important;
+  width: calc(10.2px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 1.37))) !important;
+  height: calc(10.2px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 1.37))) !important;
   border-radius: 50% !important;
   background: transparent !important;
-  border-width: calc(3px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 0.6))) !important;
+  border-width: calc(1.8px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 1.37))) !important;
   transform-origin: center center;
   transition: box-shadow 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275), border-color 0.2s;
   pointer-events: all;
@@ -484,8 +666,9 @@
 }
 
 .react-flow__handle:not(.foldder-data-handle).handle-prompt { border-color: #3b82f6 !important; }
-.react-flow__handle:not(.foldder-data-handle).handle-video  { border-color: #f43f5e !important; }
-.react-flow__handle:not(.foldder-data-handle).handle-image  { border-color: #ec4899 !important; }
+/* Imagen / vídeo: mismo acento que el logo (#6C5CE7) */
+.react-flow__handle:not(.foldder-data-handle).handle-video  { border-color: #6C5CE7 !important; }
+.react-flow__handle:not(.foldder-data-handle).handle-image  { border-color: #6C5CE7 !important; }
 .react-flow__handle:not(.foldder-data-handle).handle-sound  { border-color: #a855f7 !important; }
 .react-flow__handle:not(.foldder-data-handle).handle-mask   { border-color: #06b6d4 !important; }
 .react-flow__handle:not(.foldder-data-handle).handle-pdf    { border-color: #f97316 !important; }
@@ -499,21 +682,20 @@
 .foldder-data-handle.react-flow__handle {
   position: relative;
   z-index: 1;
-  width: calc(24px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 0.6))) !important;
-  height: calc(24px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 0.6))) !important;
-  border-radius: calc(6px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 0.6))) !important;
-  background: rgba(15, 23, 42, 0.92) !important;
-  border-style: solid !important;
-  border-width: 1px !important;
+  width: calc(14.4px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 1.37))) !important;
+  height: calc(14.4px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 1.37))) !important;
+  border-radius: calc(3.6px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 1.37))) !important;
+  background: linear-gradient(145deg, #1d2433 0%, #2f3a4f 55%, #3d4a62 100%) !important;
+  border: none !important;
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
   padding: 0 !important;
   box-sizing: border-box !important;
+  transition: filter 0.3s ease, box-shadow 0.3s ease !important;
 }
 
 .foldder-data-handle:not(.foldder-data-handle--connected) {
-  border-color: rgba(148, 163, 184, 0.45) !important;
   box-shadow: none !important;
 }
 
@@ -545,17 +727,17 @@
   flex-shrink: 0;
 }
 
-.foldder-data-handle--connected.handle-prompt { border-color: #3b82f6 !important; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.45) !important; }
-.foldder-data-handle--connected.handle-video  { border-color: #f43f5e !important; box-shadow: 0 0 0 2px rgba(244, 63, 94, 0.45) !important; }
-.foldder-data-handle--connected.handle-image  { border-color: #ec4899 !important; box-shadow: 0 0 0 2px rgba(236, 72, 153, 0.45) !important; }
-.foldder-data-handle--connected.handle-sound  { border-color: #a855f7 !important; box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.45) !important; }
-.foldder-data-handle--connected.handle-mask   { border-color: #06b6d4 !important; box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.45) !important; }
-.foldder-data-handle--connected.handle-pdf    { border-color: #f97316 !important; box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.45) !important; }
-.foldder-data-handle--connected.handle-txt    { border-color: #f59e0b !important; box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.45) !important; }
-.foldder-data-handle--connected.handle-url    { border-color: #10b981 !important; box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.45) !important; }
-.foldder-data-handle--connected.handle-rose   { border-color: #f43f5e !important; box-shadow: 0 0 0 2px rgba(244, 63, 94, 0.45) !important; }
-.foldder-data-handle--connected.handle-emerald{ border-color: #10b981 !important; box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.45) !important; }
-.foldder-data-handle--connected.handle-generic { border-color: rgba(226, 232, 240, 0.85) !important; box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.4) !important; }
+.foldder-data-handle--connected.handle-prompt { box-shadow: 0 0 0 1.5px rgba(59, 130, 246, 0.55) !important; }
+.foldder-data-handle--connected.handle-video  { box-shadow: 0 0 0 1.5px rgba(108, 92, 231, 0.55) !important; }
+.foldder-data-handle--connected.handle-image  { box-shadow: 0 0 0 1.5px rgba(108, 92, 231, 0.55) !important; }
+.foldder-data-handle--connected.handle-sound  { box-shadow: 0 0 0 1.5px rgba(168, 85, 247, 0.55) !important; }
+.foldder-data-handle--connected.handle-mask   { box-shadow: 0 0 0 1.5px rgba(6, 182, 212, 0.55) !important; }
+.foldder-data-handle--connected.handle-pdf    { box-shadow: 0 0 0 1.5px rgba(249, 115, 22, 0.55) !important; }
+.foldder-data-handle--connected.handle-txt    { box-shadow: 0 0 0 1.5px rgba(245, 158, 11, 0.55) !important; }
+.foldder-data-handle--connected.handle-url    { box-shadow: 0 0 0 1.5px rgba(16, 185, 129, 0.55) !important; }
+.foldder-data-handle--connected.handle-rose   { box-shadow: 0 0 0 1.5px rgba(244, 63, 94, 0.55) !important; }
+.foldder-data-handle--connected.handle-emerald{ box-shadow: 0 0 0 1.5px rgba(16, 185, 129, 0.55) !important; }
+.foldder-data-handle--connected.handle-generic { box-shadow: 0 0 0 1.5px rgba(148, 163, 184, 0.5) !important; }
 
 /* Misma composición que @xyflow/react/style.css: si falta el eje Y/X, los bounds del handle fallan y las aristas no se dibujan (getEdgePosition → null). */
 .react-flow__handle-left {
@@ -594,7 +776,8 @@
 }
 
 .foldder-data-handle:hover {
-  filter: brightness(1.08);
+  filter: brightness(1.12) saturate(1.05);
+  box-shadow: 0 4px 14px rgba(29, 36, 51, 0.35) !important;
 }
 
 /* Animations */
@@ -645,16 +828,18 @@
   box-shadow: 4px 0 80px rgba(0, 0, 0, 0.5);
 }
 
-/* Suppress sidebar hover when NanaBanana Studio is fullscreen */
+/* Nano Banana Studio fullscreen: no sidebar strip, no top HUD (evita solapar el logo con “Studio”) */
 body.nb-studio-open .spaces-sidebar,
 body.nb-studio-open .spaces-sidebar:hover {
-  width: 16px !important;
-  background: rgba(0,0,0,0.01) !important;
-  backdrop-filter: blur(0px) !important;
-  border-right: 1px solid transparent !important;
-  padding: 0 !important;
-  box-shadow: none !important;
+  display: none !important;
   pointer-events: none !important;
+}
+
+body.nb-studio-open [data-foldder-top-hud] {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  opacity: 0 !important;
 }
 
 /* Collapsible Content Control */
@@ -786,7 +971,7 @@ body.nb-studio-open .spaces-sidebar:hover {
   box-shadow: 0 0 10px currentColor;
 }
 
-.type-dot.image, .type-dot.video { background: #f43f5e; color: #f43f5e; }
+.type-dot.image, .type-dot.video { background: #6C5CE7; color: #6C5CE7; }
 .type-dot.prompt { background: #3b82f6; color: #3b82f6; }
 .type-dot.url { background: #10b981; color: #10b981; }
 .type-dot.mask { background: #06b6d4; color: #06b6d4; }
@@ -815,21 +1000,29 @@ body.nb-studio-open .spaces-sidebar:hover {
   z-index: 10000;
 }
 
+/* Misma compensación que `.foldder-data-handle` (--foldder-viewport-zoom / --foldder-handle-zoom-floor) */
 .edgebutton {
   position: relative;
   z-index: 1;
-  width: 22px;
-  height: 22px;
+  box-sizing: border-box;
+  width: calc(22px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 1.37)));
+  height: calc(22px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 1.37)));
   background: #000;
-  border: 2px solid #333;
+  border: calc(2px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 1.37))) solid #333;
   cursor: pointer;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   color: #666;
-  box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
   transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.edgebutton svg {
+  width: calc(10px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 1.37))) !important;
+  height: calc(10px / max(var(--foldder-viewport-zoom, 1), var(--foldder-handle-zoom-floor, 1.37))) !important;
+  flex-shrink: 0;
 }
 
 .edgebutton:hover {
@@ -989,6 +1182,9 @@ body.nb-studio-open .spaces-sidebar:hover {
   --foldder-glass: rgba(255, 255, 255, 0.06);
   --foldder-glass-border: rgba(255, 255, 255, 0.1);
   background: #0d0d12;
+  /* Por encima del HUD del lienzo (z~100) y modales; evita que el cristal deje ver el logo de fondo */
+  z-index: 10050;
+  isolation: isolate;
 }
 
 .nb-studio-topbar,
@@ -1001,6 +1197,10 @@ body.nb-studio-open .spaces-sidebar:hover {
 .nb-studio-topbar {
   border-bottom: 1px solid var(--foldder-glass-border);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04);
+  /* Capa opaca bajo el cristal para que no se superponga visualmente el HUD oculto del lienzo */
+  background:
+    linear-gradient(180deg, rgba(13, 13, 18, 0.97), rgba(13, 13, 18, 0.94)),
+    var(--foldder-glass);
 }
 
 .nb-studio-bottombar {
@@ -1156,4 +1356,54 @@ body.nb-studio-open .spaces-sidebar:hover {
   background: rgba(0, 0, 0, 0.06);
   border: 1px solid rgba(0, 0, 0, 0.1);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+/* Barra indeterminada bajo «Petición IA» (fetch a APIs de IA en curso) */
+@keyframes foldderAiHudProgress {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
+
+.foldder-ai-request-hud__track {
+  position: relative;
+  margin-top: 0.4rem;
+  height: 4px;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.foldder-ai-request-hud__fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 42%;
+  border-radius: 9999px;
+  background: linear-gradient(
+    90deg,
+    rgba(167, 139, 250, 0.15),
+    rgba(196, 181, 253, 0.95),
+    rgba(167, 139, 250, 0.15)
+  );
+  box-shadow: 0 0 10px rgba(167, 139, 250, 0.55);
+  animation: foldderAiHudProgress 1.35s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* Misma barra con ancho fijado por % (Nano Banana / Studio) */
+.foldder-ai-request-hud__fill--determinate {
+  animation: none;
+  transform: none;
+  will-change: auto;
+  width: auto;
+  min-width: 6px;
+  background: linear-gradient(90deg, rgba(124, 58, 237, 0.85), rgba(196, 181, 253, 0.95));
+  box-shadow: 0 0 8px rgba(167, 139, 250, 0.45);
 }

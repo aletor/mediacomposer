@@ -50,11 +50,20 @@ import {
   EyeOff, Camera} from 'lucide-react';
 import './spaces.css';
 import { FOLDDER_FIT_VIEW_EASE } from '@/lib/fit-view-ease';
+import { readResponseJson } from '@/lib/read-response-json';
 import { runAiJobWithNotification } from '@/lib/ai-job-notifications';
+import {
+  aiHudNanoBananaJobStart,
+  aiHudNanoBananaJobProgress,
+  aiHudNanoBananaJobEnd,
+  getAiHudNanoBananaJobProgressForNode,
+  subscribeAiHudGenerationProgress,
+} from '@/lib/ai-hud-generation-progress';
+import { geminiGenerateWithServerProgress } from '@/lib/gemini-generate-stream-client';
 import { isFoldderMediaPreviewAutoFitSuppressed } from '@/lib/media-preview-fit-suppress';
 import { NODE_REGISTRY } from './nodeRegistry';
 import { useRegisterAssistantNodeRun } from './NodeExecutionBridge';
-import { DEFAULT_EDGE_COLOR, HANDLE_COLORS } from './handle-type-colors';
+import { DEFAULT_EDGE_COLOR, FOLDDER_LOGO_BLUE, HANDLE_COLORS } from './handle-type-colors';
 import {
   NodeIcon,
   resolveFoldderNodeState,
@@ -62,6 +71,7 @@ import {
   FOLDDER_INTERNAL_CATEGORY_TO_ICON,
   type FoldderIconKey,
 } from './foldder-icons';
+import { resolvePromptValueFromEdgeSource } from './canvas-group-logic';
 import {
   FoldderDataHandle,
   foldderDataTypeFromHandleClass,
@@ -76,6 +86,8 @@ interface BaseNodeData {
   aspect_ratio?: string;
   label?: string;
   loading?: boolean;
+  error?: boolean;
+  uploadError?: string;
 }
 
 /** Same affordance as the old OUTPUT card — opens the fixed viewer for this node's media. */
@@ -104,6 +116,85 @@ function ViewerOpenButton({ nodeId, disabled, className }: { nodeId: string; dis
     >
       <Maximize2 size={9} />
     </button>
+  );
+}
+
+/** Studio en preview: mismo patrón que Nano Banana (60% alto, chip grande). */
+function StudioModeCenterButton({
+  onClick,
+  disabled,
+  className,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <div className={`pointer-events-none absolute inset-0 z-[15] overflow-hidden ${className ?? ''}`}>
+      <div
+        className="pointer-events-none absolute left-0 right-0 flex justify-center px-2"
+        style={{ top: '60%', transform: 'translateY(-50%)' }}
+      >
+        <button
+          type="button"
+          disabled={disabled}
+          title="Studio Mode"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!disabled) onClick();
+          }}
+          className="pointer-events-auto nodrag flex max-w-[min(100%,220px)] flex-col items-center gap-1.5 rounded-2xl border border-white/30 bg-white/[0.12] px-6 py-3.5 shadow-xl backdrop-blur-xl transition-all duration-300 ease-out hover:scale-[1.03] hover:bg-white/[0.22] hover:shadow-2xl disabled:pointer-events-none disabled:opacity-35"
+        >
+          <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-400">
+            Studio
+          </span>
+          <span className="flex items-center gap-2 font-mono text-[17px] font-black uppercase tracking-wide text-zinc-50">
+            <Maximize2 size={22} strokeWidth={2.5} className="shrink-0 text-violet-200" />
+            Mode
+          </span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Nano Banana: botón Studio más grande, centrado al 60% del alto del área de preview. */
+function NanoBananaStudioModeButton({
+  onClick,
+  disabled,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="pointer-events-none absolute inset-0 z-[15] overflow-hidden">
+      <div
+        className="pointer-events-none absolute left-0 right-0 flex justify-center px-2"
+        style={{ top: '60%', transform: 'translateY(-50%)' }}
+      >
+        <button
+          type="button"
+          disabled={disabled}
+          title="Abrir Studio"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!disabled) onClick();
+          }}
+          className="pointer-events-auto nodrag flex max-w-[min(100%,220px)] flex-col items-center gap-1.5 rounded-2xl border border-white/30 bg-white/[0.12] px-6 py-3.5 shadow-xl backdrop-blur-xl transition-all duration-300 ease-out hover:scale-[1.03] hover:bg-white/[0.22] hover:shadow-2xl disabled:pointer-events-none disabled:opacity-35"
+        >
+          <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-400">
+            Studio
+          </span>
+          <span className="flex items-center gap-2 font-mono text-[17px] font-black uppercase tracking-wide text-zinc-50">
+            <Maximize2 size={22} strokeWidth={2.5} className="shrink-0 text-violet-200" />
+            Mode
+          </span>
+          <span className="text-center text-[10px] font-semibold uppercase leading-tight tracking-wide text-zinc-500">
+            y abre Studio
+          </span>
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -173,7 +264,7 @@ const NodeLabel = ({ id, label, defaultLabel }: { id: string, label?: string, de
       {isEditing ? (
         <input
           autoFocus
-          className="min-w-[120px] cursor-text rounded-lg border border-white/25 bg-white/20 px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-slate-900 shadow-sm outline-none backdrop-blur-xl placeholder:text-slate-500 focus:border-cyan-400/50 focus:ring-2 focus:ring-cyan-400/25"
+          className="min-w-[120px] cursor-text rounded-lg border-0 bg-white/20 px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-slate-900 shadow-sm outline-none backdrop-blur-xl placeholder:text-slate-500 focus:ring-2 focus:ring-cyan-400/40"
           value={val}
           onChange={(e) => setVal(e.target.value)}
           onBlur={handleBlur}
@@ -182,7 +273,7 @@ const NodeLabel = ({ id, label, defaultLabel }: { id: string, label?: string, de
       ) : (
         <div 
           onDoubleClick={() => setIsEditing(true)}
-          className="flex items-center gap-2 truncate rounded-lg border border-white/25 bg-white/20 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-slate-800 shadow-sm backdrop-blur-xl transition-all select-none hover:text-cyan-900 group-hover/label:border-cyan-400/40 cursor-pointer"
+          className="flex items-center gap-2 truncate rounded-lg border-0 bg-white/20 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-slate-800 shadow-sm backdrop-blur-xl transition-all select-none hover:text-cyan-900 cursor-pointer"
           title="Double click to rename (max 5 words)"
         >
           <div className="w-1.5 h-1.5 shrink-0 rounded-full bg-cyan-600 animate-pulse" />
@@ -192,6 +283,54 @@ const NodeLabel = ({ id, label, defaultLabel }: { id: string, label?: string, de
     </div>
   );
 };
+
+const FOLDDER_HEADER_TYPEWRITER_DELAY_MS = 1000;
+
+/** Título de cabecera: estilo global + typewriter si intro; la escritura letra a letra empieza 1s después de montar. */
+export const FoldderNodeHeaderTitle = memo(function FoldderNodeHeaderTitle({
+  children,
+  introActive,
+  className,
+}: {
+  children: string;
+  introActive?: boolean;
+  className?: string;
+}) {
+  const [display, setDisplay] = useState(() => (introActive ? '' : children));
+
+  useEffect(() => {
+    if (!introActive) {
+      setDisplay(children);
+      return;
+    }
+    const len = children.length;
+    if (len === 0) {
+      setDisplay('');
+      return;
+    }
+    setDisplay('');
+    let intervalId: number | null = null;
+    const startDelay = window.setTimeout(() => {
+      const msPerChar = Math.min(45, Math.max(8, 2000 / len));
+      let i = 0;
+      intervalId = window.setInterval(() => {
+        i += 1;
+        setDisplay(children.slice(0, i));
+        if (i >= len && intervalId) {
+          window.clearInterval(intervalId);
+          intervalId = null;
+        }
+      }, msPerChar);
+    }, FOLDDER_HEADER_TYPEWRITER_DELAY_MS);
+    return () => {
+      window.clearTimeout(startDelay);
+      if (intervalId) window.clearInterval(intervalId);
+    };
+  }, [introActive, children]);
+
+  const titleClass = ['min-w-0 flex-1 node-header__title font-light', className].filter(Boolean).join(' ');
+  return <span className={titleClass}>{display}</span>;
+});
 
 export const ButtonEdge = ({
   id,
@@ -301,7 +440,10 @@ export const BackgroundNode = memo(({ id, data, selected }: NodeProps<any>) => {
             <FoldderNodeResizer minWidth={280} minHeight={200} isVisible={selected} />
 <NodeLabel id={id} label={nodeData.label} defaultLabel="Background" />
       <div className="node-header">
-        <NodeIcon type="background" selected={selected} size={16} /> CANVAS
+        <NodeIcon type="background" selected={selected} size={16} />
+        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          CANVAS
+        </FoldderNodeHeaderTitle>
       </div>
       <div className="node-content">
         <div className="grid grid-cols-2 gap-4 mb-4">
@@ -463,7 +605,9 @@ export const UrlImageNode = memo(({ id, data, selected }: NodeProps<any>) => {
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Image Search" />
       <div className="node-header">
         <NodeIcon type="urlImage" loading={loading} selected={selected} size={16} />
-        <span className="flex-1">CAROUSEL</span>
+        <FoldderNodeHeaderTitle className="flex-1" introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          CAROUSEL
+        </FoldderNodeHeaderTitle>
         {loading && <Loader2 size={12} className="animate-spin shrink-0" />}
         <ViewerOpenButton nodeId={id} disabled={!currentUrl} className="ml-auto" />
       </div>
@@ -814,16 +958,12 @@ export const ImageComposerNode = memo(({ id, data, selected }: NodeProps<any>) =
       ))}
 
       {/* Header */}
-      <div className="node-header bg-gradient-to-r from-cyan-600/20 to-indigo-600/20">
+      <div className="node-header">
         <NodeIcon type="imageComposer" selected={selected} size={16} />
-        <span>Composer</span>
+        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          Composer
+        </FoldderNodeHeaderTitle>
         <div className="node-badge">{allLayersForRender.length} layers</div>
-        <button
-          onClick={() => setIsStudioOpen(true)}
-          className="node-badge !bg-white/12 !text-white hover:!bg-white/22 transition-colors pointer-events-auto cursor-pointer flex items-center gap-1.5 border border-white/15 outline-none nodrag"
-        >
-          <Maximize2 size={10} /> STUDIO
-        </button>
       </div>
 
       {/* Mini canvas preview — min-w-0: flex no usa el ancho intrínseco del dataURL 1920×1080 */}
@@ -841,6 +981,7 @@ export const ImageComposerNode = memo(({ id, data, selected }: NodeProps<any>) =
             <span className="text-[7px] font-black uppercase tracking-widest text-zinc-500">Connect layers or add shapes</span>
           </div>
         )}
+        <StudioModeCenterButton onClick={() => setIsStudioOpen(true)} />
       </div>
 
       {/* Layer panel */}
@@ -1889,9 +2030,12 @@ export const ImageExportNode = memo(({ id, data, selected }: NodeProps<any>) => 
 
 
   return (
-    <div className={`custom-node export-node border-rose-500/30` }>
-            <FoldderNodeResizer minWidth={280} minHeight={180} isVisible={selected} />
-<NodeLabel id={id} label={data.label} defaultLabel="Export" />
+    <div
+      className="custom-node processor-node export-node border-rose-500/30"
+      style={{ minWidth: 240, maxHeight: 600 }}
+    >
+      <FoldderNodeResizer minWidth={240} minHeight={180} maxWidth={960} maxHeight={600} isVisible={selected} />
+      <NodeLabel id={id} label={data.label} defaultLabel="Export" />
 
       {/* Hidden iframe — receives the form POST response (Content-Disposition: attachment) */}
       <iframe
@@ -1923,56 +2067,99 @@ export const ImageExportNode = memo(({ id, data, selected }: NodeProps<any>) => 
         <span className="handle-label">Image Input</span>
       </div>
       <div className="node-header">
-        <NodeIcon type="imageExport" selected={selected} loading={isExporting} size={16} /> IMAGE EXPORT
+        <NodeIcon type="imageExport" selected={selected} loading={isExporting} size={16} />
+        <FoldderNodeHeaderTitle introActive={!!(data as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          IMAGE EXPORT
+        </FoldderNodeHeaderTitle>
       </div>
-      <div className="node-content">
-        <div className="flex gap-2 mb-3">
+      <div className="node-content flex flex-col gap-3">
+        <div className="flex shrink-0 flex-col gap-3">
+          <div className="flex gap-2">
+            <button
+              onClick={() => setFormat('png')}
+              className={`flex-1 py-1 rounded text-[10px] font-bold transition-all ${format === 'png' ? 'bg-[#1d2433] text-white' : 'bg-white/5 text-gray-400 border border-white/10'}`}
+            >
+              PNG
+            </button>
+            <button
+              onClick={() => setFormat('jpeg')}
+              className={`flex-1 py-1 rounded text-[10px] font-bold transition-all ${format === 'jpeg' ? 'bg-[#1d2433] text-white' : 'bg-white/5 text-gray-400 border border-white/10'}`}
+            >
+              JPG
+            </button>
+          </div>
+
           <button
-            onClick={() => setFormat('png')}
-            className={`flex-1 py-1 rounded text-[10px] font-bold transition-all ${format === 'png' ? 'bg-rose-500 text-white' : 'bg-white/5 text-gray-400 border border-white/10'}`}
-          >PNG</button>
-          <button
-            onClick={() => setFormat('jpeg')}
-            className={`flex-1 py-1 rounded text-[10px] font-bold transition-all ${format === 'jpeg' ? 'bg-rose-500 text-white' : 'bg-white/5 text-gray-400 border border-white/10'}`}
-          >JPG</button>
+            className={`execute-btn w-full justify-center ${isExporting ? 'opacity-50' : ''}`}
+            onClick={handleExport}
+            disabled={isExporting}
+          >
+            {isExporting ? (
+              <>
+                <Loader2 size={14} className="animate-spin" /> BUILDING...
+              </>
+            ) : (
+              <>
+                <Download size={14} /> EXPORT {format.toUpperCase()}
+              </>
+            )}
+          </button>
+
+          <div className="flex justify-between items-center text-[8px] font-mono text-gray-500 uppercase">
+            <span>
+              {exportW}×{exportH} PX{detectedSize ? ' · tamaño real' : ' · estimado'}
+            </span>
+            <span>COMPOSITION MODE</span>
+          </div>
         </div>
 
-        <button
-          className={`execute-btn w-full justify-center mb-4 ${isExporting ? 'opacity-50' : 'bg-rose-500/20 text-rose-400 border-rose-500/30 hover:bg-rose-500/30'}`}
-          onClick={handleExport}
-          disabled={isExporting}
+        {/* Preview: marco con la misma proporción que la imagen (exportW/H); encaja en el nodo sin deformar */}
+        <div
+          className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-[#0a0a0a] group/out"
+          style={{ minHeight: 120 }}
         >
-          {isExporting ? (
-            <><Loader2 size={14} className="animate-spin" /> BUILDING...</>
-          ) : (
-            <><Download size={14} /> EXPORT {format.toUpperCase()}</>
-          )}
-        </button>
-
-        <div className="mb-2 flex justify-between items-center text-[8px] font-mono text-gray-500 uppercase">
-          <span>{exportW}×{exportH} PX{detectedSize ? ' · tamaño real' : ' · estimado'}</span>
-          <span>COMPOSITION MODE</span>
-        </div>
-
-        <div className="relative w-full aspect-video bg-slate-50 rounded-xl overflow-hidden border border-white/10 flex items-center justify-center">
           {directImageSrc ? (
-            <img src={directImageSrc} className="w-full h-full object-contain" alt="Export preview" />
+            <div
+              className="max-h-full max-w-full min-h-0 min-w-0"
+              style={{
+                aspectRatio: `${Math.max(1, exportW)} / ${Math.max(1, exportH)}`,
+              }}
+            >
+              <img
+                src={directImageSrc}
+                className="block h-full w-full object-contain"
+                alt="Export preview"
+              />
+            </div>
           ) : isComposer && composerPreviewUrl ? (
-            <img src={composerPreviewUrl} className="w-full h-full object-contain" alt="Composed preview" />
+            <div
+              className="max-h-full max-w-full min-h-0 min-w-0"
+              style={{
+                aspectRatio: `${Math.max(1, exportW)} / ${Math.max(1, exportH)}`,
+              }}
+            >
+              <img
+                src={composerPreviewUrl}
+                className="block h-full w-full object-contain"
+                alt="Composed preview"
+              />
+            </div>
           ) : isComposer && previewLoading ? (
             <div className="flex flex-col items-center gap-2 text-rose-400">
               <Loader2 size={28} className="animate-spin" />
               <span className="text-[9px] font-black uppercase">Updating preview…</span>
             </div>
           ) : isComposer ? (
-            <div className="flex flex-col items-center gap-2 text-rose-500/50 px-4 text-center">
+            <div className="flex flex-col items-center gap-2 px-4 text-center text-rose-500/50">
               <Layers size={32} />
               <span className="text-[9px] font-black uppercase">
-                {layers.length ? `Compose ${layers.length} layer(s) — preview when ready` : 'Connect layers to composer'}
+                {layers.length
+                  ? `Compose ${layers.length} layer(s) — preview when ready`
+                  : 'Connect layers to composer'}
               </span>
             </div>
           ) : (
-            <div className="flex flex-col items-center gap-2 text-gray-700">
+            <div className="flex flex-col items-center gap-2 text-gray-500">
               <ImageIcon size={32} />
               <span className="text-[9px] font-black uppercase">No source connected</span>
             </div>
@@ -2038,12 +2225,16 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   const handleFileUpload = async (file: File) => {
     setIsUploadingLocal(true);
+    updateNodeData({ error: false, uploadError: undefined });
     const formData = new FormData();
     formData.append('file', file);
     try {
       const res = await fetch('/api/runway/upload', { method: 'POST', body: formData });
-      const json = await res.json();
-      if (json.url) {
+      const json = await readResponseJson<{ url?: string; s3Key?: string; error?: string }>(
+        res,
+        'POST /api/runway/upload (mediaInput)'
+      );
+      if (json?.url) {
         const type = getFileType(file.name, file.type);
         const mockMetadata = {
           size: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
@@ -2057,11 +2248,30 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
           source: 'upload',
           metadata: mockMetadata,
           ...(json.s3Key ? { s3Key: json.s3Key } : {}),
+          error: false,
+          uploadError: undefined,
         });
         if (type === 'image' || type === 'video') scheduleFitViewportToThisNode({ force: true });
+      } else {
+        const detail =
+          json?.error ||
+          (!res.ok ? `HTTP ${res.status}` : undefined) ||
+          'El servidor no devolvió URL (revisa S3 y la consola).';
+        console.error('[MediaInput] upload failed:', detail, json);
+        updateNodeData({
+          error: true,
+          uploadError: detail,
+        });
       }
-    } catch (err) { console.error("Upload error:", err); } 
-    finally { setIsUploadingLocal(false); }
+    } catch (err) {
+      console.error('Upload error:', err);
+      updateNodeData({
+        error: true,
+        uploadError: err instanceof Error ? err.message : 'Error de red',
+      });
+    } finally {
+      setIsUploadingLocal(false);
+    }
   };
 
   const mediaIconKey = (): FoldderIconKey => {
@@ -2078,10 +2288,13 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   const getTitleColor = () => {
     switch (nodeData.type) {
-      case 'video': return '#f43f5e';
-      case 'image': return '#ec4899';
-      case 'audio': return '#a855f7';
-      default: return '#9ca3af';
+      case 'video':
+      case 'image':
+        return FOLDDER_LOGO_BLUE;
+      case 'audio':
+        return '#a855f7';
+      default:
+        return '#9ca3af';
     }
   };
 
@@ -2091,7 +2304,7 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
   return (
     <div
       className="custom-node"
-      style={{ padding: 0, minWidth: 280, borderRadius: 18, overflow: 'visible' }}
+      style={{ padding: 0, minWidth: 280, borderRadius: 9, overflow: 'visible' }}
     >
       <FoldderNodeResizer minWidth={280} minHeight={320} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel={nodeData.type ? `${nodeData.type.charAt(0).toUpperCase() + nodeData.type.slice(1)} Input` : 'Media Input'} />
@@ -2099,9 +2312,14 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
       {/* Persistent header */}
       <div className="node-header">
         <NodeIcon type="mediaInput" iconKey={mediaIconKey()} selected={selected} loading={isUploading} size={16} />
-        <span className="min-w-0 flex-1 font-black tracking-tighter uppercase">{nodeData.type || 'Media'} Input</span>
+        <FoldderNodeHeaderTitle
+          className="min-w-0 flex-1 tracking-tighter uppercase"
+          introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}
+        >
+          {`${nodeData.type || 'Media'} Input`}
+        </FoldderNodeHeaderTitle>
         {nodeData.type && (
-          <span className="shrink-0 text-[8px] bg-white/10 px-2 py-0.5 rounded-full font-black uppercase tracking-widest text-white/75">
+          <span className="shrink-0 text-[8px] bg-white/10 px-2 py-0.5 rounded-full font-light uppercase tracking-widest text-white/75">
             {nodeData.source || 'upload'}
           </span>
         )}
@@ -2111,7 +2329,7 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
       {/* Full-bleed drop zone / preview */}
       <div
         className={`relative w-full ${hasMedia && isVisual ? 'aspect-video' : 'min-h-[160px] flex items-center justify-center'} bg-zinc-900 cursor-pointer transition-all overflow-hidden`}
-        style={{ outline: isDragOver ? '2px dashed #ec4899' : 'none', outlineOffset: '-2px' }}
+        style={{ outline: isDragOver ? `2px dashed ${FOLDDER_LOGO_BLUE}` : 'none', outlineOffset: '-2px' }}
         onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
         onDragLeave={() => setIsDragOver(false)}
         onDrop={(e) => { e.preventDefault(); setIsDragOver(false); const file = e.dataTransfer.files[0]; if (file) handleFileUpload(file); }}
@@ -2130,6 +2348,27 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
           <div className="flex flex-col items-center gap-2 text-rose-400">
             <Loader2 size={28} className="animate-spin" />
             <span className="text-[9px] font-bold uppercase tracking-widest">Uploading…</span>
+          </div>
+        ) : nodeData.error && !hasMedia ? (
+          <div
+            className="flex flex-col items-center gap-2 px-4 text-center text-rose-400"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <AlertCircle size={28} className="shrink-0" />
+            <span className="text-[9px] font-bold uppercase tracking-widest">Error al subir</span>
+            {nodeData.uploadError && (
+              <span className="text-[8px] leading-snug text-rose-200/90">{nodeData.uploadError}</span>
+            )}
+            <button
+              type="button"
+              className="nodrag mt-1 rounded-lg border border-white/20 bg-white/10 px-3 py-1.5 text-[9px] font-black uppercase tracking-widest text-white hover:bg-white/20"
+              onClick={(e) => {
+                e.stopPropagation();
+                fileInputRef.current?.click();
+              }}
+            >
+              Reintentar
+            </button>
           </div>
         ) : hasMedia && nodeData.type === 'video' ? (
           <div className="relative w-full h-full">
@@ -2337,7 +2576,10 @@ export const PromptNode = memo(({ id, data, selected }: NodeProps<any>) => {
     <div className="custom-node prompt-node prompt-node--compact" style={{ minWidth: 260 }}>
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Prompt" />
       <div className="node-header">
-        <NodeIcon type="promptInput" selected={selected} size={16} /> PROMPT
+        <NodeIcon type="promptInput" selected={selected} size={16} />
+        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          PROMPT
+        </FoldderNodeHeaderTitle>
       </div>
       <div className="node-content node-content--prompt-fill">
         <textarea
@@ -2392,10 +2634,9 @@ export const ConcatenatorNode = memo(({ id, data, selected }: NodeProps<any>) =>
 
   // Dynamic logic: result is concatenation of all connected prompt values
   useEffect(() => {
-    const values = connectedEdges.map((edge: any) => {
-      const sourceNode = nodes.find((n) => n.id === edge.source);
-      return sourceNode?.data.value || '';
-    });
+    const values = connectedEdges.map((edge: any) =>
+      resolvePromptValueFromEdgeSource(edge, nodes)
+    );
 
     const result = values.filter((v: any) => v).join(' ').trim();
     if (result !== (nodeData.value || '')) {
@@ -2428,16 +2669,18 @@ export const ConcatenatorNode = memo(({ id, data, selected }: NodeProps<any>) =>
               dataType="prompt"
               className={connectedHandleIds.has(hId) ? '' : 'opacity-40'}
             />
-            <span className="handle-label" style={{ fontSize: 7 }}>
+            <span className="handle-label" style={{ fontSize: 4 }}>
               {connectedHandleIds.has(hId) ? `In ${index + 1} ✓` : `In ${index + 1}`}
             </span>
           </div>
         );
       })}
       
-      <div className="node-header bg-gradient-to-r from-blue-600/20 to-cyan-600/20">
+      <div className="node-header">
         <NodeIcon type="concatenator" selected={selected} size={16} />
-        <span>Concatenator</span>
+        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          Concatenator
+        </FoldderNodeHeaderTitle>
         <div className="node-badge">UTILITY</div>
       </div>
       <div className="node-content">
@@ -2456,6 +2699,12 @@ export const ConcatenatorNode = memo(({ id, data, selected }: NodeProps<any>) =>
     </div>
   );
 });
+
+/** Salida del listado: título del nodo (data.label) + texto de la opción elegida. */
+function formatListadoOutput(label: string | undefined, rawOptionValue: string): string {
+  const name = (label ?? '').trim() || 'Listado';
+  return `${name}: ${rawOptionValue}`;
+}
 
 export const ListadoNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const nodeData = data as BaseNodeData & { selectedEdgeId?: string };
@@ -2484,8 +2733,7 @@ export const ListadoNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   const options = useMemo(() => {
     return connectedEdges.map((edge: any, i: number) => {
-      const sourceNode = nodes.find((n) => n.id === edge.source);
-      const val = String(sourceNode?.data?.value ?? '');
+      const val = String(resolvePromptValueFromEdgeSource(edge, nodes) ?? '');
       const truncated = val.length > 72 ? `${val.slice(0, 72)}…` : val;
       const display = val.trim() ? truncated : `(vacío) · entrada ${i + 1}`;
       return {
@@ -2515,7 +2763,7 @@ export const ListadoNode = memo(({ id, data, selected }: NodeProps<any>) => {
       edgeId = options[0].edgeId;
     }
     const chosen = options.find((o) => o.edgeId === edgeId)!;
-    const newVal = chosen.value;
+    const newVal = formatListadoOutput(nodeData.label, chosen.value);
     if (newVal !== (nodeData.value ?? '') || edgeId !== nodeData.selectedEdgeId) {
       setNodes((nds: any) =>
         nds.map((n: any) =>
@@ -2525,7 +2773,7 @@ export const ListadoNode = memo(({ id, data, selected }: NodeProps<any>) => {
         )
       );
     }
-  }, [options, nodeData.selectedEdgeId, nodeData.value, id, setNodes]);
+  }, [options, nodeData.selectedEdgeId, nodeData.value, nodeData.label, id, setNodes]);
 
   return (
     <div className="custom-node tool-node" style={{ minWidth: 280 }}>
@@ -2550,20 +2798,22 @@ export const ListadoNode = memo(({ id, data, selected }: NodeProps<any>) => {
               dataType="prompt"
               className={connectedHandleIds.has(hId) ? '' : 'opacity-40'}
             />
-            <span className="handle-label" style={{ fontSize: 7 }}>
+            <span className="handle-label" style={{ fontSize: 4 }}>
               {connectedHandleIds.has(hId) ? `In ${index + 1} ✓` : `In ${index + 1}`}
             </span>
           </div>
         );
       })}
 
-      <div className="node-header bg-gradient-to-r from-violet-600/25 to-indigo-600/20">
+      <div className="node-header">
         <NodeIcon type="listado" selected={selected} size={16} />
-        <span>Listado</span>
+        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          Listado
+        </FoldderNodeHeaderTitle>
         <div className="node-badge">LOGIC</div>
       </div>
       <div className="node-content flex flex-col gap-2 px-3 pb-3 pt-2">
-        <label className="node-label text-[9px] text-gray-500">Salida (texto del prompt)</label>
+        <label className="node-label text-[9px] text-gray-500">Salida (título del nodo: texto elegido)</label>
         <select
           className="nodrag nowheel w-full cursor-pointer rounded-lg border border-slate-200/70 bg-white/[0.92] px-2.5 py-2 text-[11px] font-medium text-slate-800 shadow-inner outline-none transition-colors focus:border-cyan-400/60 focus:ring-1 focus:ring-cyan-400/30"
           value={nodeData.selectedEdgeId && options.some((o) => o.edgeId === nodeData.selectedEdgeId) ? nodeData.selectedEdgeId : options[0]?.edgeId || ''}
@@ -2571,18 +2821,18 @@ export const ListadoNode = memo(({ id, data, selected }: NodeProps<any>) => {
             const nextId = e.target.value;
             const opt = options.find((o) => o.edgeId === nextId);
             setNodes((nds: any) =>
-              nds.map((n: any) =>
-                n.id === id
-                  ? {
-                      ...n,
-                      data: {
-                        ...n.data,
-                        selectedEdgeId: nextId || undefined,
-                        value: opt?.value ?? '',
-                      },
-                    }
-                  : n
-              )
+              nds.map((n: any) => {
+                if (n.id !== id) return n;
+                const lbl = (n.data as BaseNodeData)?.label;
+                return {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    selectedEdgeId: nextId || undefined,
+                    value: formatListadoOutput(lbl, opt?.value ?? ''),
+                  },
+                };
+              })
             );
           }}
           disabled={options.length === 0}
@@ -2600,7 +2850,7 @@ export const ListadoNode = memo(({ id, data, selected }: NodeProps<any>) => {
         <div className="rounded-md border border-slate-200/40 bg-slate-50/40 px-2 py-1.5 text-[9px] leading-snug text-slate-500">
           {options.length === 0
             ? 'Conecta varios prompts por la izquierda; elige cuál enviar por la salida.'
-            : `${options.length} fuente(s) · texto de salida según la opción elegida.`}
+            : `${options.length} fuente(s) · salida: «${(nodeData.label ?? '').trim() || 'Listado'}»: texto de la opción.`}
         </div>
       </div>
 
@@ -2631,19 +2881,20 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
   );
 
   const connectedHandleIds = new Set(connectedEdges.map((e: any) => e.targetHandle));
-  // How many handles to visually show (connected + 1 empty, min 1, max 8)
-  const visibleCount = Math.min(connectedEdges.length + 1, ALL_HANDLES.length);
+  /** Misma lógica que Concatenator: al menos 1 ranura visible. */
+  const visibleCount = Math.min(Math.max(connectedEdges.length + 1, 1), ALL_HANDLES.length);
 
   useEffect(() => {
     updateNodeInternals(id);
   }, [id, connectedEdges.length, visibleCount, updateNodeInternals]);
 
   // Live concatenation
-  const concatenated = useMemo(() =>
-    connectedEdges
-      .map((edge: any) => nodes.find((n: any) => n.id === edge.source)?.data.value || '')
-      .filter(Boolean)
-      .join('\n\n'),
+  const concatenated = useMemo(
+    () =>
+      connectedEdges
+        .map((edge: any) => resolvePromptValueFromEdgeSource(edge, nodes))
+        .filter(Boolean)
+        .join('\n\n'),
     [connectedEdges, nodes]
   );
 
@@ -2675,13 +2926,11 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
   };
 
   return (
-    <div className={`custom-node tool-node` } style={{ minWidth: 280 }}>
-      <FoldderNodeResizer minWidth={280} minHeight={200} maxWidth={620} maxHeight={660} isVisible={selected} />
+    <div className="custom-node tool-node" style={{ minWidth: 240 }}>
+      <FoldderNodeResizer minWidth={240} minHeight={180} maxWidth={600} maxHeight={520} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Enhancer" />
 
-      {/* Always render all 8 handles; hide extras beyond connected+1 */}
       {ALL_HANDLES.map((hId, index) => {
-        const connected = connectedHandleIds.has(hId);
         const visible = index < visibleCount;
         return (
           <div
@@ -2689,7 +2938,6 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
             className="handle-wrapper handle-left"
             style={{
               top: `${((index + 1) / (ALL_HANDLES.length + 1)) * 100}%`,
-              // No usar visibility:hidden: puede impedir que XYFlow registre handleBounds y las aristas no existen en pantalla.
               opacity: visible ? 1 : 0,
               pointerEvents: visible ? 'auto' : 'none',
             }}
@@ -2699,51 +2947,48 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
               position={Position.Left}
               id={hId}
               dataType="prompt"
-              className={connected ? '' : 'opacity-40'}
+              className={connectedHandleIds.has(hId) ? '' : 'opacity-40'}
             />
-            <span className="handle-label" style={{ fontSize: 7 }}>
-              {connected ? `P${index + 1} ✓` : `P${index + 1}`}
+            <span className="handle-label" style={{ fontSize: 4 }}>
+              {connectedHandleIds.has(hId) ? `In ${index + 1} ✓` : `In ${index + 1}`}
             </span>
           </div>
         );
       })}
 
-      <div className="node-header bg-gradient-to-r from-purple-600/20 to-indigo-600/20">
+      <div className="node-header">
         <NodeIcon type="enhancer" selected={selected} loading={loading} size={16} />
-        <span>Prompt Enhancer</span>
-        <div className="node-badge">AI TOOL</div>
+        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          Prompt Enhancer
+        </FoldderNodeHeaderTitle>
+        <div className="node-badge">UTILITY</div>
       </div>
 
-      <div className="node-content space-y-3">
-        {concatenated ? (
-          <div className="p-2 rounded-lg border border-purple-500/20 bg-purple-500/5 text-[9px] text-purple-300 font-mono leading-relaxed max-h-[100px] overflow-y-auto whitespace-pre-wrap">
-            {concatenated}
-          </div>
-        ) : (
-          <div className="p-2 rounded-lg border border-white/5 bg-white/[0.02] text-[9px] text-zinc-600 italic">
-            Connect prompts to see concatenation…
-          </div>
-        )}
+      <div className="node-content flex min-w-0 flex-col gap-2">
+        <div className="min-w-0 w-full max-w-full p-3 bg-slate-50/50 rounded-lg text-[10px] text-gray-400 font-mono italic min-h-[50px] max-h-[150px] overflow-y-auto break-words whitespace-pre-wrap">
+          {concatenated || 'Connect prompts to combine them…'}
+        </div>
+        <div className="text-[8px] text-gray-600 uppercase font-bold tracking-tighter">
+          {connectedEdges.length} Inputs active
+        </div>
 
-        {connectedEdges.length > 0 && (
-          <div className="text-[8px] font-black text-purple-400/70 uppercase tracking-widest">
-            {connectedEdges.length} prompt{connectedEdges.length > 1 ? 's' : ''} connected
-          </div>
-        )}
-
-        <button className="execute-btn w-full" onClick={handleEnhance} disabled={loading}>
-          {loading ? <><Loader2 size={12} className="animate-spin" /> ENHANCING…</> : 'ENHANCE WITH OPENAI'}
+        <button type="button" className="execute-btn w-full shrink-0" onClick={handleEnhance} disabled={loading}>
+          {loading ? (
+            <>
+              <Loader2 size={12} className="animate-spin" /> ENHANCING…
+            </>
+          ) : (
+            'ENHANCE WITH OPENAI'
+          )}
         </button>
 
-        {nodeData.value && (
-          <div className="p-3 bg-slate-50/50 rounded-lg text-[10px] text-gray-300 italic min-h-[60px] max-h-[140px] overflow-y-auto">
-            {nodeData.value}
-          </div>
-        )}
+        <div className="min-w-0 w-full max-w-full p-3 bg-slate-50/50 rounded-lg text-[10px] text-gray-400 font-mono italic min-h-[50px] max-h-[180px] overflow-y-auto break-words whitespace-pre-wrap">
+          {nodeData.value || 'Enhanced prompt appears here…'}
+        </div>
       </div>
 
       <div className="handle-wrapper handle-right">
-        <span className="handle-label">Enhanced</span>
+        <span className="handle-label">Result</span>
         <FoldderDataHandle type="source" position={Position.Right} id="prompt" dataType="prompt" />
       </div>
     </div>
@@ -2838,8 +3083,11 @@ export const GrokNode = memo(({ id, data, selected }: NodeProps<any>) => {
           selected={selected}
           state={resolveFoldderNodeState({ error: status === 'error', loading: status === 'running', done: status === 'success' })}
           size={16}
-        />{' '}
-        GROK IMAGINE</div>
+        />
+        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          GROK IMAGINE
+        </FoldderNodeHeaderTitle>
+      </div>
       <div className="node-content">
         <div className="flex gap-2 mb-3">
           <select className="node-input text-[10px]" value={nodeData.resolution || '720p'} onChange={(e) => setNodes((nds: any) => nds.map((n: any) => n.id === id ? {...n, data: {...n.data, resolution: e.target.value}} : n))}>
@@ -2891,6 +3139,8 @@ const REF_SLOTS = [
   { id: 'image4', label: 'Ref 4', top: '66%' },
 ] as const;
 
+/** Stable empty ref for `generationHistory` when absent (avoid new [] each render). */
+const NANO_BANANA_EMPTY_GEN_HISTORY: string[] = [];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NanoBanana STUDIO — fullscreen iterative image generation with paint masks
@@ -3109,9 +3359,17 @@ interface NanoBananaStudioProps {
   resolution: string;
   thinking: boolean;
   prompt: string;
+  /**
+   * Tras abrir el Studio al menos una vez en el nodo: no usar el prompt del grafo;
+   * solo instrucciones / cámara / zonas configuradas dentro del Studio.
+   */
+  externalPromptIgnored?: boolean;
   onClose: () => void;
   onGenerated: (dataUrl: string, s3Key?: string) => void;
   onResolutionChange?: (resolution: '1k' | '2k' | '4k') => void;
+  /** Historial de generaciones previas (estado en el nodo para no perderlo al cerrar Studio). */
+  generationHistory: string[];
+  onGenerationHistoryChange: React.Dispatch<React.SetStateAction<string[]>>;
 }
 
 // NanaBananaPaintCanvas: draws ONLY over the actual image pixels.
@@ -3214,7 +3472,8 @@ const hexToRgb = (hex: string): [number, number, number] => {
 
 const NanoBananaStudio = memo(({
   nodeId, initialImage, lastGenerated, modelKey, aspectRatio, resolution,
-  thinking, prompt, onClose, onGenerated, onResolutionChange,
+  thinking, prompt, externalPromptIgnored, onClose, onGenerated, onResolutionChange,
+  generationHistory, onGenerationHistoryChange,
 }: NanoBananaStudioProps) => {
   // ── Generation state ────────────────────────────────────────────────────
   const [genStatus, setGenStatus] = useState<'idle'|'running'|'success'|'error'>('idle');
@@ -3250,6 +3509,12 @@ const NanoBananaStudio = memo(({
   const [brushColor, setBrushColor] = useState('#ff3366');
   const [brushSize, setBrushSize] = useState(12);
   const pendingPaintRef = useRef<string|null>(null);
+  /** Copia síncrona de `currentImage` para archivar la salida anterior al generar (evita cierres obsoletos). */
+  const currentImageRef = useRef<string | null>(null);
+
+  const [galleryOpen, setGalleryOpen] = useState(true);
+
+  currentImageRef.current = currentImage;
 
   // ── Pan / Zoom viewer (ref-based, no re-render = smooth) ──────────────────
   const vZoom  = useRef(1);
@@ -3324,57 +3589,76 @@ const NanoBananaStudio = memo(({
 
   // ── Generate ──────────────────────────────────────────────────────────────
   const onGenerate = async () => {
-    if (!prompt) return alert('No hay prompt conectado.');
-    setGenStatus('running');
-    setProgress(0);
-    const interval = setInterval(() => {
-      setProgress(p => { const n = p + (isPro ? 0.6 : 1.2); return n > 92 ? 92 : n; });
-    }, 400);
-
+    const graphPrompt = externalPromptIgnored ? '' : String(prompt ?? '');
+    if (!externalPromptIgnored && !graphPrompt.trim()) {
+      return alert('No hay prompt conectado.');
+    }
     const imageToSend = (generatedOnce && reSendGenerated && currentImage)
       ? currentImage
       : initialImage;
 
     const changeDescriptions = changes.map(c => c.description).filter(Boolean).join('. ');
-    const fullPrompt = changeDescriptions
-      ? `${prompt}. INSTRUCCIONES DE CAMBIO: ${changeDescriptions}`
-      : prompt;
+    let fullPrompt: string;
+    if (changeDescriptions) {
+      fullPrompt = graphPrompt
+        ? `${graphPrompt}. INSTRUCCIONES DE CAMBIO: ${changeDescriptions}`
+        : `INSTRUCCIONES DE CAMBIO: ${changeDescriptions}`;
+    } else {
+      fullPrompt = graphPrompt;
+    }
+    if (!fullPrompt.trim()) {
+      return alert(
+        externalPromptIgnored
+          ? 'En Studio (modo avanzado) añade instrucciones: cambios globales, zonas, cámara o previsualización.'
+          : 'No hay prompt conectado.'
+      );
+    }
+
+    setGenStatus('running');
+    setProgress(0);
+    aiHudNanoBananaJobStart(nodeId);
 
     const maskImages = changes.map(c => c.paintData).filter(Boolean) as string[];
     const refImages = [...(imageToSend ? [imageToSend] : []), ...maskImages];
 
     try {
       const ok = await runAiJobWithNotification({ nodeId, label: 'Nano Banana Studio' }, async () => {
-        const res = await fetch('/api/gemini/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        const json = await geminiGenerateWithServerProgress(
+          {
             prompt: fullPrompt,
             images: refImages,
             aspect_ratio: aspectRatio,
             resolution: isFlash25 ? '1k' : studioResolution,
             model: studioModelKey,
             thinking: thinking && isPro,
-          }),
+          },
+          (pct) => {
+            setProgress(pct);
+            aiHudNanoBananaJobProgress(nodeId, pct);
+          }
+        );
+        const out = json.output;
+        const prev = currentImageRef.current;
+        onGenerationHistoryChange((h) => {
+          const next = [...h];
+          if (prev && prev !== out && !next.includes(prev)) next.push(prev);
+          if (!next.includes(out)) next.push(out);
+          return next;
         });
-        if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.error || `HTTP ${res.status}`); }
-        const json = await res.json();
-        if (json.output) {
-          setCurrentImage(json.output);
-          setGeneratedOnce(true);
-          setReSendGenerated(true);
-          setGenStatus('success');
-          onGenerated(json.output, typeof json.key === 'string' ? json.key : undefined);
-        } else throw new Error('No output');
+        currentImageRef.current = out;
+        setCurrentImage(out);
+        setGeneratedOnce(true);
+        setReSendGenerated(true);
+        setGenStatus('success');
+        onGenerated(out, typeof json.key === 'string' ? json.key : undefined);
       });
-      clearInterval(interval);
       if (ok) setProgress(100);
       else setGenStatus('error');
     } catch (e: any) {
-      clearInterval(interval);
       console.error('[NanoBananaStudio] onGenerate:', e);
       setGenStatus('error');
     } finally {
+      aiHudNanoBananaJobEnd(nodeId);
       setTimeout(() => setProgress(0), 1000);
     }
   };
@@ -3528,7 +3812,13 @@ const NanoBananaStudio = memo(({
 
     // ── Prompt cache: skip AI call if changes haven't changed ──────────────────
     const changesKey = JSON.stringify(
-      validChanges.map(c => ({ id: c.id, desc: c.description, color: c.assignedColor.name, hasPaint: !!c.paintData }))
+      validChanges.map(c => ({
+        id: c.id,
+        desc: c.description,
+        color: c.assignedColor.name,
+        hasPaint: !!c.paintData,
+        isGlobal: !!c.isGlobal,
+      }))
     );
     if (cachedPromptData && cachedPromptData.changesKey === changesKey) {
       // No changes since last call — reuse cached preview (only update colorMap URL)
@@ -3622,12 +3912,14 @@ const NanoBananaStudio = memo(({
         });
       }
 
+      const hasPaintedZones = validChanges.some(c => !c.isGlobal && c.paintData);
       const aiRes = await fetch('/api/gemini/analyze-areas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           baseImage: currentImage,
-          colorMapImage: markedBaseUrl, // now a marked base image, not abstract color map
+          // Sin zonas pintadas no enviamos un segundo bitmap (evita duplicar la base o un mapa negro inútil).
+          colorMapImage: hasPaintedZones ? markedBaseUrl : null,
           changes: validChanges.map(c => ({
             color: c.assignedColor.name,
             description: c.description.trim(),
@@ -3636,6 +3928,7 @@ const NanoBananaStudio = memo(({
             paintData: c.paintData ?? null,
             assignedColorHex: c.assignedColor.hex,
             referenceImageData: c.referenceImage ?? null,
+            isGlobal: !!c.isGlobal,
           })),
         }),
       });
@@ -3680,10 +3973,7 @@ const NanoBananaStudio = memo(({
     setCallPreview(null); // close preview
     setGenStatus('running');
     setProgress(0);
-
-    const interval = setInterval(() => {
-      setProgress(p => { const n = p + (isPro ? 0.6 : 1.2); return n > 92 ? 92 : n; });
-    }, 400);
+    aiHudNanoBananaJobStart(nodeId);
 
     const ref2 = markedRef2 || colorMapUrl;
     const refImages = [
@@ -3694,43 +3984,49 @@ const NanoBananaStudio = memo(({
 
     try {
       const ok = await runAiJobWithNotification({ nodeId, label: 'Nano Banana Studio' }, async () => {
-        const res = await fetch('/api/gemini/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        const json = await geminiGenerateWithServerProgress(
+          {
             prompt: customPrompt,
             images: refImages,
             aspect_ratio: aspectRatio,
             resolution: isFlash25 ? '1k' : studioResolution,
             model: studioModelKey,
             thinking: thinking && isPro,
-          }),
+          },
+          (pct) => {
+            setProgress(pct);
+            aiHudNanoBananaJobProgress(nodeId, pct);
+          }
+        );
+        const out = json.output;
+        const prev = currentImageRef.current;
+        onGenerationHistoryChange((h) => {
+          const next = [...h];
+          if (prev && prev !== out && !next.includes(prev)) next.push(prev);
+          if (!next.includes(out)) next.push(out);
+          return next;
         });
-        if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.error || `HTTP ${res.status}`); }
-        const json = await res.json();
-        if (json.output) {
-          setCurrentImage(json.output);
-          setGeneratedOnce(true);
-          setReSendGenerated(true);
-          setGenStatus('success');
-          onGenerated(json.output, typeof json.key === 'string' ? json.key : undefined);
-        } else throw new Error('No output');
+        currentImageRef.current = out;
+        setCurrentImage(out);
+        setGeneratedOnce(true);
+        setReSendGenerated(true);
+        setGenStatus('success');
+        onGenerated(out, typeof json.key === 'string' ? json.key : undefined);
       });
-      clearInterval(interval);
       if (ok) setProgress(100);
       else setGenStatus('error');
     } catch (e: any) {
-      clearInterval(interval);
       console.error('[NanoBananaStudio] onGenerateFromCall:', e);
       setGenStatus('error');
     } finally {
+      aiHudNanoBananaJobEnd(nodeId);
       setTimeout(() => setProgress(0), 1000);
     }
   };
 
     return createPortal(
     <div
-      className="nb-studio-root fixed inset-0 z-[9999] flex flex-col"
+      className="nb-studio-root fixed inset-0 flex flex-col"
       data-foldder-studio-canvas=""
     >
 
@@ -3824,6 +4120,14 @@ const NanoBananaStudio = memo(({
             ))}
           </div>
         )}
+        {studioModelKey === 'flash25' && (
+          <span
+            className="max-w-[11rem] shrink-0 text-[8px] font-semibold leading-tight text-amber-200/85"
+            title="NB 1 (rápido) solo genera en 1K. Para 2K/4K usa NB 2 o Pro. Varios pasos img→img pueden suavizar detalle."
+          >
+            1K fijo · img→img puede perder nitidez
+          </span>
+        )}
 
         {/* Divider */}
         {generatedOnce && <div className="h-6 w-px bg-zinc-600/60 shrink-0" aria-hidden />}
@@ -3890,10 +4194,58 @@ const NanoBananaStudio = memo(({
         </button>
       </div>
 
+      {/* ══ Galería (historial) + lienzo ═════════════════════════════════════════ */}
+      <div className="flex min-h-0 w-full flex-1 flex-row">
+        <div
+          className="flex shrink-0 flex-col overflow-hidden border-r border-white/[0.08] bg-[#08080c]/98 transition-[width] duration-200 ease-out"
+          style={{ width: galleryOpen ? 200 : 44 }}
+        >
+          <button
+            type="button"
+            onClick={() => setGalleryOpen((o) => !o)}
+            className="flex items-center justify-center gap-1 border-b border-white/[0.08] px-2 py-2.5 text-[9px] font-black uppercase tracking-wider text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-zinc-200"
+            title={galleryOpen ? 'Ocultar historial' : 'Mostrar historial de generaciones'}
+          >
+            <ChevronRight size={14} className={`shrink-0 transition-transform ${galleryOpen ? 'rotate-180' : ''}`} aria-hidden />
+            {galleryOpen && <span className="truncate">Historial</span>}
+          </button>
+          {galleryOpen && (
+            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden p-2">
+              {generationHistory.length === 0 ? (
+                <p className="px-1 text-[9px] leading-snug text-zinc-600">
+                  Cada generación añade la imagen anterior y la nueva al historial. La última miniatura coincide con la vista actual. Pulsa cualquiera para recuperarla.
+                </p>
+              ) : (
+                generationHistory.map((url, i) => (
+                  <button
+                    key={`hist-${i}-${url.slice(0, 48)}`}
+                    type="button"
+                    onClick={() => {
+                      setCurrentImage(url);
+                      currentImageRef.current = url;
+                      setGeneratedOnce(true);
+                      setReSendGenerated(true);
+                      /** Salida del nodo + preview del canvas: misma URL que la vista. */
+                      onGenerated(url);
+                    }}
+                    className="relative aspect-square w-full shrink-0 overflow-hidden rounded-lg border border-white/10 transition-colors hover:border-violet-500/55 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/60"
+                    title={`Generación ${i + 1}`}
+                  >
+                    <img src={url} alt="" className="h-full w-full object-cover" />
+                    <span className="absolute bottom-1 right-1 rounded bg-black/75 px-1 text-[8px] font-bold text-zinc-200">
+                      {i + 1}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+
       {/* ══ CANVAS (flex-1) ════════════════════════════════════════════════════ */}
       <div
           ref={containerRef}
-          className="flex-1 relative overflow-hidden"
+          className="relative min-w-0 flex-1 overflow-hidden"
           style={{ background: '#0a0a0f', cursor: addingChange ? 'crosshair' : 'grab' }}
           onWheel={e => {
             e.preventDefault();
@@ -4016,6 +4368,7 @@ const NanoBananaStudio = memo(({
           style={{ display: 'none', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', border: '1px solid rgba(255,255,255,0.08)' }}
         />
       </div>
+      </div>{/* end gallery + canvas row */}
 
       {/* ══ BOTTOM BAR: Changes ════════════════════════════════════════════════ */}
       <div
@@ -4281,7 +4634,7 @@ const NanoBananaStudio = memo(({
       {/* ── Call Preview Modal ─────────────────────────────────────────── */}
       {callPreview && (
         <div
-          className="fixed inset-0 z-[10000] flex items-center justify-center p-6"
+          className="fixed inset-0 z-[10060] flex items-center justify-center p-6"
           style={{ background: 'rgba(0,0,0,0.88)' }}
           data-foldder-studio-canvas=""
         >
@@ -4356,7 +4709,9 @@ const NanoBananaStudio = memo(({
                 rows={8}
                 className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 text-[10px] text-zinc-300 font-mono leading-relaxed resize-none"
               />
-              <p className="text-[8px] text-zinc-600">ref1=imagen base · ref2=zonas pintadas · ref3=grid de referencias visuales</p>
+              <p className="text-[8px] text-zinc-600 leading-snug">
+                ref1 = base · ref2 = dónde editar (prioridad sobre texto si choca izq./der.) · ref3 = estilos de referencia
+              </p>
             </div>
             {/* Send button */}
             <div className="px-6 py-4 border-t border-white/[0.07] flex justify-end gap-3">
@@ -4389,6 +4744,8 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
     resolution?: string;
     modelKey?: string;
     thinking?: boolean;
+    /** Persisted with the project (Studio + main-run versions). */
+    generationHistory?: string[];
   };
   const nodes = useNodes();
   const edges = useEdges();
@@ -4398,6 +4755,46 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const [result, setResult] = useState<string | null>(null);
   const [showFullSize, setShowFullSize] = useState(false);
   const [showStudio, setShowStudio] = useState(false);
+
+  const persistedGenerationHistory = Array.isArray(nodeData.generationHistory)
+    ? nodeData.generationHistory
+    : NANO_BANANA_EMPTY_GEN_HISTORY;
+
+  const onGenerationHistoryChange = useCallback(
+    (action: React.SetStateAction<string[]>) => {
+      setNodes((nds: any) =>
+        nds.map((n: any) => {
+          if (n.id !== id) return n;
+          const prev = Array.isArray(n.data.generationHistory) ? n.data.generationHistory : [];
+          const next = typeof action === "function" ? (action as (p: string[]) => string[])(prev) : action;
+          return { ...n, data: { ...n.data, generationHistory: next } };
+        })
+      );
+    },
+    [id, setNodes]
+  );
+
+  /**
+   * Rehidratar solo mientras el trabajo va por debajo del 100%.
+   * Si incluimos p===100, el listener puede dejar `status === 'running'` tras acabar
+   * (barra al 100% + «Generando…» y sin botón Studio).
+   */
+  useLayoutEffect(() => {
+    const p = getAiHudNanoBananaJobProgressForNode(id);
+    if (p != null && p < 100) {
+      setStatus('running');
+      setProgress(p);
+    }
+  }, [id]);
+  useEffect(() => {
+    return subscribeAiHudGenerationProgress(() => {
+      const p = getAiHudNanoBananaJobProgressForNode(id);
+      if (p != null && p < 100) {
+        setStatus('running');
+        setProgress(p);
+      }
+    });
+  }, [id]);
 
   const selectedModel = nodeData.modelKey || 'flash31';
   const modelInfo = NB_MODELS.find(m => m.id === selectedModel) || NB_MODELS[0];
@@ -4412,9 +4809,8 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
     const imgs: (string | null)[] = [];
     for (const slot of REF_SLOTS) {
       const edge = edges.find(e => e.target === id && e.targetHandle === slot.id);
-      const srcNode = edge ? nodes.find(n => n.id === edge.source) : null;
-      const rawVal = srcNode?.data?.value;
-      imgs.push(typeof rawVal === 'string' ? rawVal : null);
+      const rawVal = edge ? resolvePromptValueFromEdgeSource(edge, nodes) : '';
+      imgs.push(typeof rawVal === 'string' && rawVal ? rawVal : null);
     }
     return imgs;
   };
@@ -4426,60 +4822,55 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   const onRun = async () => {
     const promptEdge = edges.find(e => e.target === id && e.targetHandle === 'prompt');
-    const prompt = nodes.find(n => n.id === promptEdge?.source)?.data?.value;
+    const prompt = promptEdge ? resolvePromptValueFromEdgeSource(promptEdge, nodes) : '';
     if (!prompt) return alert("Connect a prompt node!");
 
     const refImages = getRefImages().filter(Boolean) as string[];
 
     setStatus('running');
     setProgress(0);
-
-    const progressInterval = setInterval(() => {
-      setProgress(p => {
-        const next = p + (isPro ? 0.6 : 1.2); // thinking takes longer
-        return next > 92 ? 92 : next;
-      });
-    }, 400);
+    aiHudNanoBananaJobStart(id);
 
     try {
       const ok = await runAiJobWithNotification({ nodeId: id, label: 'Nano Banana' }, async () => {
-        const res = await fetch('/api/gemini/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        const json = await geminiGenerateWithServerProgress(
+          {
             prompt,
             images: refImages,
             aspect_ratio: nodeData.aspect_ratio || '16:9',
             resolution: isFlash25 ? '1k' : normalizeNanoBananaResolution(nodeData.resolution),
             model: selectedModel,
             thinking: nodeData.thinking && isPro,
-          }),
-        });
-
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || `HTTP ${res.status}`);
-        }
-
-        const json = await res.json();
-        if (!json.output) throw new Error("No output received");
-        setResult(json.output);
+          },
+          (pct) => {
+            setProgress(pct);
+            aiHudNanoBananaJobProgress(id, pct);
+          }
+        );
+        const out = json.output;
+        setResult(out);
         setProgress(100);
-        setNodes(nds => nds.map(n =>
-          n.id === id ? {
+        setNodes(nds => nds.map(n => {
+          if (n.id !== id) return n;
+          const oldVal = typeof n.data?.value === 'string' && n.data.value ? n.data.value : null;
+          const h = Array.isArray(n.data.generationHistory) ? [...n.data.generationHistory] : [];
+          if (oldVal && oldVal !== out && !h.includes(oldVal)) h.push(oldVal);
+          if (!h.includes(out)) h.push(out);
+          return {
             ...n,
             data: {
               ...n.data,
-              value: json.output,
+              value: out,
               type: 'image',
               ...(typeof json.key === 'string' ? { s3Key: json.key } : {}),
+              generationHistory: h,
             },
-          } : n
-        ));
+          };
+        }));
       });
       setStatus(ok ? 'success' : 'error');
     } finally {
-      clearInterval(progressInterval);
+      aiHudNanoBananaJobEnd(id);
       setTimeout(() => setProgress(0), 1000);
     }
   };
@@ -4492,9 +4883,8 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const refImgPreview = (() => {
     // REF_SLOTS[0].id === 'image' — the first/main reference slot
     const edge = edges.find(e => e.target === id && e.targetHandle === 'image');
-    const srcNode = edge ? nodes.find(n => n.id === edge.source) : null;
-    const v = srcNode?.data?.value;
-    return typeof v === 'string' ? v : null;
+    const v = edge ? resolvePromptValueFromEdgeSource(edge, nodes) : '';
+    return typeof v === 'string' && v ? v : null;
   })();
 
   /** Persisted URL/base64 from node data (S3 presigned after save + hydrate). `result` is only in-memory after generate. */
@@ -4502,11 +4892,17 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
     typeof nodeData.value === 'string' && nodeData.value.length > 0 ? nodeData.value : null;
   const outputImage = result ?? persistedOutput;
 
+  /** Barra y glow solo con avance <100%; a 100% se oculta aunque `status` tarde un tick en pasar a success. */
+  const isActivelyGenerating = status === 'running' && progress < 100;
+
+  const promptConnected = edges.some(e => e.target === id && e.targetHandle === 'prompt');
+  const nbResLabel = isFlash25 ? '1K' : normalizeNanoBananaResolution(nodeData.resolution).toUpperCase();
+
   return (
-    <div className={`custom-node processor-node ${status === 'running' ? 'node-glow-running' : ''}`}
-         style={{ minWidth: 240 }}>
-      <FoldderNodeResizer minWidth={240} minHeight={280} isVisible={selected} />
-      <NodeLabel id={id} label={nodeData.label} defaultLabel="Nano Banana" />
+    <div className={`custom-node processor-node ${isActivelyGenerating ? 'node-glow-running' : ''}`}
+         style={{ minWidth: 240, maxHeight: 600 }}>
+      <FoldderNodeResizer minWidth={240} minHeight={180} maxWidth={960} maxHeight={600} isVisible={selected} />
+      <NodeLabel id={id} label={nodeData.label} defaultLabel="CREACION DE IMAGEN (Gemini 3 - Nano Banana)" />
 
       {/* ── Handles ── */}
       {REF_SLOTS.map((slot, i) => (
@@ -4530,67 +4926,79 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
       </div>
 
       {/* ── Header ── */}
-      <div className="node-header bg-gradient-to-r from-yellow-600/20 to-orange-600/20">
+      <div className="node-header">
         <NodeIcon
           type="nanoBanana"
           selected={selected}
-          state={resolveFoldderNodeState({ error: status === 'error', loading: status === 'running', done: !!outputImage })}
+          state={resolveFoldderNodeState({ error: status === 'error', loading: isActivelyGenerating, done: !!outputImage })}
           size={16}
         />
-        <span className="flex-1">Nano Banana</span>
-        <div className="node-badge border border-white/15">{modelInfo.badge}</div>
-        <button
-          onClick={() => setShowStudio(true)}
-          className="node-badge !bg-white/12 !text-white hover:!bg-white/22 transition-colors pointer-events-auto cursor-pointer flex items-center gap-1.5 border border-white/15 outline-none nodrag"
+        <FoldderNodeHeaderTitle
+          className="min-w-0 flex-1 uppercase leading-tight tracking-tight line-clamp-3"
+          introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}
         >
-          <Maximize2 size={10} /> STUDIO
-        </button>
+          CREACION DE IMAGEN (Gemini 3 - Nano Banana)
+        </FoldderNodeHeaderTitle>
+        <div className="flex shrink-0 flex-col items-end gap-0.5 text-[8px] font-mono font-light uppercase leading-none">
+          <span
+            className={`rounded-md border px-1.5 py-0.5 ${modelInfo.borderColor} ${modelInfo.bg} ${modelInfo.color}`}
+            title="Calidad del modelo"
+          >
+            {modelInfo.label}
+          </span>
+          <span
+            className="rounded-md border border-white/20 bg-black/[0.06] px-1.5 py-0.5 text-zinc-600"
+            title="Resolución de salida"
+          >
+            {nbResLabel}
+          </span>
+        </div>
         <ViewerOpenButton
           nodeId={id}
           disabled={!outputImage}
         />
       </div>
 
-      {/* ── Main image area (flex-1, fills all remaining height) ── */}
-      <div className="relative flex-1 overflow-hidden group/out" style={{ minHeight: 160 }}>
+      {/* ── Main image area: preview encaja sin recortar (object-contain); la imagen generada sigue con su resolución real ── */}
+      <div
+        className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-b-[24px] bg-[#0a0a0a] group/out"
+        style={{ minHeight: 120 }}
+      >
 
-        {/* OUTPUT image — fills entire area */}
+        {/* OUTPUT image — preview ajustado al marco del nodo */}
         {outputImage ? (
           <>
-            <img src={outputImage} alt="Generated" className="w-full h-full object-cover" />
+            <img
+              src={outputImage}
+              alt="Generated"
+              className="max-h-full max-w-full w-auto h-auto object-contain"
+            />
             {/* Hover gradient + actions */}
             <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent
                             opacity-0 group-hover/out:opacity-100 transition-opacity" />
             <button
               onClick={() => setShowFullSize(true)}
-              className="absolute top-2 right-2 bg-black/60 hover:bg-black/90 text-white
+              className="absolute top-2 right-2 z-20 bg-black/60 hover:bg-black/90 text-white
                          text-[7px] font-black px-2 py-1 rounded flex items-center gap-1
                          opacity-0 group-hover/out:opacity-100 transition-opacity"
             >
               <Maximize2 size={8} /> EXPAND
             </button>
             {/* Model info badge on hover */}
-            <span className="absolute top-2 left-2 text-[6px] font-black uppercase text-white/70
+            <span className="absolute top-2 left-2 z-20 text-[6px] font-black uppercase text-white/70
                              bg-black/50 px-1.5 py-0.5 rounded
                              opacity-0 group-hover/out:opacity-100 transition-opacity">
-              {modelInfo.badge} · {nodeData.aspect_ratio || '16:9'}
+              {modelInfo.label} · {nbResLabel} · {nodeData.aspect_ratio || '16:9'}
             </span>
           </>
         ) : (
           /* No output yet — show input image at full opacity as reference preview */
           refImgPreview ? (
             <>
-              <img src={refImgPreview} alt="Input" className="w-full h-full object-cover" />
-              {/* "Generate" prompt badge — subtle bottom overlay */}
-              <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-2 py-1"
-                   style={{ background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(4px)' }}>
-                <span className="text-[7px] font-black uppercase tracking-wider text-white/60">REF · sin generar</span>
-                <button
-                  onClick={() => setShowStudio(true)}
-                  className="text-[7px] font-black uppercase tracking-wider text-yellow-400 hover:text-yellow-300 transition-colors nodrag flex items-center gap-1"
-                >
-                  <Maximize2 size={8} /> Studio →
-                </button>
+              <img src={refImgPreview} alt="Input" className="max-h-full max-w-full object-contain" />
+              <div className="absolute bottom-0 left-0 right-0 flex items-center px-2 py-1 z-[12]"
+                   style={{ background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(4px)' }}>
+                <span className="text-[7px] font-black uppercase tracking-wider text-white/70">REF · sin generar</span>
               </div>
             </>
           ) : (
@@ -4604,6 +5012,10 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
           )
         )}
 
+        {!isActivelyGenerating && (
+          <NanoBananaStudioModeButton onClick={() => setShowStudio(true)} />
+        )}
+
         {/* INPUT image badge — bottom-left corner overlay (always visible when connected) */}
         {refImgPreview && outputImage && (
           <div className="absolute bottom-2 left-2 rounded overflow-hidden border-2 border-white/60 shadow-lg"
@@ -4613,29 +5025,46 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
           </div>
         )}
 
-        {/* Progress bar while generating */}
-        {status === 'running' && (
-          <div className="absolute bottom-0 left-0 right-0">
-            <div className="w-full h-1 bg-black/40">
-              <div className="h-full bg-gradient-to-r from-yellow-500 to-orange-500 transition-all duration-500"
-                   style={{ width: `${progress}%` }} />
+        {/* Progress bar while generating — z-50 para quedar por encima del preview object-contain */}
+        {isActivelyGenerating && (
+          <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-[50]">
+            <div className="h-1.5 w-full bg-black/60">
+              <div
+                className="h-full bg-gradient-to-r from-yellow-400 to-orange-500 transition-all duration-500"
+                style={{ width: `${Math.min(100, progress)}%` }}
+              />
             </div>
-            <p className="text-[6px] text-yellow-600 font-black text-center uppercase tracking-widest
-                          py-0.5 bg-white/70 animate-pulse">
-              {isPro && nodeData.thinking ? `Thinking… ${Math.round(progress)}%` : `Generating… ${Math.round(progress)}%`}
+            <p className="bg-black/80 px-2 py-1 text-center text-[7px] font-black uppercase tracking-widest text-amber-100 backdrop-blur-sm">
+              {isPro && nodeData.thinking ? `Thinking… ${Math.round(progress)}%` : `Generando… ${Math.round(progress)}%`}
             </p>
           </div>
         )}
       </div>
 
-
+      {promptConnected && !showStudio && (
+        <div className="nodrag flex shrink-0 border-t border-black/[0.06] bg-white/[0.04] px-2 py-2">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRun();
+            }}
+            disabled={isActivelyGenerating}
+            className="execute-btn nodrag w-full !py-2.5 !text-[9px] justify-center disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Generar Imagen con prompt
+          </button>
+        </div>
+      )}
 
 
 
       {/* ── NanoBanana Studio ── */}
       {showStudio && (() => {
         const promptEdge = edges.find((e: any) => e.target === id && e.targetHandle === 'prompt');
-        const promptVal = String(nodes.find((n: any) => n.id === promptEdge?.source)?.data?.value || '');
+        const promptVal = promptEdge
+          ? String(resolvePromptValueFromEdgeSource(promptEdge, nodes) ?? '')
+          : '';
         const refImgs = getRefImages();
         const connected0 = (refImgs[0] as string | null | undefined) ?? null;
         return (
@@ -4648,15 +5077,19 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
             resolution={normalizeNanoBananaResolution(nodeData.resolution)}
             thinking={!!nodeData.thinking}
             prompt={promptVal}
+            externalPromptIgnored
+            generationHistory={persistedGenerationHistory}
+            onGenerationHistoryChange={onGenerationHistoryChange}
             onClose={() => setShowStudio(false)}
             onGenerated={(url, s3Key) => {
               setResult(url);
-              setNodes((nds: any) => nds.map((n: any) =>
-                n.id === id ? {
-                  ...n,
-                  data: { ...n.data, value: url, type: 'image', ...(s3Key ? { s3Key } : {}) },
-                } : n
-              ));
+              setNodes((nds: any) => nds.map((n: any) => {
+                if (n.id !== id) return n;
+                const data: Record<string, unknown> = { ...n.data, value: url, type: 'image' };
+                if (s3Key) data.s3Key = s3Key;
+                else delete data.s3Key;
+                return { ...n, data };
+              }));
             }}
             onResolutionChange={(r) => updateData('resolution', r)}
           />
@@ -4673,7 +5106,11 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
           <div className="absolute top-8 right-8 text-white/50 hover:text-white transition-colors">
             <X size={36} strokeWidth={2} />
           </div>
-          <img src={outputImage} className="max-w-full max-h-full rounded-2xl shadow-2xl object-contain" alt="Full size" />
+          <img
+            src={outputImage}
+            className="max-h-full max-w-full w-auto h-auto rounded-2xl object-contain shadow-2xl"
+            alt="Full size"
+          />
         </div>
       )}
     </div>
@@ -4781,9 +5218,11 @@ export const TextOverlayNode = memo(({ id, data, selected }: NodeProps<any>) => 
       <FoldderNodeResizer minWidth={300} minHeight={280} maxWidth={700} maxHeight={720} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Text Overlay" />
 
-      <div className="node-header bg-gradient-to-r from-purple-600/20 to-pink-600/20">
+      <div className="node-header">
         <NodeIcon type="textOverlay" selected={selected} size={16} />
-        <span>Text Overlay</span>
+        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          Text Overlay
+        </FoldderNodeHeaderTitle>
         <div className="node-badge border border-white/15">TEXT</div>
       </div>
 
@@ -4975,11 +5414,11 @@ export const BackgroundRemoverNode = memo(({ id, data, selected }: NodeProps<any
     let sourceNodeLabel = "";
 
     for (const edge of incomingEdges) {
-      const srcNode = nodes.find(n => n.id === edge.source);
-      const val = srcNode?.data?.value;
+      const val = resolvePromptValueFromEdgeSource(edge, nodes);
       if (typeof val === 'string' && val) {
         media = val;
-        sourceNodeLabel = (srcNode.data.label || srcNode.id) as string;
+        const srcNode = nodes.find(n => n.id === edge.source);
+        sourceNodeLabel = ((srcNode?.data as { label?: string })?.label || srcNode?.id || '') as string;
         break;
       }
     }
@@ -5050,20 +5489,16 @@ export const BackgroundRemoverNode = memo(({ id, data, selected }: NodeProps<any
         <span className="handle-label">Media Input</span>
       </div>
       
-      <div className="node-header bg-gradient-to-r from-cyan-600/20 to-blue-600/20">
+      <div className="node-header">
         <NodeIcon
           type="backgroundRemover"
           selected={selected}
           state={resolveFoldderNodeState({ loading: status === 'running', done: status === 'success' })}
           size={16}
         />
-        <span>Remove Background</span>
-        <button 
-          onClick={() => setIsStudioOpen(true)}
-          className="node-badge !bg-cyan-500/20 !text-cyan-400 hover:!bg-cyan-500/40 transition-colors pointer-events-auto cursor-pointer flex items-center gap-1.5 border-none outline-none"
-        >
-          <Maximize2 size={10} /> STUDIO
-        </button>
+        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          Remove Background
+        </FoldderNodeHeaderTitle>
       </div>
       
       <div className="flex flex-col">
@@ -5092,6 +5527,10 @@ export const BackgroundRemoverNode = memo(({ id, data, selected }: NodeProps<any
                  <Scissors size={40} className="text-cyan-400" />
                  <span className="text-[10px] font-bold uppercase tracking-widest">Awaiting Output</span>
               </div>
+            )}
+
+            {status !== 'running' && (
+              <StudioModeCenterButton onClick={() => setIsStudioOpen(true)} />
             )}
 
             {status === 'running' && (
@@ -5437,8 +5876,10 @@ export const SpaceNode = memo(({ id, data, selected }: NodeProps<any>) => {
           iconKey={foldderIconKeyForSpaceOutputType(nodeData.outputType)}
           selected={selected}
           size={16}
-        />{' '}
-        <span className="uppercase">{nodeData.outputType ? `${nodeData.outputType} Space` : 'NESTED SPACE'}</span>
+        />
+        <FoldderNodeHeaderTitle className="uppercase" introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          {nodeData.outputType ? `${nodeData.outputType} Space` : 'NESTED SPACE'}
+        </FoldderNodeHeaderTitle>
       </div>
       
       <div className="node-content">
@@ -5467,7 +5908,7 @@ export const SpaceNode = memo(({ id, data, selected }: NodeProps<any>) => {
             )}
             <div className="absolute inset-0" style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.55) 0%, transparent 60%)' }} />
             <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest"
-              style={{ background: 'rgba(0,0,0,0.6)', color: nodeData.outputType === 'video' ? '#f43f5e' : '#ec4899', backdropFilter: 'blur(6px)' }}>
+              style={{ background: 'rgba(0,0,0,0.6)', color: FOLDDER_LOGO_BLUE, backdropFilter: 'blur(6px)' }}>
               {nodeData.outputType} output
             </div>
           </div>
@@ -5475,7 +5916,7 @@ export const SpaceNode = memo(({ id, data, selected }: NodeProps<any>) => {
         
         <button 
           onClick={onEnterSpace}
-          className="execute-btn w-full flex items-center justify-center gap-2 bg-cyan-600 hover:bg-cyan-500 shadow-lg shadow-cyan-900/40 py-3 rounded-2xl text-[11px] font-black transition-all active:scale-95 group/btn"
+          className="execute-btn w-full flex items-center justify-center gap-2 !py-3 text-[11px] font-black transition-all active:scale-95 group/btn"
         >
           <Maximize2 size={16} className="group-hover/btn:scale-110 transition-transform" /> ENTER SPACE
         </button>
@@ -5510,12 +5951,22 @@ export const SpaceInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
     }
   };
 
+  const logoMediaTheme = {
+    border: 'border-[#6C5CE7]/30',
+    text: 'text-violet-300',
+    bg: 'bg-[#6C5CE7]/10 border-[#6C5CE7]/20',
+    icon: 'text-[#6C5CE7]',
+  } as const;
+
   const getThemeColors = () => {
     switch (nodeData.inputType) {
-      case 'prompt': return { border: 'border-blue-500/30', text: 'text-blue-400', bg: 'bg-blue-500/10 border-blue-500/20', icon: 'text-blue-500' };
-      case 'image': return { border: 'border-pink-500/30', text: 'text-pink-400', bg: 'bg-pink-500/10 border-pink-500/20', icon: 'text-pink-500' };
-      case 'video': return { border: 'border-rose-500/30', text: 'text-rose-400', bg: 'bg-rose-500/10 border-rose-500/20', icon: 'text-rose-500' };
-      default: return { border: 'border-emerald-500/30', text: 'text-emerald-400', bg: 'bg-emerald-500/10 border-emerald-500/20', icon: 'text-emerald-500' };
+      case 'prompt':
+        return { border: 'border-blue-500/30', text: 'text-blue-400', bg: 'bg-blue-500/10 border-blue-500/20', icon: 'text-blue-500' };
+      case 'image':
+      case 'video':
+        return logoMediaTheme;
+      default:
+        return { border: 'border-emerald-500/30', text: 'text-emerald-400', bg: 'bg-emerald-500/10 border-emerald-500/20', icon: 'text-emerald-500' };
     }
   };
 
@@ -5527,7 +5978,9 @@ export const SpaceInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
 <NodeLabel id={id} label={nodeData.label} defaultLabel="Input" />
       <div className="node-header">
         <NodeIcon type="spaceInput" selected={selected} size={16} />
-        SPACE INPUT
+        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          SPACE INPUT
+        </FoldderNodeHeaderTitle>
       </div>
       <div className="node-content text-center py-4">
         <div className={`w-12 h-12 ${theme.bg} rounded-full flex items-center justify-center border mx-auto mb-2`}>
@@ -5564,9 +6017,15 @@ export const SpaceOutputNode = memo(({ id, data, selected }: NodeProps<any>) => 
     return 'handle-rose';
   };
 
+  const logoMediaTheme = {
+    border: 'border-[#6C5CE7]/30',
+    text: 'text-violet-300',
+    bg: 'bg-[#6C5CE7]/10 border-[#6C5CE7]/20',
+    icon: 'text-[#6C5CE7]',
+  } as const;
+
   const getThemeColors = () => {
-    if (sourceType === 'image') return { border: 'border-pink-500/30', text: 'text-pink-400', bg: 'bg-pink-500/10 border-pink-500/20', icon: 'text-pink-500' };
-    if (sourceType === 'video') return { border: 'border-rose-500/30', text: 'text-rose-400', bg: 'bg-rose-500/10 border-rose-500/20', icon: 'text-rose-500' };
+    if (sourceType === 'image' || sourceType === 'video') return logoMediaTheme;
     if (sourceType === 'prompt') return { border: 'border-blue-500/30', text: 'text-blue-400', bg: 'bg-blue-500/10 border-blue-500/20', icon: 'text-blue-500' };
     return { border: 'border-rose-500/30', text: 'text-rose-400', bg: 'bg-rose-500/10 border-rose-500/20', icon: 'text-rose-500' };
   };
@@ -5583,9 +6042,11 @@ export const SpaceOutputNode = memo(({ id, data, selected }: NodeProps<any>) => 
       </div>
 
       {/* Header */}
-      <div className="node-header" style={{ padding: '10px 14px' }}>
+      <div className="node-header" style={{ padding: 'calc(10px * 0.7) calc(14px * 0.7)' }}>
         <NodeIcon type="spaceOutput" selected={selected} done={!!inputEdge} size={16} />
-        <span className="font-black tracking-tighter uppercase">Space Output</span>
+        <FoldderNodeHeaderTitle className="tracking-tighter uppercase" introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          Space Output
+        </FoldderNodeHeaderTitle>
       </div>
 
       {/* Media preview if connected visual node */}
@@ -5598,7 +6059,7 @@ export const SpaceOutputNode = memo(({ id, data, selected }: NodeProps<any>) => 
           )}
           {/* Type badge */}
           <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest"
-            style={{ background: 'rgba(0,0,0,0.6)', color: sourceType === 'video' ? '#f43f5e' : '#ec4899', backdropFilter: 'blur(6px)' }}>
+            style={{ background: 'rgba(0,0,0,0.6)', color: FOLDDER_LOGO_BLUE, backdropFilter: 'blur(6px)' }}>
             {sourceType}
           </div>
         </div>
@@ -5729,9 +6190,11 @@ export const MediaDescriberNode = memo(({ id, data, selected }: NodeProps<any>) 
         <span className="handle-label">Media in</span>
       </div>
       
-      <div className="node-header bg-gradient-to-r from-indigo-600/20 to-blue-600/20">
+      <div className="node-header">
         <NodeIcon type="mediaDescriber" selected={selected} state={resolveFoldderNodeState({ loading: status === 'running', done: status === 'success', error: status === 'error' })} size={16} />
-        <span>Gemini Describer</span>
+        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          Gemini Describer
+        </FoldderNodeHeaderTitle>
         <div className="node-badge">VISION</div>
       </div>
       
@@ -5834,8 +6297,8 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
 
     const findSourceValue = (edge: any) => {
       if (!edge) return null;
-      const sourceNode = nodes.find((n: any) => n.id === edge.source);
-      return sourceNode?.data?.value;
+      const v = resolvePromptValueFromEdgeSource(edge, nodes as Node[]);
+      return v || null;
     };
 
     const prompt = findSourceValue(promptEdge) || nodeData.prompt || "";
@@ -5908,8 +6371,8 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
   };
 
   return (
-    <div className={`custom-node processor-node ${status === 'running' ? 'node-glow-running' : ''}`} style={{ minWidth: 320 }}>
-      <FoldderNodeResizer minWidth={320} minHeight={320} isVisible={selected} />
+    <div className={`custom-node processor-node ${status === 'running' ? 'node-glow-running' : ''}`} style={{ minWidth: 320, maxHeight: 600 }}>
+      <FoldderNodeResizer minWidth={320} minHeight={220} maxWidth={960} maxHeight={600} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Gemini Video" />
 
       {/* Handles */}
@@ -5931,20 +6394,22 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
       </div>
 
       {/* Header */}
-      <div className="node-header bg-gradient-to-r from-emerald-600/20 to-cyan-600/20">
+      <div className="node-header">
         <NodeIcon type="geminiVideo" selected={selected} state={resolveFoldderNodeState({ loading: status === 'running', done: !!result, error: status === 'error' })} size={16} />
-        <span className="flex-1">Gemini Video</span>
+        <FoldderNodeHeaderTitle className="flex-1" introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          Gemini Video
+        </FoldderNodeHeaderTitle>
         <div className="node-badge">VEO 3.1</div>
         <ViewerOpenButton nodeId={id} disabled={!(result || nodeData.value)} />
       </div>
 
-      {/* ── Video preview — top, fills space (NanoBanana style) ── */}
-      <div className="relative w-full bg-[#0a0a0a] group/media" style={{ flex: '1 1 0', minHeight: 140, overflow: 'hidden' }}>
+      {/* ── Video preview: encaja en el marco (contain); resolución del archivo = la generada ── */}
+      <div className="relative flex min-h-0 w-full flex-1 items-center justify-center bg-[#0a0a0a] group/media overflow-hidden">
         {result ? (
           <>
             <video
               src={result}
-              className="w-full h-full object-cover"
+              className="max-h-full max-w-full object-contain"
               controls
               loop
               muted
@@ -6010,7 +6475,7 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
           className="execute-btn w-full !py-2.5 !text-[10px] justify-center gap-2 group relative overflow-hidden"
         >
           {status === 'running' && (
-            <div className="absolute inset-0 bg-emerald-500/20" style={{ width: `${progress}%`, transition: 'width 0.5s ease-out' }} />
+            <div className="absolute inset-0 bg-white/15" style={{ width: `${progress}%`, transition: 'width 0.5s ease-out' }} />
           )}
           <Zap size={11} className={status === 'running' ? 'animate-pulse' : 'group-hover:scale-125 transition-transform'} />
           <span className="relative z-10">{status === 'running' ? `GENERATING ${Math.round(progress)}%` : 'GENERATE VIDEO'}</span>
@@ -6312,10 +6777,12 @@ export const PainterNode = memo(({ id, data, selected }: NodeProps<any>) => {
         <span className="handle-label">Base</span>
       </div>
 
-      <div className="node-header bg-gradient-to-r from-amber-800/20 to-orange-900/20">
+      <div className="node-header">
         <NodeIcon type="painter" selected={selected} size={16} />
-        <span>Painter</span>
-        <span className="text-[7px] font-black uppercase tracking-widest text-white/65 ml-auto">{ratio.label}</span>
+        <FoldderNodeHeaderTitle introActive={!!(data as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          Painter
+        </FoldderNodeHeaderTitle>
+        <span className="text-[10px] font-light uppercase tracking-widest text-white/65 ml-auto">{ratio.label}</span>
       </div>
 
       {/* Small node: preview image only — no painting here */}
@@ -7017,15 +7484,11 @@ export const BezierMaskNode = memo(({ id, data, selected }: NodeProps<any>) => {
         <span className="handle-label">Media Input</span>
       </div>
       
-      <div className="node-header bg-gradient-to-r from-cyan-600/20 to-indigo-600/20">
+      <div className="node-header">
         <NodeIcon type="bezierMask" selected={selected} size={16} />
-        <span>Bezier Mask</span>
-        <button 
-          onClick={() => setIsStudioOpen(true)}
-          className="ml-auto bg-white/12 text-white border border-white/20 px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-tighter hover:bg-white/20 transition-all flex items-center gap-1.5"
-        >
-          <Maximize2 size={10} /> Studio Mode
-        </button>
+        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          Bezier Mask
+        </FoldderNodeHeaderTitle>
       </div>
       
       <div className="flex flex-col">
@@ -7058,6 +7521,8 @@ export const BezierMaskNode = memo(({ id, data, selected }: NodeProps<any>) => {
               </span>
             </div>
           )}
+
+          <StudioModeCenterButton onClick={() => setIsStudioOpen(true)} />
         </div>
 
         {/* Point count & clear status */}

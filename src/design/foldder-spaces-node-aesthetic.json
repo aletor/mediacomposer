@@ -1,0 +1,193 @@
+{
+  "meta": {
+    "name": "Foldder Spaces — estética de nodos (canvas)",
+    "version": "1.0.0",
+    "referenceNode": "mediaDescriber (Gemini Describer / Vision)",
+    "description": "Tokens derivados del nodo Vision Describer y estilos globales .custom-node / .node-header / .execute-btn en spaces.css. Usar como contrato visual al diseñar nuevos nodos.",
+    "implementation": {
+      "globalCss": "src/app/spaces/spaces.css",
+      "exampleComponent": "MediaDescriberNode en src/app/spaces/CustomNodes.tsx"
+    }
+  },
+  "radius": {
+    "nodeCard": { "px": 12, "css": "12px", "tailwind": "rounded-xl", "note": "Contenedor principal .custom-node (mitad vs 24px)" },
+    "nodeHeaderTop": { "px": 12, "css": "12px 12px 0 0", "note": ".node-header border-top-left/right-radius" },
+    "innerPanel": { "px": 6, "tailwind": "rounded-lg", "note": "Bloques inset (p. ej. preview slate en Describer)" },
+    "primaryButton": { "px": 8, "css": "8px", "note": ".execute-btn / .action-btn" },
+    "badgePill": { "px": 4, "css": "4px", "note": ".node-header .node-badge" },
+    "inputField": { "px": 7, "note": ".node-input, .node-textarea" },
+    "approximateOuterFrameFromScreenshot": { "px": 24, "note": "Opcional / más dramático; el código actual usa 12px en canvas" }
+  },
+  "glassSurface": {
+    "nodeCard": {
+      "background": "rgba(255, 255, 255, 0.3)",
+      "backdropFilter": "blur(24px)",
+      "border": "none",
+      "boxShadowDefault": "0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 20px 40px -4px rgba(0, 0, 0, 0.08)",
+      "boxShadowHover": "0 30px 60px -12px rgba(0, 0, 0, 0.12)"
+    },
+    "nodeHeader": {
+      "backgroundDefault": "rgba(255, 255, 255, 0.1)",
+      "borderBottom": "1px solid rgba(0, 0, 0, 0.04)",
+      "accentGradientExample": "linear-gradient horizontal from-indigo-600/20 to-blue-600/20 (Tailwind: bg-gradient-to-r from-indigo-600/20 to-blue-600/20)"
+    }
+  },
+  "header": {
+    "layout": "flex row, align center; gap/padding ×0.7 vs base 12px/16px20px (header ~30% más bajo)",
+    "title": {
+      "textTransform": "uppercase",
+      "fontWeight": 300,
+      "fontSizeRem": "calc(0.7 * 1.9 * 0.8 * 0.7)",
+      "letterSpacingEm": 0.1,
+      "color": "#ffffff",
+      "textShadow": "none"
+    },
+    "icon": {
+      "sizePx": "calc(24 * 0.7) en cabecera (SVG)",
+      "color": "#ffffff",
+      "dropShadow": "none"
+    },
+    "badge": {
+      "class": "node-badge",
+      "marginLeft": "auto",
+      "background": "rgba(0, 0, 0, 0.2)",
+      "padding": "calc(3px*0.7) calc(10px*0.7)",
+      "borderRadiusPx": "calc(4 * 0.7)",
+      "fontSizePx": "calc(10 * 0.8 * 0.7)",
+      "fontWeight": 300,
+      "color": "rgba(255, 255, 255, 0.88)",
+      "letterSpacingEm": 0.15,
+      "textTransform": "uppercase",
+      "textShadow": "none"
+    }
+  },
+  "typography": {
+    "fontFamily": {
+      "ui": "system-ui, -apple-system, Segoe UI, sans-serif",
+      "monoOutput": "ui-monospace, SFMono-Regular, Menlo, monospace (p. ej. texto de descripción generada)"
+    },
+    "body": {
+      "helperItalic": {
+        "fontSizePx": 10,
+        "classExample": "text-[10px] text-gray-500 mb-3 italic",
+        "color": "#6b7280",
+        "style": "italic"
+      },
+      "labelUppercase": {
+        "class": "node-label",
+        "fontSizeRem": 0.65,
+        "fontWeight": 800,
+        "letterSpacingEm": 0.1,
+        "textTransform": "uppercase",
+        "color": "#94a3b8"
+      }
+    },
+    "emptyState": {
+      "iconSizePx": 24,
+      "caption": {
+        "fontSizePx": 8,
+        "fontWeight": 700,
+        "textTransform": "uppercase",
+        "opacity": 0.2
+      }
+    }
+  },
+  "colors": {
+    "text": {
+      "onHeader": "#ffffff",
+      "primaryDark": "#1a1a1b",
+      "muted": "#6b7280",
+      "slateLabel": "#94a3b8"
+    },
+    "surfaces": {
+      "insetLight": "bg-slate-50/50 con borde border-slate-200/60 (Describer preview)",
+      "executeButton": {
+        "backgroundNavy": "#1d2433",
+        "background": "#1d2433",
+        "backgroundHover": "#161b27",
+        "disabled": "#475569"
+      }
+    },
+    "selection": {
+      "nodeRing": "rgba(255, 255, 255, 0.55)",
+      "nodeGlow": "rgba(255, 255, 255, 0.45)"
+    }
+  },
+  "buttons": {
+    "primaryExecute": {
+      "class": "execute-btn",
+      "width": "100%",
+      "display": "flex",
+      "alignItems": "center",
+      "justifyContent": "center",
+      "gapPx": 10,
+      "paddingPx": 14,
+      "background": "linear-gradient(135deg, #1d2433 0%, #2a3448 48%, #35425a 100%)",
+      "border": "1px solid rgba(29, 36, 51, 0.45)",
+      "borderRadiusPx": 8,
+      "color": "#f8fafc",
+      "fontSizePx": 11,
+      "fontWeight": 900,
+      "letterSpacingEm": 0.1,
+      "textTransform": "uppercase",
+      "boxShadow": "0 4px 12px rgba(29, 36, 51, 0.28)",
+      "transition": "0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+      "hover": {
+        "transform": "translateY(-2px)",
+        "background": "#161b27",
+        "boxShadow": "0 12px 24px rgba(29, 36, 51, 0.4)"
+      },
+      "active": { "transform": "translateY(0)" },
+      "disabled": { "opacity": 0.35, "cursor": "not-allowed", "background": "#475569" }
+    },
+    "note": "Mismo estilo en todos los tipos de nodo (sin gradientes por tipo). Azul marino canónico del CTA: #1d2433."
+  },
+  "contentArea": {
+    "class": "node-content",
+    "paddingPx": 20,
+    "flex": "1",
+    "minHeight": 0,
+    "background": "transparent",
+    "scrollbar": { "widthPx": 4, "thumb": "rgba(255, 255, 255, 0.1)", "thumbRadiusPx": 10 }
+  },
+  "previewInset": {
+    "description": "Área secundaria tipo 'resultado / placeholder' dentro del nodo",
+    "example": {
+      "padding": "p-3",
+      "background": "bg-slate-50/50",
+      "borderRadius": "rounded-xl",
+      "border": "border border-slate-200/60",
+      "minHeightPx": 80
+    },
+    "overflow": "El contenedor del preview debe usar overflow-hidden + border-radius inferior alineado al nodo si hay imagen a pantalla completa (evitar picos en esquinas)."
+  },
+  "handles": {
+    "class": "handle-wrapper",
+    "gapPx": 6,
+    "label": {
+      "class": "handle-label",
+      "opacityHover": "custom-node:hover aumenta visibilidad (ver spaces.css)"
+    }
+  },
+  "motion": {
+    "selection": {
+      "transform": "translateY(-2px) scale(1.005)",
+      "transition": "heredado del hover/selected .custom-node"
+    }
+  },
+  "tokensFlat": {
+    "radius.card": "12px",
+    "radius.headerTop": "12px",
+    "radius.buttonPrimary": "8px",
+    "radius.badge": "4px",
+    "radius.inset": "6px",
+    "blur.card": "24px",
+    "color.button.navy": "#1d2433",
+    "color.execute.bg": "#1d2433",
+    "color.execute.bgHover": "#161b27",
+    "color.header.text": "#ffffff",
+    "type.header.tracking": "0.1em",
+    "type.button.tracking": "0.1em",
+    "shadow.card": "0 4px 6px -1px rgba(0,0,0,0.05), 0 20px 40px -4px rgba(0,0,0,0.08)"
+  }
+}

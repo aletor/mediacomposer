@@ -30,7 +30,7 @@ export const SIDEBAR_HOVER_HELP: Record<string, { title: string; line: string }>
   },
   listado: {
     title: 'Listado',
-    line: 'Varios prompts entrantes; elige uno en el desplegable como salida',
+    line: 'Varios prompts entrantes; la salida es «título del nodo: opción elegida»',
   },
   enhancer: {
     title: 'Enhancer',

@@ -59,6 +59,7 @@ import {
   nodeBoundsForLayout,
   removeEmptyCanvasGroups,
   ungroupCanvasGroup,
+  filterEdgesForCollapsedCanvasGroups,
 } from './canvas-group-logic';
 
 
@@ -98,6 +99,17 @@ import {
 } from '@/lib/fullscreen';
 import './spaces.css';
 import { NODE_REGISTRY } from './nodeRegistry';
+import {
+  FOLDDER_LOGO_BLUE,
+  getFoldderNodeHeaderTintColor,
+  getFoldderNodeOutputBorderColor,
+} from './handle-type-colors';
+
+/** Tamaño inicial de nodos media: ancho en ratio 16:9 respecto al alto (preview del lienzo). */
+const NANO_BANANA_DEFAULT_H = 480;
+const NANO_BANANA_DEFAULT_W = Math.round((NANO_BANANA_DEFAULT_H * 16) / 9);
+const GEMINI_VIDEO_DEFAULT_H = 540;
+const GEMINI_VIDEO_DEFAULT_W = Math.round((GEMINI_VIDEO_DEFAULT_H * 16) / 9);
 import {
   NodeExecutionProvider,
   useNodeExecutionRunner,
@@ -253,6 +265,14 @@ const CANVAS_BACKGROUNDS: CanvasBackgroundOption[] = [
 ];
 
 const FINAL_NODE_ID = 'final_output_permanent';
+
+/** Zoom intro 2s + typewriter cabecera (retraso 1s); se limpia al cabo para no persistir en guardados. */
+const FOLDDER_CANVAS_INTRO_CLEAR_MS = 3600;
+
+function withFoldderCanvasIntro(nodeType: string, data: Record<string, unknown>): Record<string, unknown> {
+  if (nodeType === 'canvasGroup') return { ...data };
+  return { ...data, _foldderCanvasIntro: true };
+}
 
 /**
  * Por defecto XY Flow usa `noPanClassName="nopan"`: si el wheel va a un descendiente de `.nopan`,
@@ -504,6 +524,21 @@ function sortNodesCardsOrder<T extends { id: string; position: { x: number; y: n
   );
 }
 
+/** `--foldder-node-output-color`: aristas/handles. `--foldder-node-header-tint-color`: vidrio+cabecera+botón (como Export; logo azul solo imagen/vídeo). */
+function mergeNodeOutputBorderStyle(
+  node: { style?: React.CSSProperties; type?: string; data?: Record<string, unknown> | null },
+  extra?: React.CSSProperties
+): React.CSSProperties {
+  const borderColor = getFoldderNodeOutputBorderColor(node);
+  const headerTintColor = getFoldderNodeHeaderTintColor(node);
+  return {
+    ...(node.style || {}),
+    ...(extra || {}),
+    ['--foldder-node-output-color' as string]: borderColor,
+    ['--foldder-node-header-tint-color' as string]: headerTintColor,
+  };
+}
+
 const nodeTypes: any = {
   mediaInput: MediaInputNode,
   promptInput: PromptNode,
@@ -554,6 +589,70 @@ const SpacesContent = () => {
   const { screenToFlowPosition, setViewport, fitView, getViewport } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
   const runAssistantPipeline = useNodeExecutionRunner();
+
+  const scheduleFoldderCanvasIntroEnd = useCallback(
+    (nodeId: string) => {
+      window.setTimeout(() => {
+        setNodes((nds) =>
+          nds.map((n) => {
+            if (n.id !== nodeId) return n;
+            if (!n.data || typeof n.data !== 'object') return n;
+            const { _foldderCanvasIntro: _drop, ...rest } = n.data as Record<string, unknown>;
+            return { ...n, data: rest };
+          })
+        );
+        requestAnimationFrame(() => {
+          updateNodeInternals(nodeId);
+          for (const e of liveEdgesRef.current) {
+            if (e.source === nodeId) updateNodeInternals(e.target);
+            if (e.target === nodeId) updateNodeInternals(e.source);
+          }
+        });
+      }, FOLDDER_CANVAS_INTRO_CLEAR_MS);
+    },
+    [setNodes, updateNodeInternals]
+  );
+
+  /**
+   * Durante el zoom CSS de intro, los handles se mueven frame a frame; React Flow no remide solo.
+   * Refrescamos internals en cada rAF mientras haya nodos con `_foldderCanvasIntro`.
+   */
+  useEffect(() => {
+    let rafId = 0;
+    let stopped = false;
+
+    const tick = () => {
+      if (stopped) return;
+      const introIds = liveNodesRef.current
+        .filter((n: any) => n.data?._foldderCanvasIntro)
+        .map((n: any) => n.id as string);
+      if (introIds.length === 0) return;
+
+      const refresh = new Set<string>(introIds);
+      for (const e of liveEdgesRef.current) {
+        if (introIds.includes(e.source)) {
+          refresh.add(e.source);
+          refresh.add(e.target);
+        }
+        if (introIds.includes(e.target)) {
+          refresh.add(e.source);
+          refresh.add(e.target);
+        }
+      }
+      for (const id of refresh) updateNodeInternals(id);
+
+      if (!stopped) rafId = requestAnimationFrame(tick);
+    };
+
+    if (nodes.some((n: any) => n.data?._foldderCanvasIntro)) {
+      rafId = requestAnimationFrame(tick);
+    }
+
+    return () => {
+      stopped = true;
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [nodes, updateNodeInternals]);
 
   // Persistence state
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
@@ -1323,11 +1422,19 @@ const SpacesContent = () => {
       });
     }
 
+    const defaultStyleForType =
+      type === 'nanoBanana'
+        ? ({ width: NANO_BANANA_DEFAULT_W, height: NANO_BANANA_DEFAULT_H } as React.CSSProperties)
+        : type === 'geminiVideo'
+          ? ({ width: GEMINI_VIDEO_DEFAULT_W, height: GEMINI_VIDEO_DEFAULT_H } as React.CSSProperties)
+          : undefined;
+
     const newNode = {
       id: newId,
       type,
       position,
-      data: { label: '', ...extraData },
+      data: withFoldderCanvasIntro(type, { label: '', ...extraData }),
+      ...(defaultStyleForType ? { style: defaultStyleForType } : {}),
     };
 
     takeSnapshot(); // snapshot BEFORE adding node
@@ -1335,6 +1442,7 @@ const SpacesContent = () => {
       const next = [...nds, newNode];
       return next;
     });
+    scheduleFoldderCanvasIntroEnd(newId);
     // Delay edge render so nodes with dynamic handles (Enhancer, etc.)
     // have time to mount all their Handle components before ReactFlow draws curves.
     setTimeout(() => {
@@ -1362,7 +1470,7 @@ const SpacesContent = () => {
     setTimeout(() => {
       fitViewToNodeIds([newId], 700);
     }, autoEdges.length > 0 ? 100 : 80);
-  }, [screenToFlowPosition, nodes, edges, setNodes, setEdges, takeSnapshot, fitViewToNodeIds, updateNodeInternals]);
+  }, [screenToFlowPosition, nodes, edges, setNodes, setEdges, takeSnapshot, fitViewToNodeIds, updateNodeInternals, scheduleFoldderCanvasIntroEnd]);
 
   /** Doble clic en pin del topbar o en mosaico del sidebar: hueco libre (prioridad a la derecha del nodo más a la derecha) + fit */
   const addNodeFromTopbarPinDoubleClick = useCallback(
@@ -1376,20 +1484,28 @@ const SpacesContent = () => {
       const center = preferred ?? viewportCenter;
       const position = findEmptyPositionForNewNode(reactFlowType, nodes, center);
       const newId = `node_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      const pinStyle: React.CSSProperties | undefined =
+        reactFlowType === 'nanoBanana'
+          ? { width: NANO_BANANA_DEFAULT_W, height: NANO_BANANA_DEFAULT_H }
+          : reactFlowType === 'geminiVideo'
+            ? { width: GEMINI_VIDEO_DEFAULT_W, height: GEMINI_VIDEO_DEFAULT_H }
+            : undefined;
       const newNode = {
         id: newId,
         type: reactFlowType,
         position,
-        data: { value: '', label: `${reactFlowType} node` },
+        data: withFoldderCanvasIntro(reactFlowType, { value: '', label: `${reactFlowType} node` }),
+        ...(pinStyle ? { style: pinStyle } : {}),
       };
       takeSnapshot();
       setNodes((nds) => [...nds, newNode]);
+      scheduleFoldderCanvasIntroEnd(newId);
       setTimeout(() => {
         fitViewToNodeIds([newId], 700);
       }, 100);
       setSidebarLockedCollapsed(true);
     },
-    [screenToFlowPosition, nodes, setNodes, takeSnapshot, fitViewToNodeIds]
+    [screenToFlowPosition, nodes, setNodes, takeSnapshot, fitViewToNodeIds, scheduleFoldderCanvasIntroEnd]
   );
 
   // ── Node click: global z-order counter — each click brings that node above all others
@@ -1911,24 +2027,20 @@ const SpacesContent = () => {
   /** Doble clic en nodo: alterna encuadrar ese nodo / segundo doble clic en el mismo → fit global */
   const lastDoubleClickFitNodeIdRef = useRef<string | null>(null);
 
-  // ── Espacio: pan; sin espacio: arrastre = selección (marco). Espacio también = mismo modo “overview” que Ctrl/Mayús.
+  // ── Espacio: pan; sin espacio: arrastre = selección (marco). Solo Espacio activa el modo overview (zoom out + hover + encuadre al soltar), no Ctrl ni Mayús.
   const [spaceHeld, setSpaceHeld] = useState(false);
-  /** Control, Mayús o Espacio: fit global + rollover; al soltar la última de estas teclas → encuadrar nodo bajo cursor o restaurar zoom. */
-  const ctrlHeldForOverviewRef = useRef(false);
-  const shiftHeldForOverviewRef = useRef(false);
+  /** Espacio: fit global + rollover; al soltar → encuadrar nodo bajo cursor o restaurar zoom. */
   const spaceHeldForOverviewRef = useRef(false);
   const viewportBeforeOverviewRef = useRef<{ x: number; y: number; zoom: number } | null>(null);
   const lastPointerClientRef = useRef({ x: 0, y: 0 });
-  /** Rollover con Control/Mayús/Espacio: recuadro grueso en el nodo/grupo bajo el cursor. */
+  /** Rollover con Espacio (overview): recuadro grueso en el nodo/grupo bajo el cursor. */
   const [overviewHoverHighlightId, setOverviewHoverHighlightId] = useState<string | null>(null);
+  /** Lienzo con clase CSS: animación de rollover + bloqueo de clics en controles de nodos. */
+  const [overviewModeActive, setOverviewModeActive] = useState(false);
   useEffect(() => {
-    const overviewHeld = () =>
-      ctrlHeldForOverviewRef.current ||
-      shiftHeldForOverviewRef.current ||
-      spaceHeldForOverviewRef.current;
     const onMove = (e: MouseEvent) => {
       lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
-      if (!overviewHeld()) return;
+      if (!spaceHeldForOverviewRef.current) return;
       const raw = getReactFlowNodeIdAtClientPoint(e.clientX, e.clientY);
       const id =
         raw && liveNodesRef.current.some((n) => n.id === raw) ? raw : null;
@@ -1961,42 +2073,29 @@ const SpacesContent = () => {
     };
     /** blur: suelta “virtualmente” modificadores y restaura zoom (sin encuadrar nodo). */
     const onBlur = () => {
-      if (
-        !ctrlHeldForOverviewRef.current &&
-        !shiftHeldForOverviewRef.current &&
-        !spaceHeldForOverviewRef.current
-      ) {
+      if (!spaceHeldForOverviewRef.current) {
         return;
       }
       const saved = viewportBeforeOverviewRef.current;
-      ctrlHeldForOverviewRef.current = false;
-      shiftHeldForOverviewRef.current = false;
       spaceHeldForOverviewRef.current = false;
       setSpaceHeld(false);
       viewportBeforeOverviewRef.current = null;
       setOverviewHoverHighlightId(null);
+      setOverviewModeActive(false);
       if (saved) restoreSavedViewport(saved);
     };
     const onModifierDown = (e: KeyboardEvent) => {
-      const isCtrl = e.key === 'Control';
-      const isShift = e.key === 'Shift';
-      const isSpace = e.code === 'Space';
-      if (!isCtrl && !isShift && !isSpace) return;
+      if (e.code !== 'Space') return;
       if (e.repeat) return;
       if (typingTarget(e.target)) return;
 
-      if (isSpace) e.preventDefault();
+      e.preventDefault();
 
-      const wasHeld =
-        ctrlHeldForOverviewRef.current ||
-        shiftHeldForOverviewRef.current ||
-        spaceHeldForOverviewRef.current;
-      if (isCtrl) ctrlHeldForOverviewRef.current = true;
-      if (isShift) shiftHeldForOverviewRef.current = true;
-      if (isSpace) {
-        spaceHeldForOverviewRef.current = true;
-        setSpaceHeld(true);
-      }
+      setOverviewModeActive(true);
+
+      const wasHeld = spaceHeldForOverviewRef.current;
+      spaceHeldForOverviewRef.current = true;
+      setSpaceHeld(true);
 
       if (wasHeld) {
         queueMicrotask(refreshOverviewHover);
@@ -2013,25 +2112,12 @@ const SpacesContent = () => {
       queueMicrotask(refreshOverviewHover);
     };
     const onModifierUp = (e: KeyboardEvent) => {
-      const isCtrl = e.key === 'Control';
-      const isShift = e.key === 'Shift';
-      const isSpace = e.code === 'Space';
-      if (!isCtrl && !isShift && !isSpace) return;
+      if (e.code !== 'Space') return;
 
-      if (isCtrl) ctrlHeldForOverviewRef.current = false;
-      if (isShift) shiftHeldForOverviewRef.current = false;
-      if (isSpace) {
-        spaceHeldForOverviewRef.current = false;
-        setSpaceHeld(false);
-      }
+      spaceHeldForOverviewRef.current = false;
+      setSpaceHeld(false);
 
-      if (
-        ctrlHeldForOverviewRef.current ||
-        shiftHeldForOverviewRef.current ||
-        spaceHeldForOverviewRef.current
-      ) {
-        return;
-      }
+      setOverviewModeActive(false);
 
       const saved = viewportBeforeOverviewRef.current;
       viewportBeforeOverviewRef.current = null;
@@ -2801,7 +2887,11 @@ const SpacesContent = () => {
         (spaces[targetSpaceId] as { nodes?: any[]; edges?: any[] } | undefined) ||
         (spaces[rootSpaceId] as { nodes?: any[]; edges?: any[] });
 
-      const nextNodes = stripLegacyFinal([...(targetSpace?.nodes || [])]);
+      const nextNodes = stripLegacyFinal([...(targetSpace?.nodes || [])]).map((n: any) => {
+        if (!n.data || typeof n.data !== 'object') return n;
+        const { _foldderCanvasIntro: _i, ...rest } = n.data as Record<string, unknown>;
+        return { ...n, data: rest };
+      });
       const nextEdges = stripEdgesToFinal([...(targetSpace?.edges || [])]);
 
       setNodes(nextNodes);
@@ -3201,7 +3291,7 @@ const SpacesContent = () => {
       id:       newNodeId,
       type:     newType,
       position: { x: position.x - 160, y: position.y - 80 },
-      data:     defaultDataForCanvasDropNode(newType),
+      data:     withFoldderCanvasIntro(newType, defaultDataForCanvasDropNode(newType)),
     };
 
     const edgeId = `ae-${fromNodeId}-${newNodeId}-${fromHandleId}-${Date.now()}`;
@@ -3216,7 +3306,16 @@ const SpacesContent = () => {
     let newHandle: string | undefined;
     if (fromType === 'source') {
       // new node should receive: find its input matching the handle type
-      newHandle = newMeta?.inputs.find((i: any) => i.type === wireType)?.id;
+      // enhancer / concatenator / listado usan p0… en el DOM; el registry aún puede decir
+      // `prompt` (igual que la salida) → XY Flow enlazaba al handle de salida.
+      if (
+        wireType === 'prompt' &&
+        (newType === 'enhancer' || newType === 'concatenator' || newType === 'listado')
+      ) {
+        newHandle = 'p0';
+      } else {
+        newHandle = newMeta?.inputs.find((i: any) => i.type === wireType)?.id;
+      }
     } else {
       // new node should provide: find its output matching the handle type
       newHandle = newMeta?.outputs.find((o: any) => o.type === handleMeta.type)?.id;
@@ -3236,6 +3335,7 @@ const SpacesContent = () => {
     };
 
     setNodes((nds: any) => [...nds, newNode]);
+    scheduleFoldderCanvasIntroEnd(newNodeId);
     // Delay edge slightly so ReactFlow's drag-cancel doesn't wipe it; luego recalcular handles (Enhancer, etc.)
     setTimeout(() => {
       setEdges((eds: any) => [...eds, newEdge]);
@@ -3250,7 +3350,7 @@ const SpacesContent = () => {
       });
       fitViewToNodeIds([newNodeId], 600);
     }, 30);
-  }, [edges, nodes, screenToFlowPosition, setNodes, setEdges, takeSnapshot, fitViewToNodeIds, updateNodeInternals]);
+  }, [edges, nodes, screenToFlowPosition, setNodes, setEdges, takeSnapshot, fitViewToNodeIds, updateNodeInternals, scheduleFoldderCanvasIntroEnd]);
 
 
 
@@ -3295,16 +3395,19 @@ const SpacesContent = () => {
 
       const plan = planDuplicateBelowMultiInput(node, edges, nodes);
       const newId = `${node.type}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      const rawData = node.data && typeof node.data === 'object' ? { ...(node.data as object) } : {};
+      delete (rawData as { _foldderCanvasIntro?: unknown })._foldderCanvasIntro;
       const newNode = {
         ...node,
         id: newId,
         position: plan?.position ?? { x: node.position.x + 20, y: node.position.y + 20 },
         selected: true,
-        data: { ...node.data },
+        data: withFoldderCanvasIntro(String(node.type), rawData as Record<string, unknown>),
       };
 
       takeSnapshot();
       setNodes((nds) => [...nds.map((n) => ({ ...n, selected: false })), newNode]);
+      scheduleFoldderCanvasIntroEnd(newId);
       if (plan) {
         setEdges((eds) => [
           ...eds,
@@ -3321,7 +3424,7 @@ const SpacesContent = () => {
       }
       setContextMenu(null);
     },
-    [nodes, edges, setNodes, setEdges, takeSnapshot]
+    [nodes, edges, setNodes, setEdges, takeSnapshot, scheduleFoldderCanvasIntroEnd]
   );
 
   const groupSelectedToSpace = useCallback(() => {
@@ -3493,11 +3596,12 @@ const SpacesContent = () => {
       internalCategories: structure.internalCategories,
     };
 
+    const spaceNodeId = `node_space_${Date.now()}`;
     const newNode = {
-      id: `node_space_${Date.now()}`,
+      id: spaceNodeId,
       type: 'space',
       position: { x: avgX, y: avgY },
-      data: {
+      data: withFoldderCanvasIntro('space', {
         spaceId,
         label: structure.label || 'Nested Group',
         hasInput: includeSpaceInput,
@@ -3505,7 +3609,7 @@ const SpacesContent = () => {
         outputType: autoOutputType,
         value: autoOutputValue,
         internalCategories: structure.internalCategories,
-      },
+      }),
     };
 
     const remainingNodes = nodes.filter((n) => !selectedIds.has(n.id));
@@ -3514,6 +3618,7 @@ const SpacesContent = () => {
     );
 
     setNodes([...remainingNodes, newNode]);
+    scheduleFoldderCanvasIntroEnd(spaceNodeId);
     setEdges(remainingEdges);
     setSpacesMap(newSpacesMap);
     setContextMenu(null);
@@ -3526,6 +3631,7 @@ const SpacesContent = () => {
     setSpacesMap,
     takeSnapshot,
     analyzeSpaceStructure,
+    scheduleFoldderCanvasIntroEnd,
   ]);
 
   const groupSelectedToCanvasGroup = useCallback(() => {
@@ -3579,18 +3685,20 @@ const SpacesContent = () => {
         if (stackIdx === -1) {
           const cls = [
             node.className,
+            node.data?._foldderCanvasIntro && 'foldder-node-canvas-intro',
             isCompat && 'library-drop-compatible',
             isHover && 'library-drop-highlight',
             isOverviewHover && 'foldder-ctrl-overview-hover',
           ]
             .filter(Boolean)
             .join(' ');
-          return { ...node, className: cls || undefined };
+          return { ...node, className: cls || undefined, style: mergeNodeOutputBorderStyle(node) };
         }
 
         const isFocused = stackIdx === f;
         const cls = [
           node.className,
+          node.data?._foldderCanvasIntro && 'foldder-node-canvas-intro',
           isCompat && 'library-drop-compatible',
           isHover && 'library-drop-highlight',
           isOverviewHover && 'foldder-ctrl-overview-hover',
@@ -3606,6 +3714,7 @@ const SpacesContent = () => {
             hidden: true,
             selected: false,
             className: cls || undefined,
+            style: mergeNodeOutputBorderStyle(node),
           };
         }
 
@@ -3618,7 +3727,7 @@ const SpacesContent = () => {
           selectable: true,
           selected: true,
           className: cls || undefined,
-          style: { ...(node.style || {}), zIndex: 200 },
+          style: mergeNodeOutputBorderStyle(node, { zIndex: 200 }),
         };
       });
     }
@@ -3629,6 +3738,7 @@ const SpacesContent = () => {
       const isOverviewHover = n.id === overviewHoverHighlightId;
       const cls = [
         n.className,
+        n.data?._foldderCanvasIntro && 'foldder-node-canvas-intro',
         isCompat && 'library-drop-compatible',
         isHover && 'library-drop-highlight',
         isOverviewHover && 'foldder-ctrl-overview-hover',
@@ -3638,6 +3748,7 @@ const SpacesContent = () => {
       return {
         ...n,
         className: cls || undefined,
+        style: mergeNodeOutputBorderStyle(n),
       };
     });
   }, [
@@ -3649,6 +3760,11 @@ const SpacesContent = () => {
     cardsIntroTick,
     overviewHoverHighlightId,
   ]);
+
+  const flowEdges = useMemo(
+    () => filterEdgesForCollapsedCanvasGroups(nodes, edges),
+    [nodes, edges]
+  );
 
   const isValidConnection = useCallback((connection: any) => {
     const sourceNode = nodes.find((n) => n.id === connection.source);
@@ -3743,23 +3859,24 @@ const SpacesContent = () => {
             id: nodeId,
             type: 'mediaInput',
             position: placement,
-            data: {
+            data: withFoldderCanvasIntro('mediaInput', {
               value: '',
               type: fileType,
               label: file.name,
               loading: true,
               source: 'upload',
-            },
+            }),
           };
 
           setNodes((nds) => [...nds, newNode]);
+          scheduleFoldderCanvasIntroEnd(nodeId);
 
           void (async () => {
             const formData = new FormData();
             formData.append('file', file);
             try {
               const res = await fetch('/api/runway/upload', { method: 'POST', body: formData });
-              const json = await readResponseJson<{ url?: string; s3Key?: string }>(
+              const json = await readResponseJson<{ url?: string; s3Key?: string; error?: string }>(
                 res,
                 'POST /api/runway/upload'
               );
@@ -3774,6 +3891,7 @@ const SpacesContent = () => {
                             value: json.url,
                             s3Key: json.s3Key,
                             loading: false,
+                            error: false,
                             metadata: {
                               size: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
                               resolution: fileType === 'video' || fileType === 'image' ? 'Auto-detected' : '-',
@@ -3784,12 +3902,43 @@ const SpacesContent = () => {
                       : n
                   )
                 );
+              } else {
+                const detail =
+                  json?.error ||
+                  (!res.ok ? `HTTP ${res.status}` : null) ||
+                  'El servidor no devolvió URL (revisa consola y credenciales S3).';
+                console.error('[canvas drop upload]', detail, json);
+                setNodes((nds) =>
+                  nds.map((n) =>
+                    n.id === nodeId
+                      ? {
+                          ...n,
+                          data: {
+                            ...n.data,
+                            loading: false,
+                            error: true,
+                            uploadError: detail,
+                          },
+                        }
+                      : n
+                  )
+                );
               }
             } catch (err) {
               console.error('Auto-drop upload error:', err);
               setNodes((nds) =>
                 nds.map((n) =>
-                  n.id === nodeId ? { ...n, data: { ...n.data, loading: false, error: true } } : n
+                  n.id === nodeId
+                    ? {
+                        ...n,
+                        data: {
+                          ...n.data,
+                          loading: false,
+                          error: true,
+                          uploadError: err instanceof Error ? err.message : 'Upload error',
+                        },
+                      }
+                    : n
                 )
               );
             }
@@ -3822,7 +3971,7 @@ const SpacesContent = () => {
           id: newId,
           type: reactFlowType,
           position: placement,
-          data: { value: '', label: `${reactFlowType} node` },
+          data: withFoldderCanvasIntro(reactFlowType, { value: '', label: `${reactFlowType} node` }),
         };
 
         const edgeId = `e-lib-${newId}-${targetNode.id}-${Date.now()}`;
@@ -3853,6 +4002,7 @@ const SpacesContent = () => {
           setEdges((eds: any) => addEdge(newEdge, eds));
           return next;
         });
+        scheduleFoldderCanvasIntroEnd(newId);
         setTimeout(() => {
           fitViewToNodeIds([newId], 700);
         }, 100);
@@ -3865,21 +4015,23 @@ const SpacesContent = () => {
         x: position.x + 160,
         y: position.y + 120,
       });
+      const libDropId = `node_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
       const newNode = {
-        id: `node_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+        id: libDropId,
         type: reactFlowType,
         position: placement,
-        data: { value: '', label: `${reactFlowType} node` },
+        data: withFoldderCanvasIntro(reactFlowType, { value: '', label: `${reactFlowType} node` }),
       };
 
       takeSnapshot();
       setNodes((nds) => [...nds, newNode]);
+      scheduleFoldderCanvasIntroEnd(libDropId);
       setTimeout(() => {
         fitViewToNodeIds([newNode.id], 700);
       }, 100);
       setSidebarLockedCollapsed(true);
     },
-    [screenToFlowPosition, setNodes, setEdges, nodes, edges, takeSnapshot, fitView, fitViewToNodeIds]
+    [screenToFlowPosition, setNodes, setEdges, nodes, edges, takeSnapshot, fitView, fitViewToNodeIds, scheduleFoldderCanvasIntroEnd]
   );
 
   return (
@@ -4032,9 +4184,11 @@ const SpacesContent = () => {
           }}>
             <div style={{
               width: 14, height: 14, borderRadius: '50%',
-              background: finalMedia.value ? (finalMedia.type === 'video' ? '#f43f5e' : '#ec4899') : 'rgba(255,255,255,0.15)',
-              border: `2px solid ${finalMedia.value ? (finalMedia.type === 'video' ? '#f43f5e' : '#ec4899') : 'rgba(255,255,255,0.2)'}`,
-              boxShadow: finalMedia.value ? `0 0 10px ${finalMedia.type === 'video' ? 'rgba(244,63,94,0.6)' : 'rgba(236,72,153,0.6)'}` : 'none',
+              background: finalMedia.value
+                ? FOLDDER_LOGO_BLUE
+                : 'rgba(255,255,255,0.15)',
+              border: `2px solid ${finalMedia.value ? FOLDDER_LOGO_BLUE : 'rgba(255,255,255,0.2)'}`,
+              boxShadow: finalMedia.value ? '0 0 10px rgba(108,92,231,0.55)' : 'none',
             }} />
           </div>
 
@@ -4184,7 +4338,7 @@ const SpacesContent = () => {
         <ReactFlow
           onInit={onCanvasInit}
           nodes={flowNodes}
-          edges={edges}
+          edges={flowEdges}
           onNodesChange={(changes) => {
             const nds = liveNodesRef.current;
             const filtered = changes.filter((c) => {
@@ -4271,9 +4425,9 @@ const SpacesContent = () => {
           noPanClassName={XYFLOW_NO_PAN_WHEEL_GUARD_CLASS}
           zoomOnDoubleClick={false}
           nodesDraggable={canvasViewMode === 'free'}
-          nodesConnectable={canvasViewMode === 'free'}
+          nodesConnectable={canvasViewMode === 'free' && !overviewModeActive}
 
-          className={`spaces-canvas${spaceHeld || middlePanHeld ? ' spaces-canvas--space-pan' : ''}${canvasViewMode === 'cards' ? ' spaces-canvas--cards-mode' : ''}`}
+          className={`spaces-canvas${spaceHeld || middlePanHeld ? ' spaces-canvas--space-pan' : ''}${canvasViewMode === 'cards' ? ' spaces-canvas--cards-mode' : ''}${overviewModeActive ? ' foldder-overview-mode-active' : ''}`}
           style={reactFlowCanvasStyle}
         >
           <Background color="#111" gap={40} size={1} />
@@ -4509,15 +4663,16 @@ const SpacesContent = () => {
           />
         )}
 
-        {/* Action HUD — fila1: agente (izq.) + acciones (der.); fila2: pins topbar */}
+        {/* Action HUD — fila1: agente (izq.) + acciones (der.); fila2: pins topbar. Oculto con body.nb-studio-open (Nano Banana Studio fullscreen). */}
         <div
           key="action-hud"
-          className="pointer-events-none flex min-w-0 w-full max-w-[min(1280px,calc(100vw-48px))] flex-col gap-2"
+          data-foldder-top-hud
+          className="pointer-events-none flex min-w-0 flex-col gap-2"
           style={windowMode
             ? { position: 'fixed', top: 8, left: 16, right: 16, zIndex: 100 }
             : { position: 'absolute', top: 24, left: 24, right: 24, zIndex: 100 }}
         >
-          <div className="flex w-full min-w-0 items-center gap-2 sm:gap-3">
+          <div className="flex w-full min-w-0 max-w-full items-center gap-2 sm:gap-3">
             {isAuthenticated && !windowMode && (
               <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
                 <div className="flex shrink-0 items-center self-center" aria-hidden>
@@ -4716,7 +4871,10 @@ const SpacesContent = () => {
 
         {/* Topbar de pins (antes bajo el HUD; ahora abajo, sustituye la leyenda) */}
         {isAuthenticated && !windowMode && (
-          <div className="pointer-events-none absolute bottom-6 left-0 right-0 z-[120] flex justify-center overflow-visible px-4">
+          <div
+            data-foldder-top-hud
+            className="pointer-events-none absolute bottom-6 left-0 right-0 z-[120] flex justify-center overflow-visible px-4"
+          >
             <TopbarPins
               embedded
               fullWidthRow

@@ -134,12 +134,13 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
     type: 'listado',
     label: 'Listado',
     description:
-      'Connects several prompt sources; a dropdown lists each one and the output is the text of the selected prompt.',
+      'Connects several prompt sources; a dropdown lists each one. Output is «node title (data.label): selected prompt text».',
     inputs: [{ id: 'p-n', label: 'Prompt in', type: 'prompt' }],
     outputs: [{ id: 'prompt', label: 'Selected prompt', type: 'prompt' }],
     dataSchema: {
       label: 'string (optional — canvas title above the node, e.g. "color de ojos")',
-      value: 'string (output — text of the selected connected prompt; synced by UI)',
+      value:
+        'string (output — «data.label or "Listado"»: text of the selected connected prompt; synced by UI)',
       selectedEdgeId: 'string | undefined (internal: which incoming edge is selected)',
     },
   },
@@ -148,7 +149,7 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
     label: 'Prompt Enhancer',
     description: 'Uses GPT-4o to transform simple prompts into highly detailed descriptions.',
     inputs: [
-      { id: 'prompt', label: 'Raw Prompt', type: 'prompt' }
+      { id: 'p-n', label: 'Raw prompts (p0…)', type: 'prompt' }
     ],
     outputs: [
       { id: 'prompt', label: 'Enhanced Prompt', type: 'prompt' }
@@ -355,7 +356,7 @@ export const ASSISTANT_NODE_DATA_HINTS: Record<string, string> = {
   enhancer: "value (texto mejorado), label",
   concatenator: "label; el texto combinado viene de las entradas conectadas",
   listado:
-    "label (título del nodo, p. ej. color de ojos); un promptInput por opción con data.value = texto de esa opción; edges a p0, p1, p2… en orden; salida prompt → nanoBanana u otros",
+    "label (título del control); un promptInput por opción con data.value = texto de esa opción; edges a p0, p1…; salida = «label: opción elegida» → nanoBanana u otros",
   mediaDescriber: "value (descripción), label",
   mediaInput: "value (URL), type, metadata, label, s3Key",
   urlImage:

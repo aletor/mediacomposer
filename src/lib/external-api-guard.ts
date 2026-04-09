@@ -69,7 +69,24 @@ class Semaphore {
 const semaphore = new Semaphore(MAX_CONCURRENT);
 
 function isExemptFromRepeat(pathname: string): boolean {
-  return /^\/api\/grok\/status\//.test(pathname) || /^\/api\/runway\/status\//.test(pathname);
+  if (/^\/api\/grok\/status\//.test(pathname) || /^\/api\/runway\/status\//.test(pathname)) {
+    return true;
+  }
+  /**
+   * Polling de estado: ya exento arriba.
+   * Generación Gemini (imagen / vídeo / stream): cada POST puede ser un prompt distinto;
+   * la clave de repetición solo usa método + pathname, así que dos generaciones seguidas
+   * a `/api/gemini/video` en menos de 4s disparaban EXTERNAL_API_GUARD sin motivo real.
+   */
+  if (
+    pathname === "/api/gemini/video" ||
+    pathname === "/api/gemini/generate" ||
+    pathname === "/api/gemini/generate-stream" ||
+    pathname === "/api/gemini/analyze-areas"
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function repeatKey(method: string, abs: URL): string {

@@ -13,6 +13,8 @@ interface AreaChange {
   paintData?: string | null;         // data:image/png;base64,...
   assignedColorHex?: string;         // e.g. "#ff0000"
   referenceImageData?: string | null; // data URL of visual reference uploaded by user
+  /** Si true: el cambio afecta a toda la escena (sin máscara / sin trazo). */
+  isGlobal?: boolean;
 }
 
 async function parseImage(image: string): Promise<{ data: string; mimeType: string } | null> {
@@ -122,6 +124,11 @@ export async function POST(req: NextRequest) {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${VISION_MODEL}:generateContent?key=${apiKey}`;
 
     const parts: any[] = [];
+    const typedChanges = changes as AreaChange[];
+    const zoneChanges = typedChanges.filter((c) => !c.isGlobal);
+    const globalChanges = typedChanges.filter((c) => c.isGlobal);
+    const globalOnly = typedChanges.length > 0 && globalChanges.length === typedChanges.length;
+    const hasZones = zoneChanges.length > 0;
 
     // 1. Base image
     const parsedBase = baseImage ? await parseImage(baseImage) : null;
@@ -129,79 +136,123 @@ export async function POST(req: NextRequest) {
       parts.push({ inline_data: { mime_type: parsedBase.mimeType, data: parsedBase.data } });
     }
 
-    // 2. Try to build server-side marked image (base + colored paint overlays via sharp)
+    // 2. Marked image / map — solo para cambios por zona (trazos). Los globales no llevan máscara.
     let useMarked = false;
     let markedImgData: string | null = null;
-    if (parsedBase) {
+    if (parsedBase && hasZones) {
       markedImgData = await buildMarkedImageWithSharp(
         parsedBase.data,
         parsedBase.mimeType,
-        changes as AreaChange[]
+        zoneChanges as AreaChange[]
       );
       if (markedImgData) {
         parts.push({ inline_data: { mime_type: "image/png", data: markedImgData } });
         useMarked = true;
-        console.log("[analyze-areas] Using marked image approach");
+        console.log("[analyze-areas] Using marked image approach (zones)");
       }
     }
 
-    // Fallback if marked build failed: use color map
-    if (!useMarked && colorMapImage) {
+    // Fallback si hay zonas pero sharp falló: mapa de color del cliente (no duplicar base en modo solo-global)
+    if (!useMarked && hasZones && colorMapImage) {
       const parsedMap = await parseImage(colorMapImage);
-      if (parsedMap) parts.push({ inline_data: { mime_type: parsedMap.mimeType, data: parsedMap.data } });
-      console.log("[analyze-areas] Using color map fallback");
+      if (parsedMap) {
+        parts.push({ inline_data: { mime_type: parsedMap.mimeType, data: parsedMap.data } });
+        console.log("[analyze-areas] Using color map fallback");
+      }
     }
 
-    // 3. Build prompt
-    const typedChanges = changes as AreaChange[];
-    const hasAnyRef = typedChanges.some(c => c.referenceImageData);
-    const changeList = typedChanges
-      .map(c => {
-        const pos = (c.posX != null && c.posY != null)
-          ? ` (posición: ${c.posX}% horizontal, ${c.posY}% vertical desde arriba)`
+    // 3. Prompt
+    const hasAnyRef = typedChanges.some((c) => c.referenceImageData);
+
+    let systemPrompt: string;
+
+    if (globalOnly) {
+      const changeList = globalChanges
+        .map((c) => `- ${c.description.trim()}`)
+        .join("\n");
+      systemPrompt = `Eres un asistente experto en prompts para edición de imágenes con IA.
+
+Se te proporciona UNA sola imagen: la escena original (REFERENCIA 1).
+
+Cambios solicitados — aplican a TODA la imagen (iluminación, hora del día, atmósfera, color general, cielo, ambiente):
+${changeList}
+
+Tu tarea:
+1. Redacta UN único prompt de edición claro y detallado para un modelo de imagen. Describe cómo debe verse la escena final (p. ej. escena nocturna, luz de luna, farolas, sombras profundas, ventanas iluminadas, etc.).
+2. Si el usuario pide "de noche", "atardecer", etc., sé explícito sobre la luz, las fuentes de luz, el cielo y el balance de color; no te limites a una frase vaga.
+3. Mantén la composición y los sujetos reconocibles salvo que el cambio global los altere de forma inevitable (p. ej. siluetas de noche).
+
+Devuelve SOLO el prompt, sin texto adicional.`;
+    } else {
+      const changeList = typedChanges
+        .map((c) => {
+          if (c.isGlobal) {
+            return `- CAMBIO GLOBAL (toda la escena): ${c.description.trim()}`;
+          }
+          const pos =
+            c.posX != null && c.posY != null
+              ? ` (posición en el encuadre: ${c.posX}% desde el borde IZQUIERDO de la imagen, ${c.posY}% desde arriba; usar esto para izq./der. del PLANO, no anatomía del sujeto)`
+              : "";
+          const refNote = c.referenceImageData
+            ? ` [TIENE REFERENCIA VISUAL: celda ${c.color.toUpperCase()} en la IMAGEN 3 (grid de referencias)]`
+            : "";
+          return `- Área / trazo ${c.color}${pos}: ${c.description}${refNote}`;
+        })
+        .join("\n");
+
+      const imagenDesc = useMarked
+        ? "- IMAGEN 2: la imagen original con trazos de pintura en colores sólidos superpuestos. Los trazos indican EXACTAMENTE los elementos que el usuario quiere modificar."
+        : hasZones
+          ? "- IMAGEN 2: mapa abstracto de colores sobre fondo negro. Las manchas de color indican las áreas seleccionadas."
           : "";
-        const refNote = c.referenceImageData
-          ? ` [TIENE REFERENCIA VISUAL: celda ${c.color.toUpperCase()} en la IMAGEN 3 (grid de referencias)]`
-          : "";
-        return `- Trazo de color ${c.color}${pos}: ${c.description}${refNote}`;
-      })
-      .join("\n");
 
-    const imagenDesc = useMarked
-      ? "- IMAGEN 2: la imagen original con trazos de pintura en colores sólidos superpuestos. Los trazos indican EXACTAMENTE los elementos que el usuario quiere modificar."
-      : "- IMAGEN 2: mapa abstracto de colores sobre fondo negro. Las manchas de color indican las áreas seleccionadas.";
+      const imagen3Desc = hasAnyRef
+        ? "\n- IMAGEN 3: grid de referencias visuales. Cada celda tiene una cabecera del color del cambio y la imagen de referencia visual que el usuario quiere usar como guía de estilo."
+        : "";
 
-    const imagen3Desc = hasAnyRef
-      ? "\n- IMAGEN 3: grid de referencias visuales. Cada celda tiene una cabecera del color del cambio y la imagen de referencia visual que el usuario quiere usar como guía de estilo."
-      : "";
+      const referenceOutputLine = hasAnyRef
+        ? "\nREFERENCIA 3: grid de referencias visuales — cada celda etiquetada con el color del cambio."
+        : "";
 
-    const referenceOutputLine = hasAnyRef
-      ? "\nREFERENCIA 3: grid de referencias visuales — cada celda etiquetada con el color del cambio."
-      : "";
+      const imageCountHint = hasAnyRef ? "tres" : hasZones ? "dos" : "una";
+      const imageList =
+        hasZones && hasAnyRef
+          ? `- IMAGEN 1: la imagen original/base
+${imagenDesc}${imagen3Desc}`
+          : hasZones
+            ? `- IMAGEN 1: la imagen original/base
+${imagenDesc}`
+            : `- IMAGEN 1: la imagen original/base`;
 
-    const systemPrompt = `Eres un asistente experto en prompts para generación de imágenes con IA.
+      systemPrompt = `Eres un asistente experto en prompts para generación de imágenes con IA.
 
-Se te proporcionan ${hasAnyRef ? "tres" : "dos"} imágenes:
-- IMAGEN 1: la imagen original/base
-${imagenDesc}${imagen3Desc}
+Se te proporcionan ${imageCountHint} imágenes:
+${imageList}
 
 Cambios solicitados:
 ${changeList}
 
+PRIORIDAD (zonas con trazo / mapa de color):
+- La IMAGEN 2 es la fuente de verdad de DÓNDE editar. El modelo de imagen final debe usar REF 2 para alinear el cambio en el espacio; ninguna frase puede contradecir la posición del trazo o mancha de color.
+- Izquierda y derecha: en fotos y retratos usa SIEMPRE el marco de la imagen (vista de frente): "lado izquierdo del encuadre", "tercio derecho del cuadro", o los porcentajes de la lista. NO uses "ojo izquierdo/derecho del sujeto" ni anatomía ambigua si choca con el trazo. Si el usuario escribió "ojo izquierdo" pero el trazo cae en el otro lado del rostro, prioriza el TRAZO y describe la zona como posición en el encuadre (p. ej. "el ojo que queda en el lado izquierdo de la foto").
+
 Tu tarea:
-1. Para cada trazo de color, identifica en la IMAGEN 1 el objeto ESPECÍFICO que está ${useMarked ? "DEBAJO/ENCIMA del trazo pintado en la IMAGEN 2" : "en esa posición según el mapa de la IMAGEN 2"}.
-2. Sé EXTREMADAMENTE específico. Nunca digas "el sujeto", "la persona", "el objeto". Di: "la persona tumbada en la arena con ropa de baño azul a la izquierda", "el chico rubio en skate", "la hamaca vacía roja sobre la arena", etc.
-3. Si un cambio tiene REFERENCIA VISUAL (nota [TIENE REFERENCIA VISUAL] en la lista), añade en esa instrucción: "siguiendo el estilo visual de la celda [COLOR] de la REFERENCIA 3".
-4. Genera el prompt con este formato exacto:
+1. Para cada cambio que NO sea global, identifica el elemento bajo el trazo ${useMarked ? "en la IMAGEN 2" : "del mapa en la IMAGEN 2"} y redacta la instrucción enlazando "zona del color [nombre] en REF 2" + posición en el plano (usa los % de la lista cuando existan).
+2. Para cada CAMBIO GLOBAL, integra la instrucción como afectación a toda la escena (luz, ambiente, hora del día), sin limitarla a una máscara.
+3. En zonas, sé específico respecto al PLANO (encuadre), no solo anatomía del personaje.
+4. Si un cambio tiene REFERENCIA VISUAL (nota [TIENE REFERENCIA VISUAL] en la lista), añade: "siguiendo el estilo visual de la celda [COLOR] de la REFERENCIA 3".
+5. Genera el prompt con este formato exacto:
 
-REFERENCIA 1: imagen base. Mantén todo lo que no se indica cambiar, conservando composición, iluminación y estilo.
-REFERENCIA 2: mapa de colores con áreas de cambio.${referenceOutputLine}
+REFERENCIA 1: imagen base. Mantén todo lo que no se indica cambiar, conservando composición donde aplique.
+REFERENCIA 2: zonas marcadas en color — respetar la posición espacial de cada trazo al aplicar el cambio.${referenceOutputLine}
 
-[Para cada cambio: "En el área [color] de la referencia 2 (donde está [descripción muy específica del objeto]): [instrucción][, siguiendo el estilo visual de la celda [COLOR] de la REFERENCIA 3 si aplica]"]
+[Para zonas: primero ancla: "En la zona del trazo [color] en REF 2 (posición en el encuadre / % de la lista)" y luego la acción. Si el lenguaje natural del usuario y el trazo discrepan en izquierda/derecha, manda la versión alineada al trazo.]
+[Para globales: párrafos sobre iluminación/atmósfera de toda la escena.]
 
-CRÍTICO: El trazo de pintura señala un elemento CONCRETO. Si hay elementos grandes y pequeños en la misma zona, el trazo está sobre el elemento PEQUEÑO/ESPECÍFICO que se quiere cambiar. No elijas el elemento más dominante de la escena.
+CRÍTICO: El trazo señala el sitio exacto. Si descripción y trazo discrepan, gana el trazo y el encuadre.
 
 Devuelve SOLO el prompt, sin texto adicional.`;
+    }
 
 
     parts.push({ text: systemPrompt });
