@@ -1,6 +1,6 @@
 "use client";
 
-import React, { memo, useState, useEffect, useMemo, useCallback, useRef, type ComponentProps } from 'react';
+import React, { memo, useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef, type ComponentProps } from 'react';
 import { createPortal } from 'react-dom';
 import { Position, NodeProps, BaseEdge, EdgeLabelRenderer, getBezierPath, EdgeProps, useReactFlow, useUpdateNodeInternals, useNodes, useEdges, NodeResizer, useNodeId, type Node } from '@xyflow/react';
 import { 
@@ -53,6 +53,7 @@ import { FOLDDER_FIT_VIEW_EASE } from '@/lib/fit-view-ease';
 import { runAiJobWithNotification } from '@/lib/ai-job-notifications';
 import { isFoldderMediaPreviewAutoFitSuppressed } from '@/lib/media-preview-fit-suppress';
 import { NODE_REGISTRY } from './nodeRegistry';
+import { useRegisterAssistantNodeRun } from './NodeExecutionBridge';
 import { DEFAULT_EDGE_COLOR, HANDLE_COLORS } from './handle-type-colors';
 import {
   NodeIcon,
@@ -363,7 +364,10 @@ export const UrlImageNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const nodeData = data as BaseNodeData & { 
     urls?: string[], 
     selectedIndex?: number,
-    pendingSearch?: boolean
+    pendingSearch?: boolean,
+    /** Frase de verificación (visión): qué debe mostrarse realmente en la imagen. */
+    searchIntent?: string,
+    count?: number,
   };
   const { setNodes } = useReactFlow();
   const [loading, setLoading] = useState(false);
@@ -372,59 +376,70 @@ export const UrlImageNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const selectedIndex = nodeData.selectedIndex ?? 0;
   const currentUrl = urls[selectedIndex] || nodeData.value || '';
 
-  // Reactive Search Trigger
-  useEffect(() => {
-    if (nodeData.pendingSearch && nodeData.label && !loading) {
-      const triggerSearch = async () => {
-        setLoading(true);
-        try {
-          const ok = await runAiJobWithNotification({ nodeId: id, label: 'Búsqueda de imágenes' }, async () => {
-            const res = await fetch('/api/spaces/search', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ query: nodeData.label, limit: 10 }),
-            });
-            const json = await res.json();
-            if (json.urls && json.urls.length > 0) {
-              setNodes((nds: any) => nds.map((n: any) => n.id === id ? {
-                ...n,
-                data: {
-                  ...n.data,
-                  urls: json.urls,
-                  value: json.urls[0],
-                  selectedIndex: 0,
-                  pendingSearch: false,
-                  type: 'image',
-                  source: 'url',
-                },
-              } : n));
-            } else {
-              setNodes((nds: any) => nds.map((n: any) => n.id === id ? {
-                ...n,
-                data: { ...n.data, pendingSearch: false },
-              } : n));
-            }
-          });
-          if (!ok) {
-            setNodes((nds: any) => nds.map((n: any) => n.id === id ? {
-              ...n,
-              data: { ...n.data, pendingSearch: false },
-            } : n));
-          }
-        } catch (err) {
-          console.error('Search failed:', err);
+  const runCarouselSearch = useCallback(async () => {
+    if (!nodeData.label) return;
+    setLoading(true);
+    try {
+      const ok = await runAiJobWithNotification({ nodeId: id, label: 'Búsqueda de imágenes' }, async () => {
+        const lim = Math.min(Math.max(nodeData.count ?? 10, 3), 20);
+        const verifyIntent =
+          (typeof nodeData.searchIntent === 'string' && nodeData.searchIntent.trim()) ||
+          nodeData.label ||
+          '';
+        const res = await fetch('/api/spaces/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            query: nodeData.label,
+            limit: lim,
+            verifyIntent,
+          }),
+        });
+        const json = await res.json();
+        if (json.urls && json.urls.length > 0) {
+          setNodes((nds: any) => nds.map((n: any) => n.id === id ? {
+            ...n,
+            data: {
+              ...n.data,
+              urls: json.urls,
+              value: json.urls[0],
+              selectedIndex: 0,
+              pendingSearch: false,
+              type: 'image',
+              source: 'url',
+            },
+          } : n));
+        } else {
           setNodes((nds: any) => nds.map((n: any) => n.id === id ? {
             ...n,
             data: { ...n.data, pendingSearch: false },
           } : n));
-        } finally {
-          setLoading(false);
         }
-      };
-
-      triggerSearch();
+      });
+      if (!ok) {
+        setNodes((nds: any) => nds.map((n: any) => n.id === id ? {
+          ...n,
+          data: { ...n.data, pendingSearch: false },
+        } : n));
+      }
+    } catch (err) {
+      console.error('Search failed:', err);
+      setNodes((nds: any) => nds.map((n: any) => n.id === id ? {
+        ...n,
+        data: { ...n.data, pendingSearch: false },
+      } : n));
+    } finally {
+      setLoading(false);
     }
-  }, [nodeData.pendingSearch, nodeData.label, id, setNodes, loading]);
+  }, [id, nodeData.label, nodeData.count, nodeData.searchIntent, setNodes]);
+
+  useEffect(() => {
+    if (nodeData.pendingSearch && nodeData.label && !loading) {
+      void runCarouselSearch();
+    }
+  }, [nodeData.pendingSearch, nodeData.label, loading, runCarouselSearch]);
+
+  useRegisterAssistantNodeRun(id, runCarouselSearch);
 
   const updateData = (updates: any) => {
     setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, ...updates } } : n));
@@ -1865,6 +1880,12 @@ export const ImageExportNode = memo(({ id, data, selected }: NodeProps<any>) => 
       .finally(() => setTimeout(() => setIsExporting(false), 500));
   };
 
+  const handleExportRef = useRef(handleExport);
+  handleExportRef.current = handleExport;
+  useRegisterAssistantNodeRun(id, async () => {
+    handleExportRef.current();
+  });
+
 
 
   return (
@@ -2297,20 +2318,41 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
 export const PromptNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const nodeData = data as BaseNodeData;
   const { setNodes } = useReactFlow();
+  const updateNodeInternals = useUpdateNodeInternals();
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  const syncTextareaHeight = useCallback(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = '0px';
+    el.style.height = `${Math.max(el.scrollHeight, 0)}px`;
+  }, []);
+
+  useLayoutEffect(() => {
+    syncTextareaHeight();
+    updateNodeInternals(id);
+  }, [nodeData.value, syncTextareaHeight, id, updateNodeInternals]);
+
   return (
-    <div className={`custom-node prompt-node`} style={{ minWidth: 280 }}>
-      <FoldderNodeResizer minWidth={280} minHeight={160} isVisible={selected} />
+    <div className="custom-node prompt-node prompt-node--compact" style={{ minWidth: 260 }}>
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Prompt" />
       <div className="node-header">
         <NodeIcon type="promptInput" selected={selected} size={16} /> PROMPT
       </div>
-      <div className="node-content" style={{ display: 'flex', flexDirection: 'column' }}>
-        <textarea 
-          className="node-textarea nowheel nodrag nokey"
-          style={{ flex: 1, resize: 'none', minHeight: 80 }}
-          placeholder="Describe your vision..."
+      <div className="node-content node-content--prompt-fill">
+        <textarea
+          ref={taRef}
+          className="node-textarea node-textarea--prompt-compact nowheel nodrag nokey"
+          rows={1}
+          placeholder="Describe your vision…"
           value={nodeData.value || ''}
-          onChange={(e) => setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, value: e.target.value } } : n))}
+          onChange={(e) =>
+            setNodes((nds: any) =>
+              nds.map((n: any) =>
+                n.id === id ? { ...n, data: { ...n.data, value: e.target.value } } : n
+              )
+            )
+          }
           onContextMenu={(e) => e.stopPropagation()}
         />
       </div>
@@ -2329,39 +2371,69 @@ export const ConcatenatorNode = memo(({ id, data, selected }: NodeProps<any>) =>
   const nodes = useNodes();
   const edges = useEdges();
   const { setNodes } = useReactFlow();
+  const updateNodeInternals = useUpdateNodeInternals();
 
-  // Find all edges connected TO this node
-  const connectedInputs = useMemo(() => 
-    edges.filter((e: any) => e.target === id).sort((a: any, b: any) => (a.targetHandle || '').localeCompare(b.targetHandle || '')),
+  const ALL_HANDLES = ['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'];
+
+  const connectedEdges = useMemo(
+    () =>
+      edges
+        .filter((e: any) => e.target === id)
+        .sort((a: any, b: any) => (a.targetHandle || '').localeCompare(b.targetHandle || '')),
     [edges, id]
   );
 
+  const connectedHandleIds = new Set(connectedEdges.map((e: any) => e.targetHandle));
+  const visibleCount = Math.min(Math.max(connectedEdges.length + 1, 1), ALL_HANDLES.length);
+
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [id, visibleCount, updateNodeInternals]);
+
   // Dynamic logic: result is concatenation of all connected prompt values
   useEffect(() => {
-    const values = connectedInputs.map((edge: any) => {
-      const sourceNode = nodes.find(n => n.id === edge.source);
+    const values = connectedEdges.map((edge: any) => {
+      const sourceNode = nodes.find((n) => n.id === edge.source);
       return sourceNode?.data.value || '';
     });
-    
+
     const result = values.filter((v: any) => v).join(' ').trim();
     if (result !== (nodeData.value || '')) {
-      setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, value: result } } : n));
+      setNodes((nds: any) =>
+        nds.map((n: any) => (n.id === id ? { ...n, data: { ...n.data, value: result } } : n))
+      );
     }
-  }, [connectedInputs, nodes, id, nodeData.value, setNodes]);
-
-  // Fixed handles for stability: 8 slots available
-  const handleIds = ['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'];
+  }, [connectedEdges, nodes, id, nodeData.value, setNodes]);
 
   return (
     <div className={`custom-node tool-node` } style={{ minWidth: 240 }}>
       <FoldderNodeResizer minWidth={240} minHeight={180} maxWidth={600} maxHeight={520} isVisible={selected} />
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Concatenator" />
-      {handleIds.map((hId: any, index: number) => (
-        <div key={hId} className="handle-wrapper handle-left" style={{ top: `${(index + 1) * (100 / (handleIds.length + 1))}%` }}>
-          <FoldderDataHandle type="target" position={Position.Left} id={hId} dataType="prompt" />
-          <span className="handle-label">In {index + 1}</span>
-        </div>
-      ))}
+      {ALL_HANDLES.map((hId, index) => {
+        const visible = index < visibleCount;
+        return (
+          <div
+            key={hId}
+            className="handle-wrapper handle-left"
+            style={{
+              top: `${((index + 1) / (ALL_HANDLES.length + 1)) * 100}%`,
+              opacity: visible ? 1 : 0,
+              pointerEvents: visible ? 'auto' : 'none',
+            }}
+          >
+            <FoldderDataHandle
+              type="target"
+              position={Position.Left}
+              id={hId}
+              dataType="prompt"
+              className={connectedHandleIds.has(hId) ? '' : 'opacity-40'}
+            />
+            <span className="handle-label" style={{ fontSize: 7 }}>
+              {connectedHandleIds.has(hId) ? `In ${index + 1} ✓` : `In ${index + 1}`}
+            </span>
+          </div>
+        );
+      })}
       
       <div className="node-header bg-gradient-to-r from-blue-600/20 to-cyan-600/20">
         <NodeIcon type="concatenator" selected={selected} size={16} />
@@ -2373,12 +2445,167 @@ export const ConcatenatorNode = memo(({ id, data, selected }: NodeProps<any>) =>
           {nodeData.value || 'Connect prompts to combine them...'}
         </div>
         <div className="mt-2 text-[8px] text-gray-600 uppercase font-bold tracking-tighter">
-          {connectedInputs.length} Inputs active
+          {connectedEdges.length} Inputs active
         </div>
       </div>
       
       <div className="handle-wrapper handle-right">
         <span className="handle-label">Result</span>
+        <FoldderDataHandle type="source" position={Position.Right} id="prompt" dataType="prompt" />
+      </div>
+    </div>
+  );
+});
+
+export const ListadoNode = memo(({ id, data, selected }: NodeProps<any>) => {
+  const nodeData = data as BaseNodeData & { selectedEdgeId?: string };
+  const nodes = useNodes();
+  const edges = useEdges();
+  const { setNodes } = useReactFlow();
+  const updateNodeInternals = useUpdateNodeInternals();
+
+  const ALL_HANDLES = ['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'];
+
+  const connectedEdges = useMemo(
+    () =>
+      edges
+        .filter((e: any) => e.target === id)
+        .sort((a: any, b: any) => (a.targetHandle || '').localeCompare(b.targetHandle || '')),
+    [edges, id]
+  );
+
+  const connectedHandleIds = new Set(connectedEdges.map((e: any) => e.targetHandle));
+  /** Una ranura vacía debajo de la última conexión (máx. 8). */
+  const visibleCount = Math.min(Math.max(connectedEdges.length + 1, 1), ALL_HANDLES.length);
+
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [id, visibleCount, updateNodeInternals]);
+
+  const options = useMemo(() => {
+    return connectedEdges.map((edge: any, i: number) => {
+      const sourceNode = nodes.find((n) => n.id === edge.source);
+      const val = String(sourceNode?.data?.value ?? '');
+      const truncated = val.length > 72 ? `${val.slice(0, 72)}…` : val;
+      const display = val.trim() ? truncated : `(vacío) · entrada ${i + 1}`;
+      return {
+        edgeId: edge.id,
+        sourceId: edge.source,
+        targetHandle: edge.targetHandle || '',
+        display,
+        value: val,
+      };
+    });
+  }, [connectedEdges, nodes]);
+
+  useEffect(() => {
+    if (options.length === 0) {
+      setNodes((nds: any) =>
+        nds.map((n: any) => {
+          if (n.id !== id) return n;
+          const d = n.data || {};
+          if ((d.value || '') === '' && !d.selectedEdgeId) return n;
+          return { ...n, data: { ...d, value: '', selectedEdgeId: undefined } };
+        })
+      );
+      return;
+    }
+    let edgeId = nodeData.selectedEdgeId;
+    if (!edgeId || !options.some((o) => o.edgeId === edgeId)) {
+      edgeId = options[0].edgeId;
+    }
+    const chosen = options.find((o) => o.edgeId === edgeId)!;
+    const newVal = chosen.value;
+    if (newVal !== (nodeData.value ?? '') || edgeId !== nodeData.selectedEdgeId) {
+      setNodes((nds: any) =>
+        nds.map((n: any) =>
+          n.id === id
+            ? { ...n, data: { ...n.data, value: newVal, selectedEdgeId: edgeId } }
+            : n
+        )
+      );
+    }
+  }, [options, nodeData.selectedEdgeId, nodeData.value, id, setNodes]);
+
+  return (
+    <div className="custom-node tool-node" style={{ minWidth: 280 }}>
+      <FoldderNodeResizer minWidth={280} minHeight={130} maxWidth={520} maxHeight={400} isVisible={selected} />
+      <NodeLabel id={id} label={nodeData.label} defaultLabel="Listado" />
+      {ALL_HANDLES.map((hId, index) => {
+        const visible = index < visibleCount;
+        return (
+          <div
+            key={hId}
+            className="handle-wrapper handle-left"
+            style={{
+              top: `${((index + 1) / (ALL_HANDLES.length + 1)) * 100}%`,
+              opacity: visible ? 1 : 0,
+              pointerEvents: visible ? 'auto' : 'none',
+            }}
+          >
+            <FoldderDataHandle
+              type="target"
+              position={Position.Left}
+              id={hId}
+              dataType="prompt"
+              className={connectedHandleIds.has(hId) ? '' : 'opacity-40'}
+            />
+            <span className="handle-label" style={{ fontSize: 7 }}>
+              {connectedHandleIds.has(hId) ? `In ${index + 1} ✓` : `In ${index + 1}`}
+            </span>
+          </div>
+        );
+      })}
+
+      <div className="node-header bg-gradient-to-r from-violet-600/25 to-indigo-600/20">
+        <NodeIcon type="listado" selected={selected} size={16} />
+        <span>Listado</span>
+        <div className="node-badge">LOGIC</div>
+      </div>
+      <div className="node-content flex flex-col gap-2 px-3 pb-3 pt-2">
+        <label className="node-label text-[9px] text-gray-500">Salida (texto del prompt)</label>
+        <select
+          className="nodrag nowheel w-full cursor-pointer rounded-lg border border-slate-200/70 bg-white/[0.92] px-2.5 py-2 text-[11px] font-medium text-slate-800 shadow-inner outline-none transition-colors focus:border-cyan-400/60 focus:ring-1 focus:ring-cyan-400/30"
+          value={nodeData.selectedEdgeId && options.some((o) => o.edgeId === nodeData.selectedEdgeId) ? nodeData.selectedEdgeId : options[0]?.edgeId || ''}
+          onChange={(e) => {
+            const nextId = e.target.value;
+            const opt = options.find((o) => o.edgeId === nextId);
+            setNodes((nds: any) =>
+              nds.map((n: any) =>
+                n.id === id
+                  ? {
+                      ...n,
+                      data: {
+                        ...n.data,
+                        selectedEdgeId: nextId || undefined,
+                        value: opt?.value ?? '',
+                      },
+                    }
+                  : n
+              )
+            );
+          }}
+          disabled={options.length === 0}
+        >
+          {options.length === 0 ? (
+            <option value="">Conecta nodos prompt (ranuras In 1…)</option>
+          ) : (
+            options.map((o) => (
+              <option key={o.edgeId} value={o.edgeId}>
+                {o.display}
+              </option>
+            ))
+          )}
+        </select>
+        <div className="rounded-md border border-slate-200/40 bg-slate-50/40 px-2 py-1.5 text-[9px] leading-snug text-slate-500">
+          {options.length === 0
+            ? 'Conecta varios prompts por la izquierda; elige cuál enviar por la salida.'
+            : `${options.length} fuente(s) · texto de salida según la opción elegida.`}
+        </div>
+      </div>
+
+      <div className="handle-wrapper handle-right">
+        <span className="handle-label">Prompt out</span>
         <FoldderDataHandle type="source" position={Position.Right} id="prompt" dataType="prompt" />
       </div>
     </div>
@@ -2588,6 +2815,10 @@ export const GrokNode = memo(({ id, data, selected }: NodeProps<any>) => {
     });
     setStatus(ok ? 'success' : 'error');
   };
+
+  const grokOnRunRef = useRef(onRun);
+  grokOnRunRef.current = onRun;
+  useRegisterAssistantNodeRun(id, () => grokOnRunRef.current());
 
   return (
     <div className={`custom-node processor-node ${status === 'running' ? 'node-glow-running' : ''}`} style={{ minWidth: 300 }}>
@@ -4253,6 +4484,10 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
     }
   };
 
+  const onRunRef = useRef(onRun);
+  onRunRef.current = onRun;
+  useRegisterAssistantNodeRun(id, () => onRunRef.current());
+
   // Preview of connected ref slot 0 (the base image)
   const refImgPreview = (() => {
     // REF_SLOTS[0].id === 'image' — the first/main reference slot
@@ -4261,6 +4496,11 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
     const v = srcNode?.data?.value;
     return typeof v === 'string' ? v : null;
   })();
+
+  /** Persisted URL/base64 from node data (S3 presigned after save + hydrate). `result` is only in-memory after generate. */
+  const persistedOutput =
+    typeof nodeData.value === 'string' && nodeData.value.length > 0 ? nodeData.value : null;
+  const outputImage = result ?? persistedOutput;
 
   return (
     <div className={`custom-node processor-node ${status === 'running' ? 'node-glow-running' : ''}`}
@@ -4294,7 +4534,7 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
         <NodeIcon
           type="nanoBanana"
           selected={selected}
-          state={resolveFoldderNodeState({ error: status === 'error', loading: status === 'running', done: !!result })}
+          state={resolveFoldderNodeState({ error: status === 'error', loading: status === 'running', done: !!outputImage })}
           size={16}
         />
         <span className="flex-1">Nano Banana</span>
@@ -4307,7 +4547,7 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
         </button>
         <ViewerOpenButton
           nodeId={id}
-          disabled={!((typeof nodeData.value === 'string' && nodeData.value) || result)}
+          disabled={!outputImage}
         />
       </div>
 
@@ -4315,9 +4555,9 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
       <div className="relative flex-1 overflow-hidden group/out" style={{ minHeight: 160 }}>
 
         {/* OUTPUT image — fills entire area */}
-        {result ? (
+        {outputImage ? (
           <>
-            <img src={result} alt="Generated" className="w-full h-full object-cover" />
+            <img src={outputImage} alt="Generated" className="w-full h-full object-cover" />
             {/* Hover gradient + actions */}
             <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent
                             opacity-0 group-hover/out:opacity-100 transition-opacity" />
@@ -4365,7 +4605,7 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
         )}
 
         {/* INPUT image badge — bottom-left corner overlay (always visible when connected) */}
-        {refImgPreview && result && (
+        {refImgPreview && outputImage && (
           <div className="absolute bottom-2 left-2 rounded overflow-hidden border-2 border-white/60 shadow-lg"
                style={{ width: 56, height: 40 }}>
             <img src={refImgPreview} alt="ref" className="w-full h-full object-cover" />
@@ -4402,7 +4642,7 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
           <NanoBananaStudio
             nodeId={id}
             initialImage={connected0}
-            lastGenerated={result}
+            lastGenerated={outputImage}
             modelKey={nodeData.modelKey || 'flash31'}
             aspectRatio={nodeData.aspect_ratio || '16:9'}
             resolution={normalizeNanoBananaResolution(nodeData.resolution)}
@@ -4424,7 +4664,7 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
       })()}
 
       {/* ── Fullscreen overlay ─── */}
-      {showFullSize && result && (
+      {showFullSize && outputImage && (
         <div
           className="fixed inset-0 z-[9999] bg-black/92 flex items-center justify-center p-10 cursor-zoom-out nodrag nopan"
           data-foldder-studio-canvas=""
@@ -4433,7 +4673,7 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
           <div className="absolute top-8 right-8 text-white/50 hover:text-white transition-colors">
             <X size={36} strokeWidth={2} />
           </div>
-          <img src={result} className="max-w-full max-h-full rounded-2xl shadow-2xl object-contain" alt="Full size" />
+          <img src={outputImage} className="max-w-full max-h-full rounded-2xl shadow-2xl object-contain" alt="Full size" />
         </div>
       )}
     </div>
@@ -4783,6 +5023,10 @@ export const BackgroundRemoverNode = memo(({ id, data, selected }: NodeProps<any
     });
     setStatus(ok ? 'success' : 'idle');
   };
+
+  const matteOnRunRef = useRef(onRun);
+  matteOnRunRef.current = onRun;
+  useRegisterAssistantNodeRun(id, () => matteOnRunRef.current());
 
   const getPreviewImage = () => {
     const sourceEdge = edges.find(e => e.target === id && e.targetHandle === 'media');
@@ -5391,8 +5635,17 @@ export const MediaDescriberNode = memo(({ id, data, selected }: NodeProps<any>) 
     setStatus('running');
 
     const ok = await runAiJobWithNotification({ nodeId: id, label: 'Gemini Describer' }, async () => {
-      let finalMediaUrl = inputNode.data.value;
-      let finalMediaType = inputNode.type === 'imageComposer' ? 'image' : (inputNode.data.type || 'image');
+      let finalMediaUrl = inputNode.data?.value as string | undefined;
+      let finalMediaType: string;
+
+      if (inputNode.type === 'space') {
+        const sd = inputNode.data as { value?: string; outputType?: string; type?: string };
+        finalMediaUrl = sd?.value;
+        finalMediaType = (sd.outputType || sd.type || 'image') as string;
+      } else {
+        finalMediaType =
+          inputNode.type === 'imageComposer' ? 'image' : ((inputNode.data as { type?: string })?.type || 'image');
+      }
 
       if (inputNode.type === 'imageComposer' && !finalMediaUrl) {
         const composerEdges = edges.filter(e => e.target === inputNode.id)
@@ -5463,6 +5716,10 @@ export const MediaDescriberNode = memo(({ id, data, selected }: NodeProps<any>) 
     setStatus(ok ? 'success' : 'error');
     if (!ok) console.error("Describe error");
   };
+
+  const onRunRef = useRef(onRun);
+  onRunRef.current = onRun;
+  useRegisterAssistantNodeRun(id, () => onRunRef.current());
 
   return (
     <div className={`custom-node describer-node ${status === 'running' ? 'node-glow-running' : ''}`} style={{ minWidth: 300 }}>
@@ -5641,6 +5898,10 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
       setProgress(100);
     }
   };
+
+  const veoOnRunRef = useRef(onRun);
+  veoOnRunRef.current = onRun;
+  useRegisterAssistantNodeRun(id, () => veoOnRunRef.current());
 
   const updateData = (key: string, val: any) => {
     setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n));

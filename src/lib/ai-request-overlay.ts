@@ -1,3 +1,8 @@
+import { createGuardedFetch } from "@/lib/external-api-guard";
+import { getAiRequestLabelForPathname } from "@/lib/ai-api-labels";
+
+export { getAiRequestLabelForPathname } from "@/lib/ai-api-labels";
+
 type Listener = () => void;
 const listeners = new Set<Listener>();
 /** Pila: peticiones concurrentes (la visible es la última iniciada). */
@@ -27,37 +32,9 @@ function endDisplay() {
   notify();
 }
 
-/** Nombre corto para el texto "Petición IA […]". */
-export function getAiRequestLabelForPathname(pathname: string): string | null {
-  if (pathname === "/api/usage") return null;
-  if (pathname === "/api/spaces") return null;
-
-  const rules: { test: RegExp; label: string }[] = [
-    { test: /^\/api\/gemini\/generate$/, label: "Gemini" },
-    { test: /^\/api\/gemini\/video$/, label: "Veo" },
-    { test: /^\/api\/gemini\/analyze-areas$/, label: "Gemini" },
-    { test: /^\/api\/openai\/enhance$/, label: "OpenAI" },
-    { test: /^\/api\/spaces\/assistant$/, label: "Asistente" },
-    { test: /^\/api\/spaces\/describe$/, label: "OpenAI" },
-    { test: /^\/api\/grok\/generate$/, label: "Grok" },
-    { test: /^\/api\/grok\/status\//, label: "Grok" },
-    { test: /^\/api\/runway\/generate$/, label: "Runway" },
-    { test: /^\/api\/runway\/status\//, label: "Runway" },
-    { test: /^\/api\/runway\/upload$/, label: "Runway" },
-    { test: /^\/api\/spaces\/matte$/, label: "Replicate" },
-    { test: /^\/api\/spaces\/video-matte$/, label: "Replicate" },
-    { test: /^\/api\/spaces\/compose$/, label: "Componer" },
-    { test: /^\/api\/spaces\/search$/, label: "Búsqueda" },
-  ];
-
-  for (const { test, label } of rules) {
-    if (test.test(pathname)) return label;
-  }
-  return null;
-}
-
 /**
  * Intercepta fetch solo en el cliente hacia rutas /api/* de IA.
+ * Aplica guardián (5 concurrentes, 4 s entre repeticiones de la misma petición, bloqueo hasta «Verificar»).
  * Devuelve cleanup para desinstalar (Strict Mode / desmontaje).
  */
 export function installAiFetchOverlay(): () => void {
@@ -71,7 +48,10 @@ export function installAiFetchOverlay(): () => void {
   const orig = window.fetch.bind(window);
   w.__foldderOrigFetch = orig;
 
-  window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const overlayInner = async (
+    input: RequestInfo | URL,
+    init?: RequestInit
+  ): Promise<Response> => {
     let urlStr: string;
     if (typeof input === "string") urlStr = input;
     else if (input instanceof Request) urlStr = input.url;
@@ -96,6 +76,8 @@ export function installAiFetchOverlay(): () => void {
       if (label) endDisplay();
     }
   };
+
+  window.fetch = createGuardedFetch(overlayInner);
 
   return () => {
     if (w.__foldderOrigFetch) {

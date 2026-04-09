@@ -1,5 +1,9 @@
 import type { Edge, Node } from '@xyflow/react';
 import { NODE_REGISTRY } from './nodeRegistry';
+import {
+  parseCanvasGroupInHandle,
+  parseCanvasGroupOutHandle,
+} from './canvas-group-logic';
 
 /**
  * Same rules as the canvas `isValidConnection` in page.tsx — kept pure for library-drop preview.
@@ -7,8 +11,42 @@ import { NODE_REGISTRY } from './nodeRegistry';
 export function areNodesConnectable(
   sourceNode: Node,
   targetNode: Node,
-  connection: { sourceHandle?: string | null; targetHandle?: string | null }
+  connection: { sourceHandle?: string | null; targetHandle?: string | null },
+  allNodes?: Node[]
 ): boolean {
+  if (
+    targetNode.type === 'canvasGroup' &&
+    connection.targetHandle?.startsWith('g_in_') &&
+    allNodes?.length
+  ) {
+    const p = parseCanvasGroupInHandle(connection.targetHandle);
+    if (!p) return false;
+    const inner = allNodes.find((n) => n.id === p.memberId);
+    if (!inner) return false;
+    return areNodesConnectable(
+      sourceNode,
+      inner,
+      { ...connection, targetHandle: p.handleId },
+      allNodes
+    );
+  }
+  if (
+    sourceNode.type === 'canvasGroup' &&
+    connection.sourceHandle?.startsWith('g_out_') &&
+    allNodes?.length
+  ) {
+    const p = parseCanvasGroupOutHandle(connection.sourceHandle);
+    if (!p) return false;
+    const inner = allNodes.find((n) => n.id === p.memberId);
+    if (!inner) return false;
+    return areNodesConnectable(
+      inner,
+      targetNode,
+      { ...connection, sourceHandle: p.handleId },
+      allNodes
+    );
+  }
+
   const sourceMetadata = NODE_REGISTRY[sourceNode.type as string];
   const targetMetadata = NODE_REGISTRY[targetNode.type as string];
   if (!sourceMetadata || !targetMetadata) return false;
@@ -32,7 +70,10 @@ export function areNodesConnectable(
     targetHandleType = 'image';
   }
 
-  if (targetNode.type === 'concatenator' && connection.targetHandle?.startsWith('p')) {
+  if (
+    (targetNode.type === 'concatenator' || targetNode.type === 'listado') &&
+    connection.targetHandle?.startsWith('p')
+  ) {
     targetHandleType = 'prompt';
   }
 
@@ -59,6 +100,7 @@ export type LibraryDropPlan = {
 /** Same keys as addNodeAtCenter in page.tsx — concrete handle ids for multi-input nodes. */
 const MULTI_SLOT_NODES: Record<string, Record<string, string[]>> = {
   concatenator: { prompt: ['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'] },
+  listado: { prompt: ['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'] },
   enhancer: {
     prompt: [
       'p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9', 'p10', 'p11', 'p12', 'p13', 'p14', 'p15',
@@ -244,7 +286,7 @@ export function estimateNodeWidth(node: Node): number {
   return DEFAULT_W[node.type as string] ?? 300;
 }
 
-function estimateNodeHeight(node: Node): number {
+export function estimateNodeHeight(node: Node): number {
   const h = (node as { height?: number; measured?: { height?: number } }).height
     ?? (node as { measured?: { height?: number } }).measured?.height;
   if (h && h > 0) return h;

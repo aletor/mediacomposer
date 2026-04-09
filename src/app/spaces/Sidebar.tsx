@@ -6,6 +6,7 @@ import { ChevronRight } from 'lucide-react';
 import { NODE_REGISTRY } from './nodeRegistry';
 import { NodeIcon, NodeIconMono } from './foldder-icons';
 import { SIDEBAR_HOVER_HELP } from './sidebarHoverHelp';
+import { NODE_KEYS } from './node-shortcuts';
 
 const LIBRARY_TIP_WIDTH = 260;
 /** Altura aproximada del tooltip para decidir si cabe encima del botón */
@@ -57,31 +58,6 @@ function FoldderLogoFMark({ size = 40 }: { size?: number }) {
     </svg>
   );
 }
-
-// ── Key map: nodeType → shortcut key shown in the badge ──────────────────────
-const NODE_KEYS: Record<string, string> = {
-  mediaInput:        'm',
-  promptInput:       'p',
-  background:        'b',
-  urlImage:          'u',
-  backgroundRemover: 'r',
-  mediaDescriber:    'd',
-  enhancer:          'h',
-  grokProcessor:     'g',
-  nanoBanana:        'n',
-  geminiVideo:       'v',
-  concatenator:      'q',
-  space:             's',
-  spaceInput:        'i',
-  spaceOutput:       'o',
-  imageComposer:     'c',
-  imageExport:       'e',
-  painter:           'w',
-  textOverlay:       't',
-  crop:              'x',
-  bezierMask:        'z',
-};
-
 
 type SidebarProps = {
   windowMode?: boolean;
@@ -228,27 +204,16 @@ const Sidebar = ({
     );
   };
 
-  // Small key badge shown top-left of each node button
+  /** Letra de atajo (esquina superior izquierda del botón de la librería) */
   const KeyBadge = ({ nodeType }: { nodeType: string }) => {
     const key = NODE_KEYS[nodeType];
     if (!key) return null;
     return (
       <span
-        style={{
-          position: 'absolute',
-          top: '5px',
-          left: '6px',
-          fontSize: '7px',
-          fontWeight: 900,
-          color: 'rgba(255,255,255,0.5)',
-          lineHeight: 1,
-          letterSpacing: '0.05em',
-          fontFamily: 'monospace',
-          userSelect: 'none',
-          pointerEvents: 'none',
-        }}
+        className="pointer-events-none absolute left-1 top-1 select-none font-mono text-[11px] font-black leading-none tracking-wide text-white/70 [text-shadow:0_1px_3px_rgba(0,0,0,0.55)]"
+        aria-hidden
       >
-        {key}
+        {key.toUpperCase()}
       </span>
     );
   };
@@ -269,6 +234,7 @@ const Sidebar = ({
       { type: 'geminiVideo',       label: 'Veo' },
       null,
       { type: 'concatenator',      label: 'Concat' },
+      { type: 'listado',           label: 'Listado' },
       { type: 'space',             label: 'Space' },
       null,
       { type: 'imageComposer',     label: 'Layout' },
@@ -306,7 +272,7 @@ const Sidebar = ({
               onDoubleClick={(e) => handleLibraryTileDoubleClick(e, item.type)}
               aria-label={
                 NODE_KEYS[item.type]
-                  ? `${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type]}.`
+                  ? `${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type].toUpperCase()}.`
                   : `${item.label}. Arrastra al lienzo. Doble clic para añadir.`
               }
               style={{
@@ -324,8 +290,9 @@ const Sidebar = ({
                 cursor: 'grab',
                 transition: 'all 0.15s',
               }}
-              className="hover:bg-white/10 hover:border-white/20 active:scale-95"
+              className="relative hover:bg-white/10 hover:border-white/20 active:scale-95"
             >
+              <KeyBadge nodeType={item.type} />
               <SidebarLibraryNodeIcon type={item.type} size={28} />
               <span style={{ fontSize: 9.8, fontWeight: 700, color: 'rgba(255,255,255,0.92)', letterSpacing: '0.04em', lineHeight: 1, textShadow: '0 1px 2px rgba(0,0,0,0.35)' }}>
                 {item.label}
@@ -395,7 +362,7 @@ const Sidebar = ({
                     onMouseEnter={(e) => onLibraryTileEnter(e, item.type)}
                     onMouseLeave={onLibraryTileLeave}
                     onDoubleClick={(e) => handleLibraryTileDoubleClick(e, item.type)}
-                    aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type]}.`}
+                    aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type].toUpperCase()}.`}
                   >
                     <KeyBadge nodeType={item.type} />
                     <SidebarLibraryNodeIcon type={item.type} />
@@ -426,7 +393,7 @@ const Sidebar = ({
                     onMouseEnter={(e) => onLibraryTileEnter(e, item.type)}
                     onMouseLeave={onLibraryTileLeave}
                     onDoubleClick={(e) => handleLibraryTileDoubleClick(e, item.type)}
-                    aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type]}.`}
+                    aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type].toUpperCase()}.`}
                   >
                     <KeyBadge nodeType={item.type} />
                     <SidebarLibraryNodeIcon type={item.type} />
@@ -445,6 +412,7 @@ const Sidebar = ({
               <div className="grid grid-cols-2 gap-2">
                 {[
                   { type: 'concatenator', label: 'Concat' },
+                  { type: 'listado',      label: 'Listado' },
                   { type: 'space',        label: 'Space' },
                   { type: 'spaceInput',   label: 'Entry' },
                   { type: 'spaceOutput',  label: 'Exit' },
@@ -455,7 +423,7 @@ const Sidebar = ({
                     onMouseEnter={(e) => onLibraryTileEnter(e, item.type)}
                     onMouseLeave={onLibraryTileLeave}
                     onDoubleClick={(e) => handleLibraryTileDoubleClick(e, item.type)}
-                    aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type]}.`}
+                    aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type].toUpperCase()}.`}
                   >
                     <KeyBadge nodeType={item.type} />
                     <SidebarLibraryNodeIcon type={item.type} />
@@ -486,7 +454,7 @@ const Sidebar = ({
                     onMouseEnter={(e) => onLibraryTileEnter(e, item.type)}
                     onMouseLeave={onLibraryTileLeave}
                     onDoubleClick={(e) => handleLibraryTileDoubleClick(e, item.type)}
-                    aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type]}.`}
+                    aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir. Atajo ${NODE_KEYS[item.type].toUpperCase()}.`}
                   >
                     <KeyBadge nodeType={item.type} />
                     <SidebarLibraryNodeIcon type={item.type} />

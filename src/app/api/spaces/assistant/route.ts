@@ -1,6 +1,24 @@
 import { NextResponse } from "next/server";
 import { recordApiUsage } from "@/lib/api-usage";
+import {
+  mergeAssistantDeltaIntoWorkspace,
+  remapCollidingAssistantDelta,
+  shouldRemapAssistantDeltaCollisions,
+} from "@/lib/assistant-graph-merge";
+import {
+  applyNodeRemovals,
+  tryResolveRemoveLastNodeId,
+  tryResolveRemoveSelectedIds,
+} from "@/lib/assistant-remove-intent";
 import { buildAssistantSystemPrompt } from "@/lib/assistant-prompt";
+import {
+  orderExecuteNodeIds,
+  tryInferExecuteNodeIds,
+} from "@/lib/assistant-execute-order";
+import {
+  buildCostApprovalMessage,
+  estimatePaidApisForAssistantPlan,
+} from "@/lib/assistant-cost-estimate";
 import OpenAI from "openai";
 
 /**
@@ -23,10 +41,28 @@ export async function POST(req: Request) {
       apiKey: process.env.OPENAI_API_KEY || "",
     });
 
+    const selectedNodes = Array.isArray(currentNodes)
+      ? (currentNodes as { id?: string; type?: string; selected?: boolean; position?: unknown; data?: unknown }[]).filter(
+          (n) => n && n.selected === true
+        )
+      : [];
+
+    const selectionBlock =
+      selectedNodes.length > 0
+        ? `### USER FOCUS — selected node(s) (user intends edits to refer to these when they say "this node", "este nodo", "selected", etc.):\n${JSON.stringify(
+            selectedNodes.map((n) => ({
+              id: n.id,
+              type: n.type,
+              position: n.position,
+              data: n.data,
+            }))
+          )}\n`
+        : "### USER FOCUS: no node selected. User should select node(s) on the canvas before vague commands (e.g. change the prompt), or name id/type explicitly.\n";
+
     const contextMessage =
       currentNodes.length > 0
-        ? `### Current Workspace State:\nNodes: ${JSON.stringify(currentNodes)}\nEdges: ${JSON.stringify(currentEdges)}`
-        : "### Workspace is currently EMPTY.";
+        ? `${selectionBlock}### Current Workspace State:\nNodes: ${JSON.stringify(currentNodes)}\nEdges: ${JSON.stringify(currentEdges)}`
+        : `${selectionBlock}### Workspace is currently EMPTY.`;
 
     const systemPrompt = buildAssistantSystemPrompt();
 
@@ -67,6 +103,12 @@ export async function POST(req: Request) {
       });
     }
 
+    if (result.clarify && typeof result.clarify === "object") {
+      return NextResponse.json(result);
+    }
+
+    let rawDeltaNodes = Array.isArray(result.nodes) ? [...result.nodes] : [];
+
     if (result.nodes && Array.isArray(result.nodes)) {
       result.nodes = result.nodes.map((node: any) => {
         if (node.type === "urlImage" && node.data?.label) {
@@ -80,6 +122,123 @@ export async function POST(req: Request) {
         }
         return node;
       });
+    }
+
+    const cn = Array.isArray(currentNodes) ? currentNodes : [];
+    const ce = Array.isArray(currentEdges) ? currentEdges : [];
+
+    /** Evita que plantillas con ids genéricos (opt_p0, lst_ojos…) machaquen listados/prompts previos. */
+    if (
+      cn.length > 0 &&
+      Array.isArray(result.nodes) &&
+      result.nodes.length > 0 &&
+      shouldRemapAssistantDeltaCollisions(prompt, selectedNodes.length)
+    ) {
+      const remapped = remapCollidingAssistantDelta(
+        cn,
+        ce,
+        result.nodes,
+        Array.isArray(result.edges) ? result.edges : []
+      );
+      result.nodes = remapped.nodes as typeof result.nodes;
+      result.edges = remapped.edges as typeof result.edges;
+      rawDeltaNodes = Array.isArray(result.nodes) ? [...result.nodes] : [];
+
+      if (remapped.nodeIdRemap.size > 0 && Array.isArray(result.executeNodeIds)) {
+        result.executeNodeIds = result.executeNodeIds.map((id: unknown) => {
+          if (typeof id !== "string" || !id) return id;
+          return remapped.nodeIdRemap.get(id) ?? id;
+        });
+      }
+    }
+
+    let mergedNodes: unknown[] = [...cn];
+    let mergedEdges: unknown[] = [...ce];
+
+    if (Array.isArray(result.nodes)) {
+      if (cn.length > 0) {
+        const merged = mergeAssistantDeltaIntoWorkspace(
+          cn,
+          ce,
+          result.nodes,
+          Array.isArray(result.edges) ? result.edges : []
+        );
+        mergedNodes = merged.nodes;
+        mergedEdges = merged.edges;
+      } else {
+        mergedNodes = result.nodes;
+        mergedEdges = Array.isArray(result.edges) ? result.edges : [];
+      }
+    }
+
+    const removeIds: string[] = [];
+    if (Array.isArray(result.removeNodeIds)) {
+      for (const x of result.removeNodeIds) {
+        if (typeof x === "string" && x) removeIds.push(x);
+      }
+    }
+    const lastId = tryResolveRemoveLastNodeId(
+      prompt,
+      cn as { id: string; position?: { x?: number; y?: number } }[]
+    );
+    if (lastId) removeIds.push(lastId);
+    removeIds.push(
+      ...tryResolveRemoveSelectedIds(
+        prompt,
+        selectedNodes as { id: string }[]
+      )
+    );
+    const uniqueRemove = [...new Set(removeIds)];
+
+    const afterRemove = applyNodeRemovals(mergedNodes, mergedEdges, uniqueRemove);
+    result.nodes = afterRemove.nodes;
+    result.edges = afterRemove.edges;
+    delete result.removeNodeIds;
+
+    const edgeList = (result.edges as { source?: string; target?: string }[]) || [];
+    const safeEdges = edgeList.filter(
+      (e): e is { source: string; target: string } =>
+        typeof e.source === "string" && typeof e.target === "string"
+    );
+    const nodeList = (result.nodes as { id?: string; type?: string }[]) || [];
+    const safeNodes = nodeList.filter(
+      (n): n is { id: string; type?: string } => typeof n.id === "string" && !!n.id
+    );
+
+    let execIds: string[] = [];
+    if (Array.isArray(result.executeNodeIds)) {
+      execIds = result.executeNodeIds.filter(
+        (x: unknown): x is string => typeof x === "string" && x.length > 0
+      );
+      execIds = orderExecuteNodeIds(execIds, safeEdges);
+    } else {
+      execIds = tryInferExecuteNodeIds(prompt, safeNodes, safeEdges);
+    }
+    result.executeNodeIds = execIds;
+
+    const costApproved = /\[COST_APPROVED\]/i.test(prompt);
+    if (!costApproved && Array.isArray(result.nodes)) {
+      const est = estimatePaidApisForAssistantPlan({
+        rawDeltaNodes: rawDeltaNodes as { id?: string; type?: string }[],
+        mergedNodes: result.nodes as { id?: string; type?: string }[],
+        executeNodeIds: execIds,
+      });
+      if (est) {
+        result.pendingCostApproval = true;
+        result.costApproval = {
+          message: buildCostApprovalMessage(est),
+          summary: est.summary,
+          apis: est.lines.map((l) => ({
+            id: l.id,
+            name: l.name,
+            count: l.count,
+            eurMin: l.eurMin,
+            eurMax: l.eurMax,
+          })),
+          totalEurMin: est.totalEurMin,
+          totalEurMax: est.totalEurMax,
+        };
+      }
     }
 
     return NextResponse.json(result);

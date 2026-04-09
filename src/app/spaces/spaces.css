@@ -43,6 +43,27 @@
   -webkit-user-select: none;
 }
 
+/*
+ * Grupos en el lienzo (canvasGroup): el marco ya trae gradiente + borde discontinuo en el componente.
+ * La capa blanca/blur global duplicaba opacidad; además z-index &lt; 0 en el nodo quedaba *detrás* del
+ * background-image del lienzo (reglas de stacking). El TS fuerza zIndex ≥ 0 en canvas-group-logic.
+ */
+.canvas-group-frame.custom-node {
+  background: transparent !important;
+  border: 1px dashed rgba(255, 255, 255, 0.42) !important;
+  backdrop-filter: blur(10px) saturate(1.05) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(1.05) !important;
+  box-shadow: none !important;
+}
+.canvas-group-frame.custom-node:hover {
+  border-color: rgba(255, 255, 255, 0.55) !important;
+  box-shadow: none !important;
+}
+.react-flow__node.selected .canvas-group-frame.custom-node {
+  box-shadow: 0 0 0 2px rgba(74, 222, 128, 0.22) !important;
+  transform: none !important;
+}
+
 /* Re-enable text selection inside actual editable elements */
 .custom-node input,
 .custom-node textarea,
@@ -310,6 +331,40 @@
 
 .media-node .action-btn, .media-node .execute-btn { background: linear-gradient(135deg, #f43f5e, #e11d48); }
 .prompt-node .action-btn, .prompt-node .execute-btn { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+
+/* Prompt: altura = líneas (scrollHeight); sin resizer; sin padding inferior de más */
+.prompt-node--compact .node-content--prompt-fill {
+  padding: 0;
+  overflow: visible;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+.prompt-node--compact .node-textarea--prompt-compact {
+  flex: 0 0 auto;
+  width: 100%;
+  min-height: 2.35rem;
+  max-height: min(40vh, 320px);
+  resize: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-radius: 0 0 22px 22px;
+  border-top: none;
+  padding: 6px 12px 6px 12px;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  margin: 0;
+  box-sizing: border-box;
+}
+.prompt-node--compact .node-header {
+  padding: 8px 14px;
+  gap: 8px;
+  min-height: 0;
+  line-height: 1.15;
+  font-size: 0.62rem;
+  border-bottom: none;
+  border-radius: 22px 22px 0 0;
+}
 .processor-node .action-btn, .processor-node .execute-btn { background: linear-gradient(135deg, #a855f7, #9333ea); }
 .tool-node .action-btn, .tool-node .execute-btn { background: linear-gradient(135deg, #10b981, #059669); }
 .mask-node .action-btn, .mask-node .execute-btn { background: linear-gradient(135deg, #06b6d4, #0891b2); }

@@ -19,6 +19,7 @@ export type FoldderIconKey =
   | 'nano'
   | 'video'
   | 'concat'
+  | 'listPick'
   | 'space'
   | 'spaceIn'
   | 'output'
@@ -283,6 +284,18 @@ export function FoldderConcat({ state, className, size }: GlyphProps) {
   );
 }
 
+/** Lista + desplegable — elige una entrada entre varias */
+export function FoldderListPick({ state, className, size }: GlyphProps) {
+  return (
+    <FoldderIcon state={state} className={className} size={size}>
+      <path d="M2.5 4.25 H9.25" strokeWidth={1.35} />
+      <path d="M2.5 7.25 H9.25" strokeWidth={1.35} />
+      <path d="M2.5 10.25 H7" strokeWidth={1.35} />
+      <path d="M11.25 5.25 L13.5 8 L11.25 10.75" strokeWidth={1.25} fill="none" />
+    </FoldderIcon>
+  );
+}
+
 export function FoldderSpaceIn({ state, className, size }: GlyphProps) {
   return (
     <FoldderIcon state={state} className={className} size={size}>
@@ -367,6 +380,7 @@ export const FOLDDER_ICON_COLORS: Record<FoldderIconKey, string> = {
   nano: '#c4b5fd',
   video: '#a855f7',
   concat: '#fdba74',
+  listPick: '#a5b4fc',
   space: '#fb923c',
   spaceIn: '#fdba74',
   output: '#fbbf24',
@@ -390,6 +404,7 @@ export const FOLDDER_NODE_ICONS: Record<FoldderIconKey, React.FC<GlyphProps>> = 
   nano: FoldderNano,
   video: FoldderVideo,
   concat: FoldderConcat,
+  listPick: FoldderListPick,
   space: FoldderSpace,
   spaceIn: FoldderSpaceIn,
   output: FoldderOutput,
@@ -414,6 +429,7 @@ export const NODE_TYPE_TO_FOLDDER_ICON: Record<string, FoldderIconKey> = {
   nanoBanana: 'nano',
   geminiVideo: 'video',
   concatenator: 'concat',
+  listado: 'listPick',
   space: 'space',
   spaceInput: 'spaceIn',
   spaceOutput: 'output',
@@ -423,6 +439,7 @@ export const NODE_TYPE_TO_FOLDDER_ICON: Record<string, FoldderIconKey> = {
   textOverlay: 'text',
   crop: 'crop',
   bezierMask: 'mask',
+  canvasGroup: 'layout',
 };
 
 export function resolveFoldderNodeState(opts: {

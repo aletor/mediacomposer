@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useCallback, useMemo, useRef, useEffect, useLayoutEffect } from 'react';
-import { createPortal } from 'react-dom';
 import {
   ReactFlow,
   Controls,
@@ -12,6 +11,7 @@ import {
   Node,
   Edge,
   OnConnect,
+  ConnectionMode,
   ReactFlowProvider,
   useReactFlow,
   useUpdateNodeInternals,
@@ -26,7 +26,8 @@ import {
   MediaInputNode, 
   PromptNode, 
   GrokNode, 
-  ConcatenatorNode, 
+  ConcatenatorNode,
+  ListadoNode,
   EnhancerNode, 
   NanoBananaNode,
   BackgroundRemoverNode,
@@ -45,6 +46,20 @@ import {
   TextOverlayNode,
   ButtonEdge 
 } from './CustomNodes';
+import { CanvasGroupNode } from './CanvasGroupNode';
+import {
+  applyCanvasGroupCollapse,
+  applyCanvasGroupExpand,
+  createCanvasGroupFromNodeIds,
+  normalizeCanvasGroupNodeZ,
+  normalizeNodeZIndexForXYFlow,
+  normalizeNodesForPersistence,
+  normalizeSpacesMapNodesForPersistence,
+  recomputeCanvasGroupFrames,
+  nodeBoundsForLayout,
+  removeEmptyCanvasGroups,
+  ungroupCanvasGroup,
+} from './canvas-group-logic';
 
 
 import Sidebar from './Sidebar';
@@ -52,12 +67,18 @@ import { AgentHUD } from './AgentHUD';
 import { ApiUsageHud } from './ApiUsageHud';
 import { HandleTypeLegend } from './HandleTypeLegend';
 import { AiRequestHud } from './AiRequestHud';
+import { ExternalApiBlockedModal } from './ExternalApiBlockedModal';
 import {
   TopbarPins,
   MAX_TOPBAR_PINS,
   TOPBAR_PINS_STORAGE_KEY,
   DEFAULT_TOPBAR_PIN_TYPES,
 } from './TopbarPins';
+import {
+  resolveHandleMetaForCanvasDrop,
+  pickNewNodeTypeForCanvasDrop,
+  defaultDataForCanvasDropNode,
+} from '@/lib/canvas-connect-end-drop';
 import { matchesClearCanvasIntent } from '@/lib/clear-canvas-intent';
 import { matchesAddSpaceNodeIntent } from '@/lib/assistant-quick-intents';
 import { installAiFetchOverlay } from '@/lib/ai-request-overlay';
@@ -77,6 +98,10 @@ import {
 } from '@/lib/fullscreen';
 import './spaces.css';
 import { NODE_REGISTRY } from './nodeRegistry';
+import {
+  NodeExecutionProvider,
+  useNodeExecutionRunner,
+} from './NodeExecutionBridge';
 import {
   areNodesConnectable,
   findLibraryDropPlan,
@@ -118,6 +143,7 @@ import {
   MessageCircle,
   CheckCircle2,
   AlertCircle,
+  Wallet,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -297,28 +323,158 @@ function fitAnim(ms: number): number {
   return Math.max(40, Math.round(ms / 2));
 }
 
-/** Ancho/alto efectivos para layout (evita solapes si solo usamos una cuadrícula fija) */
+/** Ancho/alto efectivos para layout (medido, style, defaults; alineado con marcos de grupo). */
 function getNodeLayoutDimensions(n: Node): { w: number; h: number } {
-  const mw = n.measured?.width ?? n.width ?? n.initialWidth;
-  const mh = n.measured?.height ?? n.height ?? n.initialHeight;
-  const hasW = typeof mw === 'number' && mw > 0;
-  const hasH = typeof mh === 'number' && mh > 0;
-  let w = hasW ? mw : 300;
-  let h = hasH ? mh : 280;
-  if (!hasW || !hasH) {
-    const t = n.type ?? '';
-    if (t === 'geminiVideo') {
-      if (!hasW) w = 380;
-      if (!hasH) h = 560;
-    } else if (t === 'nanoBanana' || t === 'imageComposer' || t === 'grokProcessor') {
-      if (!hasW) w = 400;
-      if (!hasH) h = 420;
-    } else if (t === 'promptInput' || t === 'mediaInput') {
-      if (!hasW) w = 320;
-      if (!hasH) h = 240;
+  return nodeBoundsForLayout(n);
+}
+
+/** Componentes conexos (grafo no dirigido) restringidos a `nodeIds`. */
+function undirectedLayoutComponents(nodeIds: string[], edges: Edge[]): string[][] {
+  const idSet = new Set(nodeIds);
+  const adj = new Map<string, string[]>();
+  for (const id of nodeIds) adj.set(id, []);
+  for (const e of edges) {
+    if (!idSet.has(e.source) || !idSet.has(e.target)) continue;
+    adj.get(e.source)!.push(e.target);
+    adj.get(e.target)!.push(e.source);
+  }
+  const visited = new Set<string>();
+  const out: string[][] = [];
+  for (const id of nodeIds) {
+    if (visited.has(id)) continue;
+    const comp: string[] = [];
+    const stack = [id];
+    visited.add(id);
+    while (stack.length) {
+      const u = stack.pop()!;
+      comp.push(u);
+      for (const v of adj.get(u) || []) {
+        if (!visited.has(v)) {
+          visited.add(v);
+          stack.push(v);
+        }
+      }
+    }
+    out.push(comp);
+  }
+  return out;
+}
+
+/**
+ * Columnas por orden topológico (Kahn) dentro de un subconjunto de nodos.
+ * Los nodos sueltos no deben mezclarse aquí: van en otra columna al margen.
+ */
+function runKahnColumnLayout(
+  toArrange: Node[],
+  edges: Edge[],
+  getDim: (n: Node) => { w: number; h: number },
+  gap: number
+): Record<string, { x: number; y: number }> {
+  const ids = new Set(toArrange.map((n) => n.id));
+  const inCount: Record<string, number> = {};
+  const children: Record<string, string[]> = {};
+  for (const n of toArrange) {
+    inCount[n.id] = 0;
+    children[n.id] = [];
+  }
+  for (const e of edges) {
+    if (ids.has(e.source) && ids.has(e.target)) {
+      inCount[e.target] = (inCount[e.target] || 0) + 1;
+      children[e.source].push(e.target);
     }
   }
-  return { w: Math.max(96, w), h: Math.max(72, h) };
+  const col: Record<string, number> = {};
+  let queue = toArrange.filter((n) => inCount[n.id] === 0).map((n) => n.id);
+  queue.forEach((id) => {
+    col[id] = 0;
+  });
+  while (queue.length) {
+    const next: string[] = [];
+    for (const nodeId of queue) {
+      for (const childId of children[nodeId]) {
+        col[childId] = Math.max(col[childId] ?? 0, (col[nodeId] ?? 0) + 1);
+        inCount[childId]--;
+        if (inCount[childId] === 0) next.push(childId);
+      }
+    }
+    queue = next;
+  }
+  const maxCol = Math.max(0, ...Object.values(col));
+  for (const n of toArrange) {
+    if (col[n.id] === undefined) col[n.id] = maxCol + 1;
+  }
+  const maxColIndex = Math.max(0, ...toArrange.map((n) => col[n.id] ?? 0));
+  const nodesByColumn: Record<number, Node[]> = {};
+  for (let c = 0; c <= maxColIndex; c++) nodesByColumn[c] = [];
+  for (const n of toArrange) {
+    const c = col[n.id] ?? 0;
+    nodesByColumn[c].push(n);
+  }
+  for (let c = 0; c <= maxColIndex; c++) {
+    nodesByColumn[c].sort(
+      (a, b) => a.position.y - b.position.y || String(a.id).localeCompare(String(b.id))
+    );
+  }
+  const positioned: Record<string, { x: number; y: number }> = {};
+  let xCursor = 0;
+  for (let c = 0; c <= maxColIndex; c++) {
+    const list = nodesByColumn[c];
+    if (!list.length) continue;
+    const colMaxW = Math.max(...list.map((n) => getDim(n).w));
+    const heights = list.map((n) => getDim(n).h);
+    const totalH =
+      heights.reduce((acc, h) => acc + h, 0) + (list.length > 1 ? (list.length - 1) * gap : 0);
+    let yCursor = -totalH / 2;
+    for (const n of list) {
+      const { h } = getDim(n);
+      positioned[n.id] = { x: xCursor, y: yCursor };
+      yCursor += h + gap;
+    }
+    xCursor += colMaxW + gap;
+  }
+  return positioned;
+}
+
+/**
+ * Si un nodo tiene **varias** entradas desde el mismo subconjunto (p. ej. prompts → concatenador / listado),
+ * desplaza su `y` para que su centro vertical coincida con el centro del bloque formado por los orígenes.
+ */
+function alignMultiInputTargetsToSources(
+  positioned: Record<string, { x: number; y: number }>,
+  nodes: Node[],
+  edges: Edge[],
+  getDim: (n: Node) => { w: number; h: number }
+): void {
+  const idSet = new Set(nodes.map((n) => n.id));
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const incoming = new Map<string, Set<string>>();
+  for (const e of edges) {
+    if (!idSet.has(e.source) || !idSet.has(e.target)) continue;
+    if (!incoming.has(e.target)) incoming.set(e.target, new Set());
+    incoming.get(e.target)!.add(e.source);
+  }
+  for (const [targetId, srcSet] of incoming) {
+    if (srcSet.size < 2) continue;
+    let minTop = Infinity;
+    let maxBottom = -Infinity;
+    for (const sid of srcSet) {
+      const p = positioned[sid];
+      if (!p) continue;
+      const sn = byId.get(sid);
+      if (!sn) continue;
+      const { h } = getDim(sn);
+      minTop = Math.min(minTop, p.y);
+      maxBottom = Math.max(maxBottom, p.y + h);
+    }
+    if (!Number.isFinite(minTop)) continue;
+    const midY = (minTop + maxBottom) / 2;
+    const tn = byId.get(targetId);
+    if (!tn) continue;
+    const { h: ht } = getDim(tn);
+    const cur = positioned[targetId];
+    if (!cur) continue;
+    positioned[targetId] = { x: cur.x, y: midY - ht / 2 };
+  }
 }
 
 function sortNodesCardsOrder<T extends { id: string; position: { x: number; y: number } }>(arr: T[]): T[] {
@@ -333,6 +489,7 @@ const nodeTypes: any = {
   promptInput: PromptNode,
   grokProcessor: GrokNode,
   concatenator: ConcatenatorNode,
+  listado: ListadoNode,
   enhancer: EnhancerNode,
   nanoBanana: NanoBananaNode,
   backgroundRemover: BackgroundRemoverNode,
@@ -349,6 +506,7 @@ const nodeTypes: any = {
   crop: CropNode,
   bezierMask: BezierMaskNode,
   textOverlay: TextOverlayNode,
+  canvasGroup: CanvasGroupNode,
 };
 
 
@@ -375,7 +533,8 @@ const SpacesContent = () => {
   liveEdgesRef.current = edges;
   const { screenToFlowPosition, setViewport, fitView, getViewport } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
-  
+  const runAssistantPipeline = useNodeExecutionRunner();
+
   // Persistence state
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [activeSpaceId, setActiveSpaceId] = useState<string>('root');
@@ -395,6 +554,18 @@ const SpacesContent = () => {
     message: string;
     options: string[];
     originalPrompt: string;
+  } | null>(null);
+  /** Grafo listo para aplicar tras confirmar coste de APIs (misma respuesta del asistente). */
+  const pendingAssistantCostPayloadRef = useRef<{
+    nodes: Node[];
+    edges: Edge[];
+    executeNodeIds?: string[];
+  } | null>(null);
+  const [assistantCostApproval, setAssistantCostApproval] = useState<{
+    message: string;
+    apis: { id: string; name: string; count: number; eurMin: number; eurMax: number }[];
+    totalEurMin: number;
+    totalEurMax: number;
   } | null>(null);
   const [projectToDelete, setProjectToDelete] = useState<any | null>(null);
   const [navigationStack, setNavigationStack] = useState<string[]>([]);
@@ -909,6 +1080,35 @@ const SpacesContent = () => {
     setEdges([...next.edges]);
   }, [setNodes, setEdges]);
 
+  /** Desagrupar en el lienzo: misma secuencia para menú contextual, atajo y botón del nodo `canvasGroup`. */
+  const performCanvasUngroup = useCallback((groupId: string) => {
+    let n = liveNodesRef.current;
+    let e = liveEdgesRef.current;
+    const cur = n.find((x) => x.id === groupId);
+    if ((cur?.data as { collapsed?: boolean })?.collapsed) {
+      const ex = applyCanvasGroupExpand(groupId, n, e);
+      if (ex) {
+        n = ex.nodes;
+        e = ex.edges;
+      }
+    }
+    takeSnapshot();
+    const r = ungroupCanvasGroup(groupId, n);
+    if (!r) return;
+    setNodes(r.nodes);
+    setEdges(e);
+  }, [setNodes, setEdges, takeSnapshot]);
+
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      const gid = (ev as CustomEvent<{ groupId?: string }>).detail?.groupId;
+      if (!gid) return;
+      performCanvasUngroup(gid);
+    };
+    window.addEventListener("foldder-canvas-ungroup", handler as EventListener);
+    return () => window.removeEventListener("foldder-canvas-ungroup", handler as EventListener);
+  }, [performCanvasUngroup]);
+
   // ── Add node + smart auto-connect ──────────────────────────────────────
   const addNodeAtCenter = useCallback((type: string, extraData: Record<string, any> = {}) => {
     const center = screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
@@ -923,6 +1123,7 @@ const SpacesContent = () => {
     // Nodes that support multiple inputs of the same type via numbered slot handles
     const MULTI_SLOT_NODES: Record<string, Record<string, string[]>> = {
       concatenator: { prompt: ['p0','p1','p2','p3','p4','p5','p6','p7'] },
+      listado:      { prompt: ['p0','p1','p2','p3','p4','p5','p6','p7'] },
       enhancer:     { prompt: ['p0','p1','p2','p3','p4','p5','p6','p7','p8','p9','p10','p11','p12','p13','p14','p15'] },
       imageComposer: { image: ['layer_0','layer_1','layer_2','layer_3','layer_4','layer_5','layer_6','layer_7'] },
     };
@@ -1172,7 +1373,9 @@ const SpacesContent = () => {
   );
 
   // ── Node click: global z-order counter — each click brings that node above all others
-  // Every previously clicked node keeps its own relative position in the stack.
+  // **Solo `node.zIndex` (nivel superior), nunca `style.zIndex`:** XY Flow aplica style después
+  // de internals.z; si un hijo de canvasGroup lleva zIndex en style, sustituye el z interno
+  // (parent+1) y el nodo queda detrás del marco del grupo.
   const onNodeClick = useCallback((_evt: React.MouseEvent, node: any) => {
     if (canvasViewModeRef.current === 'cards') {
       const ordered = sortNodesCardsOrder(liveNodesRef.current);
@@ -1182,11 +1385,34 @@ const SpacesContent = () => {
     }
     lastClickedRef.current = (lastClickedRef.current ?? 0) + 1;
     const nextZ = lastClickedRef.current;
-    setNodes(nds => nds.map(n =>
-      n.id === node.id
-        ? { ...n, style: { ...n.style, zIndex: nextZ } }
-        : n
-    ));
+    setNodes((nds) =>
+      nds.map((n) => {
+        if (n.id !== node.id) return n;
+        const style = n.style ? { ...(n.style as Record<string, unknown>) } : {};
+        delete (style as { zIndex?: number }).zIndex;
+        return {
+          ...n,
+          zIndex: nextZ,
+          style: Object.keys(style).length > 0 ? (style as React.CSSProperties) : undefined,
+        };
+      })
+    );
+  }, [setNodes]);
+
+  /** Clic en el vacío: migrar `style.zIndex` legado → `node.zIndex` en todos los nodos. */
+  const onPaneClick = useCallback(() => {
+    if (canvasViewModeRef.current === 'cards') return;
+    setNodes((nds) => {
+      let changed = false;
+      const next = nds.map((n) => {
+        const fixed =
+          n.type === 'canvasGroup' ? normalizeCanvasGroupNodeZ(n) : normalizeNodeZIndexForXYFlow(n);
+        if (fixed === n) return n;
+        changed = true;
+        return fixed;
+      });
+      return changed ? next : nds;
+    });
   }, [setNodes]);
 
   const onNodeDoubleClick = useCallback(
@@ -1215,106 +1441,113 @@ const SpacesContent = () => {
   );
 
   // ── Auto-layout (A key) ──────────────────────────────────────────────────
+  /**
+   * Solo nodos **raíz** (`!parentId`): los hijos de un `canvasGroup` usan coords relativas.
+   * Por **componentes conexos** (no dirigido): los prompts+concatenador forman un bloque; los
+   * nodos sin aristas al resto van en una columna al margen (no intercalados en la misma columna).
+   */
+  const autoLayout = useCallback(
+    (opts?: { ignoreSelection?: boolean }) => {
+      const useAll = Boolean(opts?.ignoreSelection) || !nodes.some((n) => n.selected);
+      const rawArrange = useAll ? [...nodes] : nodes.filter((n) => n.selected);
+      const toArrange = rawArrange.filter((n) => !n.parentId);
+      if (toArrange.length === 0) return;
 
-  const autoLayout = useCallback(() => {
-    const toArrange = nodes.some(n => n.selected)
-      ? nodes.filter(n => n.selected)
-      : [...nodes];
+      const GAP = 56;
+      const nodeById = new Map(toArrange.map((n) => [n.id, n]));
+      const comps = undirectedLayoutComponents(
+        toArrange.map((n) => n.id),
+        edges
+      );
 
-    const ids = new Set(toArrange.map(n => n.id));
-
-    // Build adjacency: only edges between nodes being arranged
-    const inCount: Record<string, number> = {};
-    const children: Record<string, string[]> = {};
-    for (const n of toArrange) { inCount[n.id] = 0; children[n.id] = []; }
-
-    for (const e of edges) {
-      if (ids.has(e.source) && ids.has(e.target)) {
-        inCount[e.target] = (inCount[e.target] || 0) + 1;
-        children[e.source].push(e.target);
+      const wired: string[][] = [];
+      const isolates: string[] = [];
+      for (const comp of comps) {
+        if (comp.length === 1) isolates.push(comp[0]);
+        else wired.push(comp);
       }
-    }
 
-    // Kahn's algorithm — assign each node to a column (pass)
-    const col: Record<string, number> = {};
-    let queue = toArrange.filter(n => inCount[n.id] === 0).map(n => n.id);
-    queue.forEach(id => { col[id] = 0; });
+      wired.sort((a, b) => {
+        const minA = Math.min(...a.map((id) => nodeById.get(id)!.position.x));
+        const minB = Math.min(...b.map((id) => nodeById.get(id)!.position.x));
+        return minA - minB || String(a[0]).localeCompare(String(b[0]));
+      });
+      isolates.sort((a, b) => {
+        const na = nodeById.get(a)!;
+        const nb = nodeById.get(b)!;
+        return na.position.y - nb.position.y || a.localeCompare(b);
+      });
 
-    while (queue.length) {
-      const next: string[] = [];
-      for (const nodeId of queue) {
-        for (const childId of children[nodeId]) {
-          col[childId] = Math.max(col[childId] ?? 0, (col[nodeId] ?? 0) + 1);
-          inCount[childId]--;
-          if (inCount[childId] === 0) next.push(childId);
+      const positioned: Record<string, { x: number; y: number }> = {};
+      let xCursor = 0;
+
+      for (const comp of wired) {
+        const subset = comp.map((id) => nodeById.get(id)!);
+        const local = runKahnColumnLayout(subset, edges, getNodeLayoutDimensions, GAP);
+        alignMultiInputTargetsToSources(local, subset, edges, getNodeLayoutDimensions);
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+        for (const n of subset) {
+          const p = local[n.id];
+          const { w, h } = getNodeLayoutDimensions(n);
+          minX = Math.min(minX, p.x);
+          maxX = Math.max(maxX, p.x + w);
+          minY = Math.min(minY, p.y);
+          maxY = Math.max(maxY, p.y + h);
+        }
+        const tx = xCursor - minX;
+        const ty = -(minY + maxY) / 2;
+        for (const n of subset) {
+          const p = local[n.id];
+          positioned[n.id] = { x: p.x + tx, y: p.y + ty };
+        }
+        xCursor += maxX - minX + GAP;
+      }
+
+      if (isolates.length) {
+        const isoNodes = isolates.map((id) => nodeById.get(id)!);
+        const heights = isoNodes.map((n) => getNodeLayoutDimensions(n).h);
+        const totalH =
+          heights.reduce((acc, h) => acc + h, 0) +
+          (isoNodes.length > 1 ? (isoNodes.length - 1) * GAP : 0);
+        let y = -totalH / 2;
+        for (const n of isoNodes) {
+          const { h } = getNodeLayoutDimensions(n);
+          positioned[n.id] = { x: xCursor, y: y };
+          y += h + GAP;
         }
       }
-      queue = next;
-    }
 
-    // Nodes not reached by Kahn (isolated / cycles) → put after last column
-    const maxCol = Math.max(0, ...Object.values(col));
-    for (const n of toArrange) {
-      if (col[n.id] === undefined) col[n.id] = maxCol + 1;
-    }
+      takeSnapshot();
+      const arrangedIds = Object.keys(positioned);
 
-    const H_GAP = 48;
-    const V_GAP = 44;
-
-    const nodesByColumn: Record<number, Node[]> = {};
-    const maxColIndex = Math.max(0, ...toArrange.map((n) => col[n.id] ?? 0));
-    for (let c = 0; c <= maxColIndex; c++) nodesByColumn[c] = [];
-    for (const n of toArrange) {
-      const c = col[n.id] ?? 0;
-      nodesByColumn[c].push(n);
-    }
-    for (let c = 0; c <= maxColIndex; c++) {
-      nodesByColumn[c].sort(
-        (a, b) => a.position.y - b.position.y || String(a.id).localeCompare(String(b.id))
+      setNodes((nds) =>
+        recomputeCanvasGroupFrames(
+          nds.map((n) => (positioned[n.id] ? { ...n, position: positioned[n.id] } : n))
+        )
       );
-    }
 
-    const positioned: Record<string, { x: number; y: number }> = {};
-    let xCursor = 0;
-    for (let c = 0; c <= maxColIndex; c++) {
-      const list = nodesByColumn[c];
-      if (!list.length) continue;
-      const colMaxW = Math.max(...list.map((n) => getNodeLayoutDimensions(n).w));
-      let yCursor = 0;
-      for (const n of list) {
-        const { h } = getNodeLayoutDimensions(n);
-        positioned[n.id] = { x: xCursor, y: yCursor };
-        yCursor += h + V_GAP;
-      }
-      xCursor += colMaxW + H_GAP;
-    }
-
-    // Apply positions (don't touch nodes not being arranged)
-    takeSnapshot(); // snapshot before layout
-    const arrangedIds = Object.keys(positioned);
-
-    setNodes(nds => nds.map(n =>
-      positioned[n.id]
-        ? { ...n, position: positioned[n.id] }
-        : n
-    ));
-
-    // Mismo criterio que al encuadrar tras conexión/nuevo nodo: suave, sin saltar de escala brusca
-    setTimeout(() => {
-      if (arrangedIds.length === 0) return;
-      void fitView({
-        nodes: arrangedIds.map((id) => ({ id })) as Node[],
-        padding: FIT_VIEW_PADDING_NODE_FOCUS,
-        duration: fitAnim(700),
-        interpolate: 'smooth',
-        ...FOLDDER_FIT_VIEW_EASE,
-      });
-    }, 100);
-  }, [nodes, edges, setNodes, takeSnapshot, fitView]);
+      setTimeout(() => {
+        if (arrangedIds.length === 0) return;
+        void fitView({
+          nodes: arrangedIds.map((id) => ({ id })) as Node[],
+          padding: FIT_VIEW_PADDING_NODE_FOCUS,
+          duration: fitAnim(700),
+          interpolate: 'smooth',
+          ...FOLDDER_FIT_VIEW_EASE,
+        });
+      }, 100);
+    },
+    [nodes, edges, setNodes, takeSnapshot, fitView]
+  );
 
   /** Se rellena tras definir `goToRootCanvas` (debajo de `syncCurrentSpaceState`) para no romper el orden de hooks. */
   const navigationEscapeRef = useRef<() => boolean>(() => false);
   const groupSelectedToSpaceRef = useRef<() => void>(() => {});
+  const groupSelectedToCanvasGroupRef = useRef<() => void>(() => {});
+  const ungroupSelectedCanvasGroupRef = useRef<() => void>(() => {});
 
   // ── Keyboard shortcuts (deps fijas `[]`: ref evita error de tamaño de array con Fast Refresh) ──
   const keyboardShortcutsRef = useRef({
@@ -1585,6 +1818,16 @@ const SpacesContent = () => {
       }
       if (e.ctrlKey || e.metaKey || e.altKey) return;
 
+      // G = agrupar en el lienzo (2+ nodos); Mayús+G = desagrupar (nodo canvasGroup seleccionado)
+      if (e.key.toLowerCase() === 'g') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          ungroupSelectedCanvasGroupRef.current();
+        } else {
+          groupSelectedToCanvasGroupRef.current();
+        }
+        return;
+      }
 
       switch (e.key.toLowerCase()) {
         // ── Ingesta ──────────────────────────────────────────────────────
@@ -1596,11 +1839,12 @@ const SpacesContent = () => {
         case 'n': addNode('nanoBanana'); break;
         case 'd': addNode('mediaDescriber'); break;
         case 'h': addNode('enhancer'); break;
-        case 'g': addNode('grokProcessor'); break;
+        case 'k': addNode('grokProcessor'); break;
         case 'r': addNode('backgroundRemover'); break;
         case 'v': addNode('geminiVideo'); break;
         // ── Lógica ───────────────────────────────────────────────────────
         case 'q': addNode('concatenator'); break;
+        case 'j': addNode('listado'); break;
         case 's': {
           const sel = liveNodesRef.current.filter(
             (n) => n.selected
@@ -1624,7 +1868,14 @@ const SpacesContent = () => {
         case 'x': addNode('crop'); break;
         case 'z': addNode('bezierMask'); break;
         // ── Canvas actions ───────────────────────────────────────────────
-        case 'f': doFitView({ padding: FIT_VIEW_PADDING, duration: fitAnim(800), ...FOLDDER_FIT_VIEW_EASE }); break;
+        // F = Listado; Mayús+F = encuadrar todo el grafo (antes F solo hacía fit).
+        case 'f':
+          if (e.shiftKey) {
+            doFitView({ padding: FIT_VIEW_PADDING, duration: fitAnim(800), ...FOLDDER_FIT_VIEW_EASE });
+          } else {
+            addNode('listado');
+          }
+          break;
         case 'a': doAutoLayout(); break;
         default: break;
       }
@@ -1925,7 +2176,7 @@ const SpacesContent = () => {
       } 
       
       // Logic / Utility Category
-      if (type.includes('composer') || type.includes('concatenator') || type.includes('batch') || (type === 'space' && n.id !== 'in' && n.id !== 'out')) {
+      if (type.includes('composer') || type.includes('concatenator') || type.includes('listado') || type.includes('batch') || (type === 'space' && n.id !== 'in' && n.id !== 'out')) {
         categoriesSet.add('logic');
       }
 
@@ -2233,6 +2484,11 @@ const SpacesContent = () => {
       setAssistantClarify(null);
       return true;
     }
+    if (assistantCostApproval) {
+      pendingAssistantCostPayloadRef.current = null;
+      setAssistantCostApproval(null);
+      return true;
+    }
     if (showSaveModal || showLoadModal || projectToDelete) return false;
     if (windowMode) {
       setWindowMode(false);
@@ -2250,6 +2506,7 @@ const SpacesContent = () => {
     return false;
   }, [
     assistantClarify,
+    assistantCostApproval,
     showSaveModal,
     showLoadModal,
     projectToDelete,
@@ -2293,8 +2550,18 @@ const SpacesContent = () => {
   const saveProject = async (nameToSave?: string) => {
     setIsSaving(true);
     try {
+      // Apilado XY Flow: persistir `node.zIndex`, no `style.zIndex` (evita hijos detrás del marco al recargar).
+      const normalizedNodes = normalizeNodesForPersistence(nodes as Node[]);
       // Propagación completa (padres/hijos, spaceInput, etiquetas de nested spaces) — mismo criterio que al navegar
-      const { newMap: syncedSpaces } = syncCurrentSpaceState(nodes, edges, spacesMap, activeSpaceId);
+      const { newMap: syncedSpaces } = syncCurrentSpaceState(
+        normalizedNodes,
+        edges,
+        spacesMap,
+        activeSpaceId
+      );
+      const spacesToSave = normalizeSpacesMapNodesForPersistence(
+        syncedSpaces as Record<string, { nodes?: Node[] }>
+      );
 
       const uiSnapshot = {
         canvasBgId,
@@ -2313,7 +2580,7 @@ const SpacesContent = () => {
         id: activeProjectId,
         name: nameToSave || currentName || 'Untitled Project',
         rootSpaceId: 'root',
-        spaces: syncedSpaces,
+        spaces: spacesToSave,
         metadata: {
           ...metadata,
           ui: uiSnapshot,
@@ -2338,9 +2605,9 @@ const SpacesContent = () => {
            setActiveProjectId(newest.id);
            setActiveSpaceId(activeSpaceId);
            setCurrentName(newest.name);
-           setSpacesMap(newest.spaces || syncedSpaces);
+           setSpacesMap(newest.spaces || spacesToSave);
         } else {
-           setSpacesMap(syncedSpaces);
+           setSpacesMap(spacesToSave as Record<string, unknown>);
         }
       }
       setShowSaveModal(false);
@@ -2531,84 +2798,48 @@ const SpacesContent = () => {
     }
   };
 
+  /** Mismo criterio que **A**, pero ordena todo el grafo (ignora selección). Menú «Ordenar nodos». */
   const autoLayoutNodes = useCallback(() => {
-    const GAP_X = 48;
-    const GAP_Y = 40;
+    autoLayout({ ignoreSelection: true });
+  }, [autoLayout]);
 
-    // 1. Build dependency map
-    const incomingEdges: Record<string, string[]> = {};
-    nodes.forEach(n => incomingEdges[n.id] = []);
-    edges.forEach(e => {
-      if (incomingEdges[e.target]) incomingEdges[e.target].push(e.source);
-    });
+  const applyAssistantGraphPayload = (data: {
+    nodes?: Node[];
+    edges?: Edge[];
+    executeNodeIds?: string[];
+  }) => {
+    if (!data || !Array.isArray(data.nodes)) return;
+    const execIds = Array.isArray(data.executeNodeIds)
+      ? data.executeNodeIds.filter((x): x is string => typeof x === 'string' && x.length > 0)
+      : [];
 
-    // 2. Identify layers (Sugiyama-style)
-    const layers: Record<string, number> = {};
-    const getLayer = (nodeId: string, visited = new Set()): number => {
-      if (layers[nodeId] !== undefined) return layers[nodeId];
-      if (visited.has(nodeId)) return 0; // Prevent circularity crashes
-      
-      visited.add(nodeId);
-      const deps = incomingEdges[nodeId] || [];
-      if (deps.length === 0) {
-        layers[nodeId] = 0;
-        return 0;
-      }
-      
-      const maxDepLayer = Math.max(...deps.map(d => getLayer(d, visited)));
-      layers[nodeId] = maxDepLayer + 1;
-      return layers[nodeId];
-    };
+    let validatedNodes = data.nodes.map((n: any) => ({
+      ...n,
+      position: n.position || { x: 0, y: 0 },
+    }));
 
-    nodes.forEach(n => getLayer(n.id));
-
-    // 3. Group nodes by layer
-    const grouped: Record<number, string[]> = {};
-    Object.entries(layers).forEach(([id, layer]) => {
-      if (!grouped[layer]) grouped[layer] = [];
-      grouped[layer].push(id);
-    });
-
-    // 4. Posiciones por capa usando tamaño real de cada nodo (sin solapes)
-    const layerOrder = Object.keys(grouped)
-      .map(Number)
-      .sort((a, b) => a - b);
-    const newPositions: Record<string, { x: number; y: number }> = {};
-    let xCursor = 0;
-    for (const layer of layerOrder) {
-      const ids = grouped[layer];
-      const layerNodeList = ids.map((id) => nodes.find((n) => n.id === id)!).filter(Boolean);
-      if (layerNodeList.length === 0) continue;
-      const maxW = Math.max(...layerNodeList.map((n) => getNodeLayoutDimensions(n).w));
-      const heights = layerNodeList.map((n) => getNodeLayoutDimensions(n).h);
-      const totalH =
-        heights.reduce((acc, h) => acc + h, 0) + (layerNodeList.length - 1) * GAP_Y;
-      let yCursor = -totalH / 2;
-      for (let i = 0; i < layerNodeList.length; i++) {
-        const n = layerNodeList[i];
-        const { h } = getNodeLayoutDimensions(n);
-        newPositions[n.id] = { x: xCursor, y: yCursor };
-        yCursor += h + GAP_Y;
-      }
-      xCursor += maxW + GAP_X;
+    if (execIds.length > 0) {
+      validatedNodes = validatedNodes.map((n: any) => {
+        if (n.type === 'urlImage' && n.data?.pendingSearch) {
+          return { ...n, data: { ...n.data, pendingSearch: false } };
+        }
+        return n;
+      });
     }
 
-    const newNodes = nodes.map((node) =>
-      newPositions[node.id]
-        ? { ...node, position: newPositions[node.id] }
-        : node
-    );
+    setNodes(validatedNodes);
+    setEdges(Array.isArray(data.edges) ? data.edges : []);
 
-    setNodes(newNodes);
     setTimeout(() => {
-      void fitView({
-        padding: FIT_VIEW_PADDING_NODE_FOCUS,
-        duration: fitAnim(700),
-        interpolate: 'smooth',
-        ...FOLDDER_FIT_VIEW_EASE,
-      });
+      fitView({ padding: FIT_VIEW_PADDING, duration: fitAnim(800), ...FOLDDER_FIT_VIEW_EASE });
     }, 100);
-  }, [nodes, edges, setNodes, fitView]);
+
+    if (execIds.length > 0 && runAssistantPipeline) {
+      setTimeout(() => {
+        void runAssistantPipeline(execIds);
+      }, 220);
+    }
+  };
 
   const onGenerateAssistant = async (prompt: string) => {
     if (matchesClearCanvasIntent(prompt)) {
@@ -2642,6 +2873,15 @@ const SpacesContent = () => {
             nodes?: Node[];
             edges?: Edge[];
             clarify?: { message?: string; question?: string; options?: unknown };
+            executeNodeIds?: string[];
+            pendingCostApproval?: boolean;
+            costApproval?: {
+              message: string;
+              summary?: string;
+              apis: { id: string; name: string; count: number; eurMin: number; eurMax: number }[];
+              totalEurMin: number;
+              totalEurMax: number;
+            };
           }>(res, 'POST /api/spaces/assistant');
 
           if (data && data.clarify && typeof data.clarify === 'object') {
@@ -2656,18 +2896,28 @@ const SpacesContent = () => {
             return;
           }
 
+          if (
+            data &&
+            data.pendingCostApproval &&
+            data.costApproval &&
+            Array.isArray(data.nodes)
+          ) {
+            pendingAssistantCostPayloadRef.current = {
+              nodes: data.nodes,
+              edges: Array.isArray(data.edges) ? data.edges : [],
+              executeNodeIds: data.executeNodeIds,
+            };
+            setAssistantCostApproval({
+              message: data.costApproval.message,
+              apis: data.costApproval.apis,
+              totalEurMin: data.costApproval.totalEurMin,
+              totalEurMax: data.costApproval.totalEurMax,
+            });
+            return;
+          }
+
           if (data && Array.isArray(data.nodes)) {
-            const validatedNodes = data.nodes.map((n: any) => ({
-              ...n,
-              position: n.position || { x: 0, y: 0 },
-            }));
-
-            setNodes(validatedNodes);
-            setEdges(Array.isArray(data.edges) ? data.edges : []);
-
-            setTimeout(() => {
-              fitView({ padding: FIT_VIEW_PADDING, duration: fitAnim(800), ...FOLDDER_FIT_VIEW_EASE });
-            }, 100);
+            applyAssistantGraphPayload(data);
           }
         }
       );
@@ -2676,6 +2926,20 @@ const SpacesContent = () => {
     } finally {
       setIsGeneratingAssistant(false);
     }
+  };
+
+  const onAssistantCostApprovalConfirm = () => {
+    const payload = pendingAssistantCostPayloadRef.current;
+    pendingAssistantCostPayloadRef.current = null;
+    setAssistantCostApproval(null);
+    if (payload) {
+      applyAssistantGraphPayload(payload);
+    }
+  };
+
+  const onAssistantCostApprovalCancel = () => {
+    pendingAssistantCostPayloadRef.current = null;
+    setAssistantCostApproval(null);
   };
 
   const onAssistantClarifyPick = (option: string) => {
@@ -2687,11 +2951,32 @@ const SpacesContent = () => {
     );
   };
 
+  /** Refit del marco canvasGroup ~60fps mientras se arrastra o redimensiona un hijo (sin depender de expandParent). */
+  const canvasGroupRefitRafRef = useRef<number | null>(null);
+  const scheduleCanvasGroupRefit = useCallback(() => {
+    if (canvasGroupRefitRafRef.current != null) return;
+    canvasGroupRefitRafRef.current = requestAnimationFrame(() => {
+      canvasGroupRefitRafRef.current = null;
+      setNodes((prev) => recomputeCanvasGroupFrames(prev));
+    });
+  }, [setNodes]);
 
-  const onNodeDragStop = useCallback((_: any, __: any, _ns: any[]) => {
-    // History snapshot was already taken at drag START (via onNodeDragStart)
-    // Nothing to do here for history — positions are already in liveRef
-  }, []);
+  const onNodeDrag = useCallback(() => {
+    scheduleCanvasGroupRefit();
+  }, [scheduleCanvasGroupRefit]);
+
+  const onNodeDragStop = useCallback(
+    (_event: unknown, _node: unknown, _nodes: unknown) => {
+      if (canvasGroupRefitRafRef.current != null) {
+        cancelAnimationFrame(canvasGroupRefitRafRef.current);
+        canvasGroupRefitRafRef.current = null;
+      }
+      requestAnimationFrame(() => {
+        setNodes((nds) => recomputeCanvasGroupFrames(nds));
+      });
+    },
+    [setNodes]
+  );
 
   const onNodeDragStart = useCallback(() => {
     takeSnapshot(); // capture state when drag begins, before positions change
@@ -2724,32 +3009,23 @@ const SpacesContent = () => {
     [setEdges, takeSnapshot, fitViewToNodeIds, updateNodeInternals]
   );
 
-  // ── Handle→Node type suggestions ─────────────────────────────────────────
-  // When a handle drag ends on the canvas, create the most useful connected node.
-  // key: `${handleDataType}:${fromDirection}` → nodeType to create
-  const HANDLE_DROP_MAP: Record<string, string> = {
-    'prompt:source':  'enhancer',       // dragging OUT a prompt → enhancer consumes it
-    'prompt:target':  'promptInput',    // dragging INTO a prompt input → provide a prompt
-    'image:source':   'imageExport',    // dragging OUT an image → export or compose
-    'image:target':   'nanoBanana',     // dragging INTO an image input → generate one
-    'video:source':   'imageExport',
-    'video:target':   'geminiVideo',
-    'mask:source':    'imageComposer',
-    'mask:target':    'backgroundRemover',
-    'url:source':     'mediaDescriber',
-    'url:target':     'mediaInput',
-    'audio:source':   'imageExport',
-    'audio:target':   'mediaInput',
-  };
+  // ── Handle→Node: soltar conexión en el lienzo vacío crea el nodo más probable (ver canvas-connect-end-drop).
+  // Requiere connectionMode={ConnectionMode.Loose} para poder arrastrar desde entradas (target).
 
   const onConnectEnd = useCallback((event: any, connectionState: any) => {
-    // Only act when drop landed on the pane (no valid target node found)
+    // Solo si no se completó una conexión válida a otro nodo / handle
     if (connectionState?.isValid) return;
+    if (connectionState?.toNode != null) return;
 
-    const fromNodeId   = connectionState?.fromNode?.id;
-    const fromHandleId = connectionState?.fromHandle?.id;
-    const fromType     = connectionState?.fromHandle?.type; // 'source' | 'target'
-    if (!fromNodeId || !fromHandleId) return;
+    const fromNodeId =
+      connectionState?.fromNode?.id ?? connectionState?.from?.id ?? connectionState?.nodeId;
+    const fromHandle = connectionState?.fromHandle ?? connectionState?.handle;
+    const fromHandleId = fromHandle?.id as string | undefined;
+    const fromType = (fromHandle?.type ?? connectionState?.fromHandle?.type) as
+      | 'source'
+      | 'target'
+      | undefined;
+    if (!fromNodeId || !fromHandleId || (fromType !== 'source' && fromType !== 'target')) return;
 
     const srcNode = nodes.find((n: any) => n.id === fromNodeId);
     const srcNodeType = srcNode?.type as string | undefined;
@@ -2765,17 +3041,15 @@ const SpacesContent = () => {
     });
     if (alreadyConnected) return;
 
-    const meta = srcNodeType ? NODE_REGISTRY[srcNodeType] : null;
-    if (!meta) return;
-
-    const handleMeta =
-      fromType === 'source'
-        ? meta.outputs.find((o: any) => o.id === fromHandleId)
-        : meta.inputs.find((i: any) => i.id === fromHandleId);
+    const handleMeta = resolveHandleMetaForCanvasDrop(srcNodeType, fromHandleId, fromType);
     if (!handleMeta) return;
 
     const lookupKey = `${handleMeta.type}:${fromType}`;
-    let newType = HANDLE_DROP_MAP[lookupKey];
+    let newType = pickNewNodeTypeForCanvasDrop(lookupKey, {
+      srcNodeType,
+      fromHandleId,
+      fromFlow: fromType,
+    });
 
     // Registry types media output as `url`, but an uploaded image behaves as image → Nano Banana on canvas drop
     if (srcNodeType === 'mediaInput' && fromType === 'source' && fromHandleId === 'media' && mediaAssetType === 'image') {
@@ -2786,14 +3060,14 @@ const SpacesContent = () => {
 
     // Convert mouse position to flow coords
     const clientX = event.clientX ?? event.changedTouches?.[0]?.clientX ?? 0;
-    const clientY = event.clientY ?? event.changedTouches?.[0]?.clientY ?? 0;
+    const clientY = event.changedTouches?.[0]?.clientY ?? 0;
     const position  = screenToFlowPosition({ x: clientX, y: clientY });
     const newNodeId = `${newType}_${Date.now()}`;
     const newNode   = {
       id:       newNodeId,
       type:     newType,
       position: { x: position.x - 160, y: position.y - 80 },
-      data:     { label: '' },
+      data:     defaultDataForCanvasDropNode(newType),
     };
 
     const edgeId = `ae-${fromNodeId}-${newNodeId}-${fromHandleId}-${Date.now()}`;
@@ -2856,19 +3130,34 @@ const SpacesContent = () => {
     setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
   }, []);
 
-  const deleteNode = useCallback((id: string) => {
-    setNodes((nds) => nds.filter((node) => node.id !== id));
-    setEdges((eds) => eds.filter((edge) => edge.source !== id && edge.target !== id));
-    setContextMenu(null);
-    setTimeout(() => {
-      fitView({ padding: FIT_VIEW_PADDING, duration: fitAnim(650), ...FOLDDER_FIT_VIEW_EASE });
-    }, 80);
-  }, [setNodes, setEdges, fitView]);
+  const deleteNode = useCallback(
+    (id: string) => {
+      const target = nodes.find((n) => n.id === id);
+      if (!target) return;
+      /** El marco de agrupación en el lienzo no se elimina por menú contextual ni por tecla (solo Desagrupar). */
+      if (target.type === "canvasGroup") {
+        setContextMenu(null);
+        return;
+      }
+
+      setNodes((nds) => {
+        const next = nds.filter((n) => n.id !== id);
+        return recomputeCanvasGroupFrames(next);
+      });
+      setEdges((eds) => eds.filter((edge) => edge.source !== id && edge.target !== id));
+      setContextMenu(null);
+      setTimeout(() => {
+        fitView({ padding: FIT_VIEW_PADDING, duration: fitAnim(650), ...FOLDDER_FIT_VIEW_EASE });
+      }, 80);
+    },
+    [nodes, setNodes, setEdges, fitView]
+  );
 
   const duplicateNode = useCallback(
     (id: string) => {
       const node = nodes.find((n) => n.id === id);
       if (!node) return;
+      if (node.type === "canvasGroup") return;
 
       const plan = planDuplicateBelowMultiInput(node, edges, nodes);
       const newId = `${node.type}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -3105,7 +3394,37 @@ const SpacesContent = () => {
     analyzeSpaceStructure,
   ]);
 
+  const groupSelectedToCanvasGroup = useCallback(() => {
+    const sel = nodes.filter((n) => n.selected);
+    if (sel.length < 2) return;
+    const ids = sel.map((n) => n.id);
+    const created = createCanvasGroupFromNodeIds(ids, nodes, "Grupo de prompts");
+    if (!created) return;
+    const gid = created.nodes.find((n) => n.type === "canvasGroup")?.id;
+    if (!gid) return;
+    const collapsed = applyCanvasGroupCollapse(gid, created.nodes, edges);
+    if (!collapsed) return;
+    takeSnapshot();
+    setNodes(
+      collapsed.nodes.map((n) => ({
+        ...n,
+        selected: n.id === gid,
+      }))
+    );
+    setEdges(collapsed.edges);
+    setContextMenu(null);
+  }, [nodes, edges, setNodes, setEdges, takeSnapshot]);
+
+  const ungroupSelectedCanvasGroup = useCallback(() => {
+    const sel = liveNodesRef.current.filter((n) => n.selected);
+    const group = sel.find((n) => n.type === "canvasGroup");
+    if (!group) return;
+    performCanvasUngroup(group.id);
+  }, [performCanvasUngroup]);
+
   groupSelectedToSpaceRef.current = groupSelectedToSpace;
+  groupSelectedToCanvasGroupRef.current = groupSelectedToCanvasGroup;
+  ungroupSelectedCanvasGroupRef.current = ungroupSelectedCanvasGroup;
 
   const flowNodes = useMemo(() => {
     const compatSet = new Set(libraryCompatibleIds);
@@ -3180,7 +3499,7 @@ const SpacesContent = () => {
     const sourceNode = nodes.find((n) => n.id === connection.source);
     const targetNode = nodes.find((n) => n.id === connection.target);
     if (!sourceNode || !targetNode) return false;
-    return areNodesConnectable(sourceNode, targetNode, connection);
+    return areNodesConnectable(sourceNode, targetNode, connection, nodes);
   }, [nodes]);
 
   const onDragOver = useCallback(
@@ -3712,17 +4031,49 @@ const SpacesContent = () => {
           nodes={flowNodes}
           edges={edges}
           onNodesChange={(changes) => {
-            const removals = changes.filter(c => c.type === 'remove');
+            const nds = liveNodesRef.current;
+            const filtered = changes.filter((c) => {
+              if (c.type !== "remove") return true;
+              const id = (c as { id?: string }).id;
+              if (!id) return true;
+              const node = nds.find((n) => n.id === id);
+              return node?.type !== "canvasGroup";
+            });
+            const removals = filtered.filter((c) => c.type === "remove");
             if (removals.length > 0) {
               takeSnapshot();
             }
-            onNodesChange(changes);
-            if (changes.some((c) => c.type === 'remove')) {
+            onNodesChange(filtered);
+
+            const childLayoutChange = filtered.some((c) => {
+              if (c.type !== "dimensions" && c.type !== "position") return false;
+              const id = (c as { id?: string }).id;
+              if (!id) return false;
+              const node = nds.find((n) => n.id === id);
+              return Boolean(node?.parentId);
+            });
+            if (removals.length > 0) {
+              setTimeout(() => {
+                setNodes((prev) => {
+                  const reframed = recomputeCanvasGroupFrames(prev);
+                  const { nodes: nextNodes, edges: nextEdges } = removeEmptyCanvasGroups(
+                    reframed,
+                    liveEdgesRef.current
+                  );
+                  setEdges(nextEdges);
+                  return nextNodes;
+                });
+              }, 0);
+            } else if (childLayoutChange) {
+              scheduleCanvasGroupRefit();
+            }
+
+            if (removals.length > 0) {
               setTimeout(() => {
                 void fitView({
                   padding: FIT_VIEW_PADDING_NODE_FOCUS,
                   duration: fitAnim(650),
-                  interpolate: 'smooth',
+                  interpolate: "smooth",
                   ...FOLDDER_FIT_VIEW_EASE,
                 });
               }, 80);
@@ -3733,14 +4084,17 @@ const SpacesContent = () => {
           isValidConnection={isValidConnection}
            onDrop={onDrop}
           onDragOver={onDragOver}
+          onPaneClick={onPaneClick}
           onPaneContextMenu={onPaneContextMenu}
           onDoubleClick={onCanvasDoubleClick}
           onNodeContextMenu={onNodeContextMenu}
           onNodeClick={onNodeClick}
           onNodeDoubleClick={onNodeDoubleClick}
           onNodeDragStart={onNodeDragStart}
+          onNodeDrag={onNodeDrag}
           onNodeDragStop={onNodeDragStop}
           onConnectEnd={onConnectEnd}
+          connectionMode={ConnectionMode.Loose}
           elevateEdgesOnSelect
 
           nodeTypes={nodeTypes}
@@ -3770,15 +4124,17 @@ const SpacesContent = () => {
           <Background color="#111" gap={40} size={1} />
         </ReactFlow>
 
-        {typeof document !== 'undefined' &&
-          isAuthenticated &&
-          aiJobToasts.length > 0 &&
-          createPortal(
-            <div
-              className="pointer-events-none fixed inset-0 z-[10025] flex items-center justify-center p-4"
-              aria-live="polite"
-            >
-              <div className="flex w-full max-w-[min(92vw,380px)] flex-col items-stretch gap-2">
+        {isAuthenticated && <HandleTypeLegend />}
+
+        {isAuthenticated && <ExternalApiBlockedModal />}
+
+        {isAuthenticated && (
+          <div className="pointer-events-none fixed bottom-4 right-4 z-[10025] flex flex-col items-end gap-2">
+            {aiJobToasts.length > 0 && (
+              <div
+                className="flex w-full max-w-[min(92vw,380px)] flex-col items-stretch gap-2"
+                aria-live="polite"
+              >
                 {aiJobToasts.map((t) => {
                   const focusCanvas =
                     !t.nodeId || t.nodeId === AI_JOB_CANVAS_NODE_ID;
@@ -3826,14 +4182,7 @@ const SpacesContent = () => {
                   );
                 })}
               </div>
-            </div>,
-            document.body
-          )}
-
-        {isAuthenticated && <HandleTypeLegend />}
-
-        {isAuthenticated && (
-          <div className="pointer-events-none fixed bottom-4 right-4 z-[90] flex flex-col items-end gap-2">
+            )}
             {apiUsagePanelOpen && <ApiUsageHud />}
             <AiRequestHud />
             <button
@@ -3937,21 +4286,43 @@ const SpacesContent = () => {
             
             {contextMenu.nodeId ? (
               <>
+                {nodes.find((n) => n.id === contextMenu.nodeId)?.type === "canvasGroup" && (
+                  <div
+                    className="context-menu-item primary"
+                    onClick={() => {
+                      const gid = contextMenu.nodeId!;
+                      performCanvasUngroup(gid);
+                      setContextMenu(null);
+                    }}
+                  >
+                    <NodeIconMono iconKey="concat" size={14} className="text-violet-300 opacity-90" /> Desagrupar (lienzo)
+                  </div>
+                )}
                 <div 
                   className="context-menu-item"
                   onClick={() => duplicateNode(contextMenu.nodeId!)}
                 >
                   <NodeIconMono iconKey="concat" size={14} className="text-blue-400 opacity-90" /> Duplicate Node
                 </div>
-                <div 
-                  className="context-menu-item danger"
-                  onClick={() => deleteNode(contextMenu.nodeId!)}
-                >
-                  <NodeIconMono iconKey="matting" size={14} className="text-rose-400 opacity-90" /> Delete Node
-                </div>
+                {nodes.find((n) => n.id === contextMenu.nodeId)?.type !== "canvasGroup" && (
+                  <div
+                    className="context-menu-item danger"
+                    onClick={() => deleteNode(contextMenu.nodeId!)}
+                  >
+                    <NodeIconMono iconKey="matting" size={14} className="text-rose-400 opacity-90" /> Delete Node
+                  </div>
+                )}
               </>
             ) : (
               <>
+                {nodes.filter((n) => n.selected).length >= 2 && (
+                  <div
+                    className="context-menu-item primary"
+                    onClick={groupSelectedToCanvasGroup}
+                  >
+                    <NodeIconMono iconKey="concat" size={14} className="text-violet-300 opacity-90" /> Agrupar en el lienzo
+                  </div>
+                )}
                 <div 
                   className="context-menu-item primary"
                   onClick={groupSelectedToSpace}
@@ -3975,7 +4346,12 @@ const SpacesContent = () => {
         )}
         
         {windowMode && isAuthenticated && (
-          <AgentHUD onGenerate={onGenerateAssistant} isGenerating={isGeneratingAssistant} windowMode />
+          <AgentHUD
+            onGenerate={onGenerateAssistant}
+            isGenerating={isGeneratingAssistant}
+            windowMode
+            selectedNodeCount={nodes.filter((n) => n.selected).length}
+          />
         )}
 
         {/* Action HUD — fila1: agente (izq.) + acciones (der.); fila2: pins topbar */}
@@ -4013,6 +4389,7 @@ const SpacesContent = () => {
                     variant="topbar"
                     onGenerate={onGenerateAssistant}
                     isGenerating={isGeneratingAssistant}
+                    selectedNodeCount={nodes.filter((n) => n.selected).length}
                   />
                 </div>
               </div>
@@ -4241,6 +4618,76 @@ const SpacesContent = () => {
                     {opt}
                   </button>
                 ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {assistantCostApproval && (
+          <div className="fixed inset-0 z-[10007] flex items-center justify-center p-4">
+            <div
+              className="absolute inset-0 bg-black/45 backdrop-blur-xl"
+              onClick={onAssistantCostApprovalCancel}
+              aria-hidden
+            />
+            <div
+              className="relative z-10 w-full max-w-lg rounded-3xl border border-white/25 bg-white/20 p-6 shadow-2xl shadow-black/20 backdrop-blur-xl md:p-8"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="assistant-cost-title"
+            >
+              <div className="mb-4 flex items-center justify-between gap-2">
+                <h2
+                  id="assistant-cost-title"
+                  className="flex items-center gap-2 text-sm font-black uppercase tracking-wide text-slate-800"
+                >
+                  <Wallet size={20} className="shrink-0 text-cyan-500" strokeWidth={2} />
+                  Coste de APIs
+                </h2>
+                <button
+                  type="button"
+                  onClick={onAssistantCostApprovalCancel}
+                  className="rounded-full p-2 text-slate-500 transition-colors hover:bg-white/40 hover:text-slate-800"
+                  aria-label="Cerrar"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <p className="mb-4 text-sm leading-relaxed text-slate-700">
+                {assistantCostApproval.message}
+              </p>
+              <div className="mb-4 max-h-40 overflow-y-auto rounded-2xl border border-white/15 bg-white/10 p-3 shadow-inner backdrop-blur-sm">
+                <ul className="list-inside list-disc space-y-1.5 text-xs text-slate-700">
+                  {assistantCostApproval.apis.map((a, idx) => (
+                    <li key={`${a.id}-${idx}-${a.name}`}>
+                      <span className="font-semibold text-slate-800">{a.name}</span>
+                      {a.count > 1 ? ` ×${a.count}` : ''}{' '}
+                      <span className="text-slate-600">
+                        — ~€{a.eurMin.toFixed(2)}–€{a.eurMax.toFixed(2)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <p className="mb-6 text-center text-base font-black tracking-tight text-cyan-700 drop-shadow-sm">
+                Total orientativo: €{assistantCostApproval.totalEurMin.toFixed(2)} – €
+                {assistantCostApproval.totalEurMax.toFixed(2)}
+              </p>
+              <div className="flex flex-wrap justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={onAssistantCostApprovalCancel}
+                  className="rounded-2xl border border-white/25 bg-white/15 px-5 py-2.5 text-[11px] font-black uppercase tracking-widest text-slate-700 transition-all hover:bg-white/35"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={onAssistantCostApprovalConfirm}
+                  className="rounded-2xl border border-cyan-500/45 bg-cyan-600 px-5 py-2.5 text-[11px] font-black uppercase tracking-widest text-white shadow-lg shadow-cyan-900/20 transition-all hover:bg-cyan-500"
+                >
+                  Confirmar
+                </button>
               </div>
             </div>
           </div>
@@ -4483,7 +4930,9 @@ export default function SpacesPage() {
   return (
     <div className="w-screen h-screen bg-slate-50">
       <ReactFlowProvider>
-        <SpacesContent />
+        <NodeExecutionProvider>
+          <SpacesContent />
+        </NodeExecutionProvider>
       </ReactFlowProvider>
     </div>
   );

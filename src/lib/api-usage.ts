@@ -10,6 +10,7 @@ export const USAGE_SERVICES = [
   { id: "gemini-nano", label: "Gemini · Nano Banana (imagen 3 Flash / Pro)" },
   { id: "gemini-veo", label: "Gemini · Veo 3.1 (vídeo)" },
   { id: "gemini-analyze", label: "Gemini · Análisis de áreas (2.5 Flash)" },
+  { id: "gemini-search-verify", label: "Gemini · Verificación imágenes (búsqueda web)" },
   { id: "openai-assistant", label: "OpenAI · Asistente del lienzo (GPT-4o mini)" },
   { id: "openai-enhance", label: "OpenAI · Mejorar prompt (GPT-4o)" },
   { id: "openai-describe", label: "OpenAI · Describir imagen/vídeo (GPT-4o)" },

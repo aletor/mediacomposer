@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { MAX_CANDIDATES, filterImageUrlsByIntent } from '@/lib/gemini-image-intent-verify';
 const gis = require('g-i-s');
 
 const searchGoogleImages = (query: string): Promise<any[]> => {
@@ -70,37 +71,94 @@ const searchWikipediaImage = async (query: string): Promise<string[]> => {
 
 export async function POST(req: Request) {
   try {
-    const { query, limit = 5 } = await req.json();
+    const body = await req.json();
+    const query = body.query as string;
+    const limit = typeof body.limit === 'number' ? body.limit : 5;
+    const verifyIntentRaw = body.verifyIntent as string | undefined;
+    const verify =
+      body.verify === false ? false : true;
 
     if (!query) {
       return NextResponse.json({ error: 'Query is required' }, { status: 400 });
     }
 
-    console.log(`[Search API] Searching for: "${query}" (limit: ${limit})`);
-    
-    // Try GIS first
-    let urls = [];
-    try {
-      const searchResults = await searchGoogleImages(query);
-      urls = searchResults
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    const intentForVision =
+      typeof verifyIntentRaw === 'string' && verifyIntentRaw.trim()
+        ? verifyIntentRaw.trim()
+        : query.trim();
+    const useVision = verify && !!apiKey && intentForVision.length > 0;
+
+    const poolCap = useVision
+      ? Math.min(Math.max(limit * 5, 24), MAX_CANDIDATES)
+      : Math.max(limit, 1);
+
+    console.log(
+      `[Search API] Searching for: "${query}" (limit: ${limit}, vision: ${useVision})`
+    );
+
+    const normalizeUrls = (raw: any[]) =>
+      raw
         .map((r: any) => r.url)
         .filter((u: any) => {
           if (!u || typeof u !== 'string') return false;
           return u.startsWith('http') && !u.includes('lookaside.fbsbx.com');
         })
-        .slice(0, limit);
+        .slice(0, poolCap);
+
+    let gisUrls: string[] = [];
+    try {
+      const searchResults = await searchGoogleImages(query);
+      gisUrls = normalizeUrls(searchResults);
     } catch (e) {
       console.warn('[Search API] GIS failed, falling back to Wikipedia');
     }
 
-    // Fallback if no URLs found
-    if (urls.length === 0) {
-      console.log(`[Search API] GIS returned nothing. Trying Wikipedia for: "${query}"`);
-      const wikiUrls = await searchWikipediaImage(query);
-      urls = wikiUrls.slice(0, limit);
+    let wikiCache: string[] | null = null;
+    const getWikiPool = async (): Promise<string[]> => {
+      if (!wikiCache) {
+        wikiCache = await searchWikipediaImage(query);
+      }
+      return wikiCache.slice(0, poolCap);
+    };
+
+    // Sin visión: mismo comportamiento que antes (GIS, si no hay nada → Wikipedia).
+    let urls: string[] =
+      gisUrls.length > 0 ? gisUrls : await getWikiPool();
+
+    const tryVisionFilter = async (candidateUrls: string[]) => {
+      if (!useVision || candidateUrls.length === 0) return candidateUrls;
+      return filterImageUrlsByIntent(candidateUrls, intentForVision, apiKey!, {
+        targetCount: limit,
+        relaxedFallback: true,
+      });
+    };
+
+    if (useVision) {
+      let filtered = await tryVisionFilter(gisUrls.length > 0 ? gisUrls : urls);
+      if (filtered.length > 0) {
+        return NextResponse.json({ urls: filtered, verified: true });
+      }
+      // Si había resultados GIS pero ninguno pasó, probar Wikipedia (suele acertar en astro/personas).
+      if (gisUrls.length > 0) {
+        console.log(`[Search API] Vision rejected GIS pool; trying Wikipedia for: "${query}"`);
+        const wikiPool = await getWikiPool();
+        filtered = await tryVisionFilter(wikiPool);
+        if (filtered.length > 0) {
+          return NextResponse.json({ urls: filtered, verified: true });
+        }
+      }
+      return NextResponse.json({
+        urls: [],
+        verified: true,
+        noMatch: true,
+      });
     }
 
-    return NextResponse.json({ urls });
+    return NextResponse.json({
+      urls: urls.slice(0, limit),
+      verified: false,
+    });
   } catch (error: any) {
     console.error('Search API Error:', error);
     return NextResponse.json({ error: error.message }, { status: 500 });

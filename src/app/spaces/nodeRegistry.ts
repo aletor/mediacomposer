@@ -58,11 +58,13 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
       { id: 'image', label: 'Selected Image', type: 'image' }
     ],
     dataSchema: {
-      label: 'string (search query)',
+      label: 'string (English image search query — disambiguated, e.g. "Earth Moon surface NASA" not just "moon")',
+      searchIntent:
+        'string (what MUST appear in the image — used for vision verification; e.g. "Earth natural satellite, not a person named Luna")',
       urls: 'string[]',
       selectedIndex: 'number',
       value: 'string (the selected URL)',
-      count: 'number (limit of images to fetch - default 3)'
+      count: 'number (carousel size / fetch limit — default 10)'
     }
   },
   mediaInput: {
@@ -99,7 +101,9 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
       { id: 'prompt', label: 'Prompt Out', type: 'prompt' }
     ],
     dataSchema: {
-      value: 'string'
+      value: 'string (prompt body)',
+      label:
+        'string (optional — short title shown above the node on the canvas; use when the user names the prompt, e.g. "Eye color" / "color de ojos")',
     }
   },
   grokProcessor: {
@@ -125,6 +129,19 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
       { id: 'prompt', label: 'Combined Prompt', type: 'prompt' }
     ],
     dataSchema: {}
+  },
+  listado: {
+    type: 'listado',
+    label: 'Listado',
+    description:
+      'Connects several prompt sources; a dropdown lists each one and the output is the text of the selected prompt.',
+    inputs: [{ id: 'p-n', label: 'Prompt in', type: 'prompt' }],
+    outputs: [{ id: 'prompt', label: 'Selected prompt', type: 'prompt' }],
+    dataSchema: {
+      label: 'string (optional — canvas title above the node, e.g. "color de ojos")',
+      value: 'string (output — text of the selected connected prompt; synced by UI)',
+      selectedEdgeId: 'string | undefined (internal: which incoming edge is selected)',
+    },
   },
   enhancer: {
     type: 'enhancer',
@@ -309,7 +326,72 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
       canvasH: 'number',
     }
   },
+  canvasGroup: {
+    type: 'canvasGroup',
+    label: 'Canvas Group',
+    description:
+      'UI-only frame on the same canvas: select 2+ nodes and group (G / context menu). Children use parentId + relative positions; collapsed mode keeps external edges via proxy handles. Not a runnable pipeline step — omit from executeNodeIds.',
+    inputs: [],
+    outputs: [],
+    dataSchema: {
+      label: 'string (visible title, e.g. Grupo de prompts)',
+      collapsed: 'boolean',
+      memberIds: 'string[] (child node ids)',
+    }
+  },
 };
+
+/**
+ * Pistas por tipo para `node.data` (además de dataSchema del registro).
+ * Ayuda al asistente a saber qué puede editar sin listar todo el código del UI.
+ */
+export const ASSISTANT_NODE_DATA_HINTS: Record<string, string> = {
+  promptInput: "value (texto del prompt), label (título visible encima del nodo — obligatorio si el usuario pide nombres/etiquetas por nodo)",
+  nanoBanana:
+    "modelKey (flash31|flash25|pro3), aspect_ratio, resolution (1k|2k|4k), thinking (bool), value/s3Key (salida), label",
+  grokProcessor: "duration, resolution, aspect_ratio, value (salida vídeo), label",
+  geminiVideo:
+    "resolution, duration, audio, seed, negativePrompt, animationPrompt, cameraPreset, value (salida), label",
+  enhancer: "value (texto mejorado), label",
+  concatenator: "label; el texto combinado viene de las entradas conectadas",
+  listado:
+    "label (título del nodo, p. ej. color de ojos); un promptInput por opción con data.value = texto de esa opción; edges a p0, p1, p2… en orden; salida prompt → nanoBanana u otros",
+  mediaDescriber: "value (descripción), label",
+  mediaInput: "value (URL), type, metadata, label, s3Key",
+  urlImage:
+    "label (consulta GIS en inglés, desambiguada), searchIntent (obligatorio: qué debe verse en la foto — verificación por visión), count, urls[], selectedIndex, value, pendingSearch",
+  imageExport: "format (png|jpeg), label",
+  imageComposer: "layersConfig, selectedLayerId",
+  space: "label, hasInput, hasOutput, value",
+  spaceInput: "label",
+  spaceOutput: "label",
+  painter: "bgColor, strokeColor, brushSize, value",
+  crop: "aspectRatio, cropConfig, value",
+  bezierMask: "points, closed, invert, result_mask, result_rgba",
+  textOverlay: "text, fontFamily, fontSize, color, fontWeight, textAlign, canvasW, canvasH",
+  backgroundRemover: "threshold, expansion, feather",
+  canvasGroup:
+    "label (título del marco), collapsed (plegado), memberIds (ids hijos — sincronizado con parentId). Creación habitual: usuario selecciona 2+ nodos y agrupa en el lienzo (G / menú); el asistente solo debe emitir type canvasGroup si el usuario pide explícitamente un grafo agrupado en JSON: entonces cada hijo lleva parentId=id del grupo y position relativa; data.memberIds debe listar esos ids; style width/height del marco; NO incluir canvasGroup en executeNodeIds (no ejecuta). Si solo piden “organizar en grupo”, mejor devolver nodos/aristas sueltos y decir que agrupen con la UI.",
+};
+
+function formatDataSchemaForAssistant(meta: NodeMetadata): string {
+  const s = meta.dataSchema;
+  const keys = Object.keys(s || {});
+  if (keys.length === 0) return "(sin dataSchema en registro)";
+  return keys.map((k) => `${k}: ${JSON.stringify((s as Record<string, unknown>)[k])}`).join("; ");
+}
+
+/** Una línea por tipo: campos documentados + pista de data típica. */
+export function buildNodeRegistryDataSchemaDigestForAssistant(): string {
+  return Object.entries(NODE_REGISTRY)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, meta]) => {
+      const schemaLine = formatDataSchemaForAssistant(meta);
+      const hint = ASSISTANT_NODE_DATA_HINTS[key];
+      return hint ? `• ${key}: ${schemaLine} | típico en data: ${hint}` : `• ${key}: ${schemaLine}`;
+    })
+    .join("\n");
+}
 
 /**
  * Texto compacto para el system prompt del asistente (mucho menos tokens que JSON.stringify del registro completo).

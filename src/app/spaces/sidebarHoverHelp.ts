@@ -28,6 +28,10 @@ export const SIDEBAR_HOVER_HELP: Record<string, { title: string; line: string }>
     title: 'Concatenator',
     line: 'Une varios textos en uno',
   },
+  listado: {
+    title: 'Listado',
+    line: 'Varios prompts entrantes; elige uno en el desplegable como salida',
+  },
   enhancer: {
     title: 'Enhancer',
     line: 'Mejora y amplía tu prompt',

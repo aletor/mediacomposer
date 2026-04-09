@@ -9,6 +9,8 @@ interface AgentHUDProps {
   windowMode?: boolean;
   /** floating = esquina; sidebar = columna (legacy); topbar = una línea junto al topbar de pins */
   variant?: 'floating' | 'sidebar' | 'topbar';
+  /** Nodos seleccionados en el lienzo; el asistente usa esto como contexto para "este nodo", cambios puntuales, etc. */
+  selectedNodeCount?: number;
 }
 
 export const AgentHUD = ({
@@ -16,6 +18,7 @@ export const AgentHUD = ({
   isGenerating = false,
   windowMode = false,
   variant = 'floating',
+  selectedNodeCount = 0,
 }: AgentHUDProps) => {
   const [prompt, setPrompt] = useState('');
 
@@ -57,6 +60,11 @@ export const AgentHUD = ({
         <h3 className="text-[13px] font-black text-white/60 uppercase tracking-[2px]">Agent Assistant</h3>
       </div>
 
+      {selectedNodeCount > 0 && (
+        <p className="text-[9px] font-semibold uppercase tracking-wide text-cyan-400/90 px-0.5">
+          Contexto: {selectedNodeCount} nodo{selectedNodeCount === 1 ? '' : 's'} seleccionado{selectedNodeCount === 1 ? '' : 's'} (puedes pedir cambios sobre ellos)
+        </p>
+      )}
       <textarea
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
@@ -66,7 +74,7 @@ export const AgentHUD = ({
             handleGenerate();
           }
         }}
-        placeholder="Describe workflow modifications..."
+        placeholder="Describe cambios… Con nodos seleccionados: «cambia el prompt», «pon resolución 4K», «conecta al Nano Banana»…"
         className="w-full bg-white/5 border border-white/10 rounded-xl p-2.5 text-[14px] text-white placeholder:text-white/40 focus:outline-none focus:border-cyan-500/40 transition-all min-h-[124px] resize-none shadow-inner"
       />
 
@@ -107,7 +115,12 @@ export const AgentHUD = ({
               void handleGenerate();
             }
           }}
-          placeholder="Ej.: borra todo, nuevo espacio, vacía el lienzo, Nano Banana + export…"
+          title={
+            selectedNodeCount > 0
+              ? `${selectedNodeCount} nodo(s) seleccionado(s): puedes pedir cambios sobre ellos`
+              : 'Selecciona nodos en el lienzo para pedir cambios sobre unos concretos'
+          }
+          placeholder="Ej.: borra todo · con selección: cambia el texto del prompt, sube resolución a 4K…"
           className="min-h-[38px] min-w-0 flex-1 rounded-lg border border-white/35 bg-white/[0.10] px-3 py-2 text-[15px] leading-snug text-white placeholder:text-white/45 shadow-inner backdrop-blur-md focus:border-white/55 focus:outline-none focus:ring-1 focus:ring-white/25"
         />
         <button
