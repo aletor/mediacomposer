@@ -48,6 +48,9 @@ export function resolveHandleMetaForCanvasDrop(
     if (/^layer_\d+$/.test(handleId)) {
       return { type: "image", id: handleId };
     }
+    if (/^i\d+$/.test(handleId) && nodeType === "freehand") {
+      return { type: "image", id: handleId };
+    }
   }
 
   return null;

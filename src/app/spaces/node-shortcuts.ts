@@ -29,4 +29,5 @@ export const NODE_KEYS: Record<string, string> = {
   textOverlay: 't',
   crop: 'x',
   bezierMask: 'z',
+  freehand: 'f',
 };

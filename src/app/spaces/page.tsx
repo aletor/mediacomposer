@@ -43,6 +43,7 @@ import {
   PainterNode,
   CropNode,
   BezierMaskNode,
+  FreehandNode,
   TextOverlayNode,
   ButtonEdge 
 } from './CustomNodes';
@@ -560,6 +561,7 @@ const nodeTypes: any = {
   painter: PainterNode,
   crop: CropNode,
   bezierMask: BezierMaskNode,
+  freehand: FreehandNode,
   textOverlay: TextOverlayNode,
   canvasGroup: CanvasGroupNode,
 };
@@ -1729,6 +1731,9 @@ const SpacesContent = () => {
         fitViewToNodeIds: doFitViewToNodeIds,
       } = keyboardShortcutsRef.current;
 
+      // When any Studio mode is open (fullscreen overlay), all canvas shortcuts are disabled
+      if (typeof document !== 'undefined' && document.querySelector('[data-foldder-studio-canvas]')) return;
+
       const target = e.target as HTMLElement;
       const typing =
         target.tagName === 'INPUT' ||
@@ -2088,6 +2093,7 @@ const SpacesContent = () => {
       if (e.code !== 'Space') return;
       if (e.repeat) return;
       if (typingTarget(e.target)) return;
+      if (typeof document !== 'undefined' && document.querySelector('[data-foldder-studio-canvas]')) return;
 
       e.preventDefault();
 
@@ -4286,7 +4292,7 @@ const SpacesContent = () => {
       >
       {/* Sidebar: solo tras autenticar (oculto en pantalla de acceso) */}
       {isAuthenticated && (
-        <div style={{ position: 'fixed', top: 0, left: 0, height: '100vh', zIndex: 10003 }}>
+        <div data-foldder-sidebar style={{ position: 'fixed', top: 0, left: 0, height: '100vh', zIndex: 10003 }}>
           <Sidebar
             windowMode={windowMode}
             onLibraryDragStart={handleLibraryDragStart}
@@ -4341,8 +4347,10 @@ const SpacesContent = () => {
           edges={flowEdges}
           onNodesChange={(changes) => {
             const nds = liveNodesRef.current;
+            const studioOpen = typeof document !== 'undefined' && !!document.querySelector('[data-foldder-studio-canvas]');
             const filtered = changes.filter((c) => {
               if (c.type !== "remove") return true;
+              if (studioOpen) return false;
               const id = (c as { id?: string }).id;
               if (!id) return true;
               const node = nds.find((n) => n.id === id);
@@ -4388,7 +4396,14 @@ const SpacesContent = () => {
               }, 80);
             }
           }}
-          onEdgesChange={onEdgesChange}
+          onEdgesChange={(changes) => {
+            if (typeof document !== 'undefined' && document.querySelector('[data-foldder-studio-canvas]')) {
+              const safe = changes.filter((c) => c.type !== 'remove');
+              if (safe.length > 0) onEdgesChange(safe);
+              return;
+            }
+            onEdgesChange(changes);
+          }}
           onConnect={onConnect}
           isValidConnection={isValidConnection}
            onDrop={onDrop}

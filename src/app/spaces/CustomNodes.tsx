@@ -42,6 +42,7 @@ import {
   EyeOff,
   Camera,
 } from 'lucide-react';
+import FreehandStudio from './FreehandStudio';
 import './spaces.css';
 import { FOLDDER_FIT_VIEW_EASE } from '@/lib/fit-view-ease';
 import { readResponseJson } from '@/lib/read-response-json';
@@ -705,7 +706,12 @@ export const ImageComposerNode = memo(({ id, data, selected }: NodeProps<any>) =
   };
 
   const [isStudioOpen, setIsStudioOpen] = useState(false);
-  
+
+  useEffect(() => {
+    if (isStudioOpen) document.body.classList.add('nb-studio-open');
+    else document.body.classList.remove('nb-studio-open');
+    return () => document.body.classList.remove('nb-studio-open');
+  }, [isStudioOpen]);
 
   // ── Internal layers stored in node data ──────────────────────────────
   const internalLayers: ComposerLayer[] = nodeData.layers ?? [];
@@ -6521,6 +6527,12 @@ export const PainterNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const [mode,       setMode]       = useState<'brush'|'eraser'>('brush');
   const [fullscreen, setFullscreen] = useState(false);
 
+  useEffect(() => {
+    if (fullscreen) document.body.classList.add('nb-studio-open');
+    else document.body.classList.remove('nb-studio-open');
+    return () => document.body.classList.remove('nb-studio-open');
+  }, [fullscreen]);
+
   // Keep refs in sync with state
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => {
@@ -7179,6 +7191,13 @@ export const BezierMaskNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const [invert, setInvert] = useState<boolean>(nodeData.invert || false);
   const [mode, setMode] = useState<'draw' | 'edit'>('draw');
   const [isStudioOpen, setIsStudioOpen] = useState(false);
+
+  useEffect(() => {
+    if (isStudioOpen) document.body.classList.add('nb-studio-open');
+    else document.body.classList.remove('nb-studio-open');
+    return () => document.body.classList.remove('nb-studio-open');
+  }, [isStudioOpen]);
+
   const [previewMode, setPreviewMode] = useState<'original' | 'mask' | 'cutout'>('cutout');
   
   // Interaction State
@@ -7700,6 +7719,141 @@ export const BezierMaskNode = memo(({ id, data, selected }: NodeProps<any>) => {
         </div>,
         document.body
       )}
+    </div>
+  );
+});
+
+// ── FREEHAND VECTOR EDITOR NODE ──────────────────────────────────────────
+
+export const FreehandNode = memo(({ id, data, selected }: NodeProps<any>) => {
+  const nodeData = data as BaseNodeData & { objects?: any[]; value?: string };
+  const nodes = useNodes();
+  const edges = useEdges();
+  const { setNodes } = useReactFlow();
+  const updateNodeInternals = useUpdateNodeInternals();
+  const [isStudioOpen, setIsStudioOpen] = useState(false);
+
+  const ALL_HANDLES = ['i0', 'i1', 'i2', 'i3', 'i4', 'i5', 'i6', 'i7'];
+
+  const connectedEdges = useMemo(
+    () =>
+      edges
+        .filter((e: any) => e.target === id)
+        .sort((a: any, b: any) => (a.targetHandle || '').localeCompare(b.targetHandle || '')),
+    [edges, id]
+  );
+
+  const connectedHandleIds = new Set(connectedEdges.map((e: any) => e.targetHandle));
+  const visibleCount = Math.min(Math.max(connectedEdges.length + 1, 1), ALL_HANDLES.length);
+
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [id, visibleCount, updateNodeInternals]);
+
+  const inputImages = useMemo(() => {
+    return connectedEdges
+      .map((edge: any) => {
+        const src = nodes.find((n: any) => n.id === edge.source);
+        return src?.data?.value as string | undefined;
+      })
+      .filter(Boolean) as string[];
+  }, [connectedEdges, nodes]);
+
+  const handleExport = useCallback(
+    (dataUrl: string) => {
+      setNodes((nds: any) =>
+        nds.map((n: any) => (n.id === id ? { ...n, data: { ...n.data, value: dataUrl } } : n))
+      );
+    },
+    [id, setNodes]
+  );
+
+  const handleUpdateObjects = useCallback(
+    (objects: any[]) => {
+      setNodes((nds: any) =>
+        nds.map((n: any) => (n.id === id ? { ...n, data: { ...n.data, objects } } : n))
+      );
+    },
+    [id, setNodes]
+  );
+
+  useEffect(() => {
+    if (isStudioOpen) {
+      document.body.classList.add('nb-studio-open');
+    } else {
+      document.body.classList.remove('nb-studio-open');
+    }
+    return () => document.body.classList.remove('nb-studio-open');
+  }, [isStudioOpen]);
+
+  return (
+    <div className="custom-node tool-node" style={{ minWidth: 240 }}>
+      <FoldderNodeResizer minWidth={240} minHeight={200} maxWidth={520} maxHeight={400} isVisible={selected} />
+      <NodeLabel id={id} label={nodeData.label} defaultLabel="Freehand" />
+
+      {ALL_HANDLES.map((hId, index) => {
+        const visible = index < visibleCount;
+        return (
+          <div
+            key={hId}
+            className="handle-wrapper handle-left"
+            style={{
+              top: `${((index + 1) / (ALL_HANDLES.length + 1)) * 100}%`,
+              opacity: visible ? 1 : 0,
+              pointerEvents: visible ? 'auto' : 'none',
+            }}
+          >
+            <FoldderDataHandle
+              type="target"
+              position={Position.Left}
+              id={hId}
+              dataType="image"
+              className={connectedHandleIds.has(hId) ? '' : 'opacity-40'}
+            />
+            <span className="handle-label" style={{ fontSize: 4 }}>
+              {connectedHandleIds.has(hId) ? `Img ${index + 1} ✓` : `Img ${index + 1}`}
+            </span>
+          </div>
+        );
+      })}
+
+      <div className="node-header">
+        <NodeIcon type="freehand" selected={selected} size={16} />
+        <FoldderNodeHeaderTitle introActive={!!(nodeData as any)._foldderCanvasIntro}>
+          Freehand
+        </FoldderNodeHeaderTitle>
+        <div className="node-badge">VECTOR</div>
+      </div>
+
+      <div className="node-content relative" style={{ minHeight: 120 }}>
+        {nodeData.value ? (
+          <img src={nodeData.value} alt="Freehand preview" className="w-full rounded-lg" style={{ maxHeight: 180, objectFit: 'contain' }} />
+        ) : (
+          <div className="flex flex-col items-center justify-center gap-2 py-6 opacity-40">
+            <Pencil size={28} className="text-pink-400" strokeWidth={1.5} />
+            <span className="text-[7px] font-black uppercase tracking-widest text-zinc-500">Open Studio to draw</span>
+          </div>
+        )}
+        <StudioModeCenterButton onClick={() => setIsStudioOpen(true)} />
+      </div>
+
+      <div className="handle-wrapper handle-right">
+        <span className="handle-label">Image</span>
+        <FoldderDataHandle type="source" position={Position.Right} id="image" dataType="image" />
+      </div>
+
+      {isStudioOpen &&
+        createPortal(
+          <FreehandStudio
+            nodeId={id}
+            inputImages={inputImages}
+            initialObjects={nodeData.objects || []}
+            onClose={() => setIsStudioOpen(false)}
+            onExport={handleExport}
+            onUpdateObjects={handleUpdateObjects}
+          />,
+          document.body
+        )}
     </div>
   );
 });

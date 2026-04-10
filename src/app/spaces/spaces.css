@@ -822,8 +822,9 @@
   to { transform: translateX(100%); }
 }
 
-/* Nano Banana Studio fullscreen: hide top HUD to avoid overlapping Studio header */
-body.nb-studio-open [data-foldder-top-hud] {
+/* Studio fullscreen: hide top HUD and sidebar */
+body.nb-studio-open [data-foldder-top-hud],
+body.nb-studio-open [data-foldder-sidebar] {
   display: none !important;
   visibility: hidden !important;
   pointer-events: none !important;

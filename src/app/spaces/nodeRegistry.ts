@@ -327,6 +327,21 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
       canvasH: 'number',
     }
   },
+  freehand: {
+    type: 'freehand',
+    label: 'Freehand',
+    description: 'Minimal vector editor with pen, shapes, and selection tools. Opens in fullscreen Studio mode. Accepts dynamic image inputs as placeable layers.',
+    inputs: [
+      { id: 'i-n', label: 'Image Input', type: 'image' as HandleType }
+    ],
+    outputs: [
+      { id: 'image', label: 'Image Out', type: 'image' as HandleType }
+    ],
+    dataSchema: {
+      objects: 'FreehandObject[] (vector objects on canvas)',
+      value: 'string (exported raster data URL)',
+    }
+  },
   canvasGroup: {
     type: 'canvasGroup',
     label: 'Canvas Group',

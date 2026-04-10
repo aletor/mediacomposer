@@ -28,7 +28,8 @@ export type FoldderIconKey =
   | 'painter'
   | 'text'
   | 'crop'
-  | 'mask';
+  | 'mask'
+  | 'freehand';
 
 type GlyphProps = {
   state?: FoldderNodeIconState;
@@ -367,6 +368,15 @@ export function FoldderMask({ state, className, size }: GlyphProps) {
   );
 }
 
+export function FoldderFreehand({ state, className, size }: GlyphProps) {
+  return (
+    <FoldderIcon state={state} className={className} size={size}>
+      <path d="M4 12.5 L6.5 4 L8 8.5 L10 3.5 L12 12.5" />
+      <path d="M5 10 Q8 6 11 10" opacity={0.35} />
+    </FoldderIcon>
+  );
+}
+
 /** Category colors — stroke-driven; no icon backgrounds */
 export const FOLDDER_ICON_COLORS: Record<FoldderIconKey, string> = {
   asset: '#22d3ee',
@@ -390,6 +400,7 @@ export const FOLDDER_ICON_COLORS: Record<FoldderIconKey, string> = {
   text: '#e9d5ff',
   crop: '#fde68a',
   mask: '#99f6e4',
+  freehand: '#f472b6',
 };
 
 export const FOLDDER_NODE_ICONS: Record<FoldderIconKey, React.FC<GlyphProps>> = {
@@ -414,6 +425,7 @@ export const FOLDDER_NODE_ICONS: Record<FoldderIconKey, React.FC<GlyphProps>> = 
   text: FoldderText,
   crop: FoldderCrop,
   mask: FoldderMask,
+  freehand: FoldderFreehand,
 };
 
 /** React Flow node `type` → icon grammar */
@@ -440,6 +452,7 @@ export const NODE_TYPE_TO_FOLDDER_ICON: Record<string, FoldderIconKey> = {
   crop: 'crop',
   bezierMask: 'mask',
   canvasGroup: 'layout',
+  freehand: 'freehand',
 };
 
 export function resolveFoldderNodeState(opts: {
