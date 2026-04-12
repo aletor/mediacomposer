@@ -59,7 +59,54 @@ export function estimateGeminiImageGenerationUsd(modelKey: string): number {
 /** Veo: coste orientativo por segundo de salida (sin breakdown de tokens en la API). */
 export const GEMINI_VEO_USD_PER_SECOND = 0.05;
 
+/** Seedance (Ark): orientativo por segundo de salida (la API no devuelve coste detallado). */
+export const SEEDANCE_USD_PER_SECOND = 0.04;
+
+/** Multiplicador por resolución Veo (720p < 1080p < 4K) para la estimación en UI. */
+export function veoResolutionMultiplier(resolution: string | undefined): number {
+  const r = (resolution || "1080p").toLowerCase();
+  if (r.includes("4k")) return 1.85;
+  if (r.includes("1080")) return 1.2;
+  return 1;
+}
+
+/** Ligera variación por ratio Seedance en la estimación de UI. */
+export function seedanceFormatMultiplier(videoFormat: string | undefined): number {
+  const f = (videoFormat || "16:9").toLowerCase();
+  if (f.includes("9:16")) return 1.08;
+  if (f.includes("1:1")) return 1.05;
+  return 1;
+}
+
 export function estimateGeminiVeoVideoUsd(durationSeconds: number): number {
   const d = Math.max(0, durationSeconds);
   return Math.round(d * GEMINI_VEO_USD_PER_SECOND * 1_000_000) / 1_000_000;
+}
+
+export function estimateSeedanceVideoUsd(durationSeconds: number): number {
+  const d = Math.max(0, durationSeconds);
+  return Math.round(d * SEEDANCE_USD_PER_SECOND * 1_000_000) / 1_000_000;
+}
+
+/** Estimación previa (UI) según modelo, resolución (Veo), ratio y duración. */
+export function estimateVideoGeneratorPreviewUsd(args: {
+  model: "veo31" | "seedance2";
+  resolution: string | undefined;
+  durationSec: number;
+  videoFormat: string | undefined;
+}): { usdPerSecond: number; totalUsd: number } {
+  const d = Math.max(0, args.durationSec);
+  if (args.model === "seedance2") {
+    const rate =
+      SEEDANCE_USD_PER_SECOND * seedanceFormatMultiplier(args.videoFormat);
+    return {
+      usdPerSecond: Math.round(rate * 1_000_000) / 1_000_000,
+      totalUsd: Math.round(d * rate * 1_000_000) / 1_000_000,
+    };
+  }
+  const rate = GEMINI_VEO_USD_PER_SECOND * veoResolutionMultiplier(args.resolution);
+  return {
+    usdPerSecond: Math.round(rate * 1_000_000) / 1_000_000,
+    totalUsd: Math.round(d * rate * 1_000_000) / 1_000_000,
+  };
 }

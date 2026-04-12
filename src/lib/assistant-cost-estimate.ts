@@ -23,9 +23,9 @@ const PAID_NODE_TYPES: Record<
   },
   geminiVideo: {
     id: "gemini-veo",
-    name: "Gemini · Veo (vídeo)",
+    name: "Video Generator (Veo / Seedance)",
     eurMin: 0.4,
-    eurMax: 2.0,
+    eurMax: 2.5,
   },
   backgroundRemover: {
     id: "replicate-bg",

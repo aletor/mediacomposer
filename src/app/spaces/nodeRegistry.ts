@@ -247,8 +247,8 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
 
   geminiVideo: {
     type: 'geminiVideo',
-    label: 'Gemini Video',
-    description: 'Generates high-fidelity videos using Veo 3.1 with first and last frame control.',
+    label: 'Video Generator',
+    description: 'Generates video with Gemini Veo 3.1 or Volcengine Seedance 2 (Ark); optional first/last frame and negative prompt.',
     inputs: [
       { id: 'firstFrame', label: 'First Frame', type: 'image' },
       { id: 'lastFrame', label: 'Last Frame', type: 'image' },
@@ -259,8 +259,10 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
       { id: 'video', label: 'Video Out', type: 'video' }
     ],
     dataSchema: {
-      resolution: '720p | 1080p | 4K',
-      duration: '4 | 5 | 6 | 8 (seconds)',
+      videoModel: 'veo31 | seedance2',
+      videoFormat: '16:9 | 9:16 | 1:1 (solo Seedance)',
+      resolution: '720p | 1080p | 4K (solo Veo)',
+      duration: 'Veo: 720p 4|6|8 s; 1080p y 4K fijan 8 s (API); Seedance: 2–12 s',
       audio: 'boolean',
       seed: 'number (optional, for reproducibility)',
       negativePrompt: 'string (things to avoid)',
@@ -377,7 +379,7 @@ export const ASSISTANT_NODE_DATA_HINTS: Record<string, string> = {
     "modelKey (flash31|flash25|pro3), aspect_ratio, resolution (1k|2k|4k), thinking (bool), value/s3Key (salida), label",
   grokProcessor: "duration (number, 5|10), resolution, aspect_ratio, value (salida vídeo URL), type ('video'), label",
   geminiVideo:
-    "resolution, duration (string '4'|'5'|'6'|'8'), audio (bool), seed, negativePrompt, animationPrompt, cameraPreset, value (salida vídeo URL), type ('video'), s3Key, label",
+    "videoModel (veo31|seedance2), videoFormat (16:9|9:16|1:1), resolution (720p|1080p|4K Veo), duration (s), audio (bool), seed, negativePrompt, animationPrompt, cameraPreset, value (salida vídeo URL), type ('video'), s3Key, label",
   enhancer: "value (texto mejorado), label",
   concatenator: "label; el texto combinado viene de las entradas conectadas",
   listado:

@@ -75,6 +75,7 @@ import {
   MAX_TOPBAR_PINS,
   TOPBAR_PINS_STORAGE_KEY,
   DEFAULT_TOPBAR_PIN_TYPES,
+  TOPBAR_PIN_ALLOWLIST,
 } from './TopbarPins';
 import {
   resolveHandleMetaForCanvasDrop,
@@ -85,8 +86,8 @@ import { matchesClearCanvasIntent } from '@/lib/clear-canvas-intent';
 import { matchesAddSpaceNodeIntent } from '@/lib/assistant-quick-intents';
 import { installAiFetchOverlay } from '@/lib/ai-request-overlay';
 import { readResponseJson } from '@/lib/read-response-json';
-import { hydrateSpacesMapWithFreshUrls, collectS3KeysFromNodeData } from '@/lib/s3-media-hydrate';
-import { deleteSupersededS3Key, fireAndForgetDeleteS3Keys } from '@/lib/s3-delete-client';
+import { hydrateSpacesMapWithFreshUrls } from '@/lib/s3-media-hydrate';
+import { deleteSupersededS3Key } from '@/lib/s3-delete-client';
 import {
   AI_JOB_COMPLETE_EVENT,
   AI_JOB_CANVAS_NODE_ID,
@@ -696,12 +697,9 @@ const SpacesContent = () => {
           next = [...DEFAULT_TOPBAR_PIN_TYPES];
         } else {
           next = parsed
-            .filter((t): t is string => typeof t === 'string' && Boolean(NODE_REGISTRY[t]))
+            .filter((t): t is string => typeof t === 'string' && TOPBAR_PIN_ALLOWLIST.has(t))
             .slice(0, MAX_TOPBAR_PINS);
           if (next.length === 0) next = [...DEFAULT_TOPBAR_PIN_TYPES];
-          else if (!next.includes('freehand') && next.length < MAX_TOPBAR_PINS) {
-            next = [...next, 'freehand'];
-          }
         }
       }
       setTopbarPinnedTypes(next);
@@ -772,7 +770,7 @@ const SpacesContent = () => {
       e.dataTransfer.getData('text/plain') ||
       libraryDragTypeRef.current ||
       '';
-    if (!NODE_REGISTRY[nodeType]) return;
+    if (!NODE_REGISTRY[nodeType] || !TOPBAR_PIN_ALLOWLIST.has(nodeType)) return;
     libraryTopbarDropSucceededRef.current = true;
     setTopbarPinnedTypes((prev) => {
       if (prev.includes(nodeType)) return prev;
@@ -1397,7 +1395,11 @@ const SpacesContent = () => {
       id: newId,
       type,
       position,
-      data: withFoldderCanvasIntro(type, { label: '', ...extraData }),
+      data: withFoldderCanvasIntro(type, {
+        ...defaultDataForCanvasDropNode(type),
+        label: '',
+        ...extraData,
+      }),
       ...(defaultStyleForType ? { style: defaultStyleForType } : {}),
     };
 
@@ -1458,7 +1460,11 @@ const SpacesContent = () => {
         id: newId,
         type: reactFlowType,
         position,
-        data: withFoldderCanvasIntro(reactFlowType, { value: '', label: `${reactFlowType} node` }),
+        data: withFoldderCanvasIntro(reactFlowType, {
+          ...defaultDataForCanvasDropNode(reactFlowType),
+          value: '',
+          label: `${reactFlowType} node`,
+        }),
         ...(pinStyle ? { style: pinStyle } : {}),
       };
       takeSnapshot();
@@ -2880,7 +2886,7 @@ const SpacesContent = () => {
       }
       if (Array.isArray(ui?.topbarPinnedTypes)) {
         const nextPins = ui.topbarPinnedTypes
-          .filter((t): t is string => typeof t === 'string' && Boolean(NODE_REGISTRY[t]))
+          .filter((t): t is string => typeof t === 'string' && TOPBAR_PIN_ALLOWLIST.has(t))
           .slice(0, MAX_TOPBAR_PINS);
         if (nextPins.length > 0) setTopbarPinnedTypes(nextPins);
       }
@@ -4295,16 +4301,8 @@ const SpacesContent = () => {
             });
             const removals = filtered.filter((c) => c.type === "remove");
             if (removals.length > 0) {
-              for (const c of removals) {
-                const rid = (c as { id?: string }).id;
-                if (!rid) continue;
-                const removed = nds.find((n) => n.id === rid);
-                const data = removed?.data as Record<string, unknown> | undefined;
-                if (data) {
-                  const keys = collectS3KeysFromNodeData(data);
-                  if (keys.length > 0) fireAndForgetDeleteS3Keys(keys);
-                }
-              }
+              // S3 objects are not deleted here so undo/history and version restore keep working.
+              // Orphans are removed when the whole project is deleted (api/spaces DELETE).
               takeSnapshot();
             }
             onNodesChange(filtered);

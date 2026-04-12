@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseGeminiUsageMetadata, recordApiUsage } from "@/lib/api-usage";
+import { parseReferenceImageForGemini } from "@/lib/parse-reference-image";
 import sharp from "sharp";
 
 // Cheapest Gemini model with vision capability (text output only)
@@ -10,38 +11,44 @@ interface AreaChange {
   description: string;
   posX?: number | null;
   posY?: number | null;
-  paintData?: string | null;         // data:image/png;base64,...
-  assignedColorHex?: string;         // e.g. "#ff0000"
-  referenceImageData?: string | null; // data URL of visual reference uploaded by user
-  /** Si true: el cambio afecta a toda la escena (sin máscara / sin trazo). */
+  bboxX1?: number | null;
+  bboxY1?: number | null;
+  bboxX2?: number | null;
+  bboxY2?: number | null;
+  areaPct?: number | null;
+  quadrant?: string | null;
+  paintData?: string | null;
+  assignedColorHex?: string;
+  referenceImageData?: string | null;
   isGlobal?: boolean;
 }
 
-async function parseImage(image: string): Promise<{ data: string; mimeType: string } | null> {
-  if (!image) return null;
-  if (image.startsWith("data:")) {
-    const [meta, data] = image.split(";base64,");
-    return { data, mimeType: meta.split(":")[1] };
+function buildSpatialDescription(c: AreaChange): string {
+  const parts: string[] = [];
+
+  if (c.quadrant) parts.push(c.quadrant);
+
+  if (c.posX != null && c.posY != null) {
+    parts.push(`centroide ${c.posX}% desde la izquierda, ${c.posY}% desde arriba`);
   }
-  if (image.startsWith("http")) {
-    try {
-      const res = await fetch(image, { headers: { "User-Agent": "Mozilla/5.0" } });
-      if (!res.ok) { console.warn("[analyze-areas] Failed to fetch image:", res.status); return null; }
-      const buffer = await res.arrayBuffer();
-      const headerMime = res.headers.get("content-type")?.split(";")[0]?.trim();
-      const mimeType =
-        headerMime ||
-        (image.toLowerCase().includes(".png") ? "image/png" : "image/jpeg");
-      return {
-        data: Buffer.from(buffer).toString("base64"),
-        mimeType,
-      };
-    } catch (e: any) {
-      console.warn("[analyze-areas] Error fetching image URL:", e.message);
-      return null;
+
+  if (c.bboxX1 != null && c.bboxY1 != null && c.bboxX2 != null && c.bboxY2 != null) {
+    parts.push(`bbox del ${c.bboxX1}%-${c.bboxX2}% horizontal, ${c.bboxY1}%-${c.bboxY2}% vertical`);
+  }
+
+  if (c.areaPct != null) {
+    if (c.areaPct < 0.15) {
+      parts.push(
+        "trazo mínimo; la forma y posición exactas son las del color en REF 2 (los % son orientativos)",
+      );
+    } else {
+      const sizeLabel =
+        c.areaPct < 3 ? "zona muy pequeña" : c.areaPct < 10 ? "zona pequeña" : c.areaPct < 30 ? "zona mediana" : "zona amplia";
+      parts.push(`${sizeLabel}, ~${c.areaPct}% de la imagen`);
     }
   }
-  return null;
+
+  return parts.length > 0 ? ` (${parts.join('; ')})` : '';
 }
 
 // Server-side composite using sharp: base image + colored paint stroke overlays
@@ -131,7 +138,7 @@ export async function POST(req: NextRequest) {
     const hasZones = zoneChanges.length > 0;
 
     // 1. Base image
-    const parsedBase = baseImage ? await parseImage(baseImage) : null;
+    const parsedBase = baseImage ? await parseReferenceImageForGemini(baseImage) : null;
     if (parsedBase) {
       parts.push({ inline_data: { mime_type: parsedBase.mimeType, data: parsedBase.data } });
     }
@@ -154,7 +161,7 @@ export async function POST(req: NextRequest) {
 
     // Fallback si hay zonas pero sharp falló: mapa de color del cliente (no duplicar base en modo solo-global)
     if (!useMarked && hasZones && colorMapImage) {
-      const parsedMap = await parseImage(colorMapImage);
+      const parsedMap = await parseReferenceImageForGemini(colorMapImage);
       if (parsedMap) {
         parts.push({ inline_data: { mime_type: parsedMap.mimeType, data: parsedMap.data } });
         console.log("[analyze-areas] Using color map fallback");
@@ -189,16 +196,21 @@ Devuelve SOLO el prompt, sin texto adicional.`;
           if (c.isGlobal) {
             return `- CAMBIO GLOBAL (toda la escena): ${c.description.trim()}`;
           }
-          const pos =
-            c.posX != null && c.posY != null
-              ? ` (posición en el encuadre: ${c.posX}% desde el borde IZQUIERDO de la imagen, ${c.posY}% desde arriba; usar esto para izq./der. del PLANO, no anatomía del sujeto)`
-              : "";
+          const spatial = buildSpatialDescription(c);
           const refNote = c.referenceImageData
             ? ` [TIENE REFERENCIA VISUAL: celda ${c.color.toUpperCase()} en la IMAGEN 3 (grid de referencias)]`
             : "";
-          return `- Área / trazo ${c.color}${pos}: ${c.description}${refNote}`;
+          return `- Área / trazo ${c.color}${spatial}: ${c.description}${refNote}`;
         })
         .join("\n");
+
+      const zoneColorNames = zoneChanges.map((c) => c.color).join(", ");
+      const zoneIntegrityBlock =
+        zoneChanges.length > 0
+          ? `
+
+OBLIGATORIO — INTEGRIDAD DE ZONAS: En «Cambios solicitados» hay exactamente ${zoneChanges.length} zona(s) con trazo (${zoneColorNames}). Tu prompt final DEBE incluir un párrafo o bloque explícito por CADA color de esa lista (mismo nombre de color que en la lista). NO omitas ninguna zona aunque el texto sea largo; NO resumas en una sola frase varias zonas. Si falta una zona en el texto, la edición fallará en el espacio (p. ej. un objeto aparecerá donde no toca).`
+          : "";
 
       const imagenDesc = useMarked
         ? "- IMAGEN 2: la imagen original con trazos de pintura en colores sólidos superpuestos. Los trazos indican EXACTAMENTE los elementos que el usuario quiere modificar."
@@ -231,25 +243,38 @@ ${imageList}
 
 Cambios solicitados:
 ${changeList}
+${zoneIntegrityBlock}
 
 PRIORIDAD (zonas con trazo / mapa de color):
-- La IMAGEN 2 es la fuente de verdad de DÓNDE editar. El modelo de imagen final debe usar REF 2 para alinear el cambio en el espacio; ninguna frase puede contradecir la posición del trazo o mancha de color.
-- Izquierda y derecha: en fotos y retratos usa SIEMPRE el marco de la imagen (vista de frente): "lado izquierdo del encuadre", "tercio derecho del cuadro", o los porcentajes de la lista. NO uses "ojo izquierdo/derecho del sujeto" ni anatomía ambigua si choca con el trazo. Si el usuario escribió "ojo izquierdo" pero el trazo cae en el otro lado del rostro, prioriza el TRAZO y describe la zona como posición en el encuadre (p. ej. "el ojo que queda en el lado izquierdo de la foto").
+- REF 2 define DÓNDE editar. Los porcentajes y cuadrantes son APOYO; si discrepan con lo visible en el trazo de ese color en REF 2, prevalece REF 2 (forma y posición del color). El modelo de imagen no debe contradecir el trazo.
+- Izquierda y derecha: en fotos y retratos usa SIEMPRE el marco de la imagen (vista de frente): "lado izquierdo del encuadre", "tercio derecho del cuadro". NO uses "ojo izquierdo/derecho del sujeto" ni anatomía ambigua si choca con el trazo. Si el usuario escribió "ojo izquierdo" pero el trazo cae en el otro lado del rostro, prioriza el TRAZO y describe la zona como posición en el encuadre.
+
+DATOS ESPACIALES que recibes por zona (úsalos TODOS en el prompt de salida para máxima precisión):
+- **cuadrante**: sector semántico de la imagen (p.ej. "tercio superior-izquierdo", "centro de la imagen").
+- **centroide**: punto central del trazo en % desde izquierda y desde arriba.
+- **bbox**: rectángulo envolvente del trazo (rango horizontal y vertical en %).
+- **tamaño relativo**: superficie pintada como % del total de la imagen + etiqueta (muy pequeña / pequeña / mediana / amplia).
 
 Tu tarea:
-1. Para cada cambio que NO sea global, identifica el elemento bajo el trazo ${useMarked ? "en la IMAGEN 2" : "del mapa en la IMAGEN 2"} y redacta la instrucción enlazando "zona del color [nombre] en REF 2" + posición en el plano (usa los % de la lista cuando existan).
+1. Para cada cambio que NO sea global, identifica el elemento bajo el trazo ${useMarked ? "en la IMAGEN 2" : "del mapa en la IMAGEN 2"} y redacta la instrucción incluyendo:
+   a) "En la zona del trazo [color] en REF 2"
+   b) cuadrante ("ubicada en el tercio …")
+   c) centroide y bbox ("centroide ~X% desde la izquierda, ~Y% desde arriba; abarcando del X1%-X2% horizontal, Y1%-Y2% vertical")
+   d) tamaño ("zona pequeña / mediana / amplia, ~N% de la imagen")
+   e) la acción a realizar.
 2. Para cada CAMBIO GLOBAL, integra la instrucción como afectación a toda la escena (luz, ambiente, hora del día), sin limitarla a una máscara.
 3. En zonas, sé específico respecto al PLANO (encuadre), no solo anatomía del personaje.
 4. Si un cambio tiene REFERENCIA VISUAL (nota [TIENE REFERENCIA VISUAL] en la lista), añade: "siguiendo el estilo visual de la celda [COLOR] de la REFERENCIA 3".
 5. Genera el prompt con este formato exacto:
 
 REFERENCIA 1: imagen base. Mantén todo lo que no se indica cambiar, conservando composición donde aplique.
-REFERENCIA 2: zonas marcadas en color — respetar la posición espacial de cada trazo al aplicar el cambio.${referenceOutputLine}
+REFERENCIA 2: zonas marcadas en color (trazos reales del usuario) — respetar la posición, forma y extensión espacial de cada trazo al aplicar el cambio.${referenceOutputLine}
 
-[Para zonas: primero ancla: "En la zona del trazo [color] en REF 2 (posición en el encuadre / % de la lista)" y luego la acción. Si el lenguaje natural del usuario y el trazo discrepan en izquierda/derecha, manda la versión alineada al trazo.]
+[Para zonas: ancla con cuadrante + centroide + bbox + tamaño + acción. Si el lenguaje natural del usuario y el trazo discrepan en izquierda/derecha, manda la versión alineada al trazo.]
 [Para globales: párrafos sobre iluminación/atmósfera de toda la escena.]
 
-CRÍTICO: El trazo señala el sitio exacto. Si descripción y trazo discrepan, gana el trazo y el encuadre.
+CRÍTICO: El trazo señala el sitio exacto y su extensión. Si descripción y trazo discrepan, gana el trazo y el encuadre. Incluye SIEMPRE cuadrante, centroide, bbox y tamaño en cada instrucción de zona.
+ANTES DE ENVIAR: cuenta las zonas con trazo en tu respuesta; deben ser exactamente ${zoneChanges.length} (una por color: ${zoneColorNames || "N/A"}).
 
 Devuelve SOLO el prompt, sin texto adicional.`;
     }

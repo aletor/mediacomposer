@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { recordApiUsage } from "@/lib/api-usage";
-import { estimateGeminiVeoVideoUsd } from "@/lib/pricing-config";
+import { estimateGeminiVeoVideoUsd, veoResolutionMultiplier } from "@/lib/pricing-config";
 import { uploadToS3, getPresignedUrl } from "@/lib/s3-utils";
+import {
+  collectAllReferenceImageUrlsOrdered,
+  parseVideoRefSlots,
+} from "@/lib/video-generator-studio";
 import crypto from "crypto";
 
 /** Vercel / hosting: permite polling largo (Veo suele tardar minutos). Ajusta según tu plan. */
@@ -23,18 +27,21 @@ function extractVeoVideoUri(pollData: Record<string, unknown>): string {
 export async function POST(req: NextRequest) {
   console.log("[Gemini Video] Request received");
   try {
-    const { 
-      prompt, 
-      firstFrame, 
-      lastFrame, 
-      resolution, 
-      durationSeconds, 
+    const body = await req.json();
+    const {
+      prompt,
+      firstFrame,
+      lastFrame,
+      resolution,
+      durationSeconds,
       audio,
       seed,
       negativePrompt,
       animationPrompt,
-      cameraPreset
-    } = await req.json();
+      cameraPreset,
+      aspectRatio,
+      videoRefSlots,
+    } = body as Record<string, unknown>;
 
     const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 
@@ -80,8 +87,16 @@ export async function POST(req: NextRequest) {
       }
     };
 
-    await processImage(firstFrame, "first_frame");
-    await processImage(lastFrame, "last_frame");
+    const orderedImages = collectAllReferenceImageUrlsOrdered({
+      firstFrame: typeof firstFrame === "string" ? firstFrame : null,
+      lastFrame: typeof lastFrame === "string" ? lastFrame : null,
+      extraSlots: parseVideoRefSlots(videoRefSlots),
+    });
+    for (let i = 0; i < orderedImages.length; i++) {
+      const tag =
+        i === 0 ? "first_frame" : i === 1 ? "last_frame" : `reference_${i}`;
+      await processImage(orderedImages[i], tag);
+    }
 
     // Construct Enhanced Prompt
     let finalPrompt = prompt;
@@ -89,7 +104,29 @@ export async function POST(req: NextRequest) {
     if (cameraPreset) finalPrompt += `. Camera motion: ${cameraPreset}`;
     if (negativePrompt) finalPrompt += `. Negative prompt: avoid ${negativePrompt}`;
 
-    const dur = Number(durationSeconds);
+    const rawDur = Number(durationSeconds);
+    /** Veo 3.1: duraciones habituales 4 / 6 / 8 s. */
+    const clampedDur =
+      !Number.isFinite(rawDur) || rawDur <= 0
+        ? 8
+        : rawDur < 5
+          ? 4
+          : rawDur < 7
+            ? 6
+            : 8;
+    const dur = clampedDur;
+
+    const ar =
+      typeof aspectRatio === "string" && aspectRatio.trim() === "9:16"
+        ? "9:16"
+        : "16:9";
+
+    const resStr = (typeof resolution === "string" ? resolution : "1080p") || "1080p";
+    const resLower = resStr.toLowerCase();
+    /** Veo: la API exige 8 s para 1080p y 4K (rechaza 4/6 s). 720p admite 4/6/8. */
+    const veoNeedsEight =
+      resLower.includes("1080") || resLower.includes("4k");
+    const effectiveDur = veoNeedsEight ? 8 : dur;
 
     const payload = {
       instances: [{
@@ -98,9 +135,9 @@ export async function POST(req: NextRequest) {
       }],
       parameters: {
         sampleCount: 1,
-        aspectRatio: "16:9",
-        resolution: resolution || "1080p",
-        ...(dur > 0 ? { durationSeconds: dur } : {}),
+        aspectRatio: ar,
+        resolution: resStr,
+        ...(effectiveDur > 0 ? { durationSeconds: effectiveDur } : {}),
         ...(audio === true ? { generateAudio: true } : {}),
         seed: seed !== undefined ? Number(seed) : undefined
       }
@@ -182,7 +219,7 @@ export async function POST(req: NextRequest) {
     const key = await uploadToS3(filename, videoBuffer, "video/mp4");
     const url = await getPresignedUrl(key);
 
-    const costDur = dur > 0 ? dur : 8;
+    const costDur = effectiveDur > 0 ? effectiveDur : 8;
     await recordApiUsage({
       provider: "gemini",
       serviceId: "gemini-veo",
@@ -191,7 +228,12 @@ export async function POST(req: NextRequest) {
       inputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
-      costUsd: estimateGeminiVeoVideoUsd(costDur),
+      costUsd:
+        Math.round(
+          estimateGeminiVeoVideoUsd(costDur) *
+            veoResolutionMultiplier(resStr) *
+            1_000_000,
+        ) / 1_000_000,
       note: "Veo vídeo (coste orientativo por segundo)",
     });
 

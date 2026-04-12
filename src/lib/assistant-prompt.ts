@@ -67,7 +67,7 @@ ${dataDigest}
 - Exportar PNG/JPG → imageExport.
 - Prompt de texto → promptInput (data.value = texto; data.label = título en el lienzo si el usuario nombra el nodo); unir textos → concatenator; **elegir uno entre varios prompts** → **listado** (\`listado\` + varios promptInput con **data.value** = cada opción; **data.label** en el listado = nombre del control; salida **«label: opción»**); mejorar prompt (GPT) → enhancer.
 - Imagen IA (Nano Banana / Gemini image) → nanoBanana + promptInput (prompt handle id "prompt"); refs opcionales image, image2, image3, image4.
-- Vídeo IA (Veo) → geminiVideo: prompts via promptInput; optional firstFrame/lastFrame from images (handles firstFrame, lastFrame).
+- Vídeo IA (Video Generator: Veo 3.1 o Seedance 2) → geminiVideo: prompts via promptInput; optional firstFrame/lastFrame from images (handles firstFrame, lastFrame); data.videoModel veo31 | seedance2.
 - Vídeo Grok Imagine → grokProcessor: connect prompt (required), optional video input for video-to-video (handle "video").
 - Describir imagen → mediaDescriber (image in).
 - Pintar / dibujar → painter; recortar encuadre → crop; texto como imagen → textOverlay.
@@ -164,11 +164,11 @@ Example: selector "color de ojos" con valores típicos verdes, azules, marrones,
   ]
 }
 
-### E — Veo (geminiVideo) + prompt
+### E — Video Generator / Veo / Seedance (geminiVideo) + prompt
 {
   "nodes": [
     { "id": "p1", "type": "promptInput", "data": { "value": "<VIDEO_PROMPT>" }, "position": { "x": 0, "y": 0 } },
-    { "id": "gv", "type": "geminiVideo", "data": { "resolution": "1080p", "duration": 5 }, "position": { "x": 800, "y": 0 } }
+    { "id": "gv", "type": "geminiVideo", "data": { "videoModel": "veo31", "videoFormat": "16:9", "resolution": "1080p", "duration": "8" }, "position": { "x": 800, "y": 0 } }
   ],
   "edges": [
     { "id": "e1", "source": "p1", "target": "gv", "sourceHandle": "prompt", "targetHandle": "prompt" }

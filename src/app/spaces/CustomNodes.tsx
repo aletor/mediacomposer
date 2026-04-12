@@ -1,7 +1,7 @@
 "use client";
 
 import React, { memo, useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef, type ComponentProps } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { Position, NodeProps, BaseEdge, EdgeLabelRenderer, getBezierPath, EdgeProps, useReactFlow, useUpdateNodeInternals, useNodes, useEdges, NodeResizer, useNodeId, type Node } from '@xyflow/react';
 import { 
   Video, 
@@ -41,6 +41,30 @@ import {
   Trash2,
   EyeOff,
   Camera,
+  Upload,
+  BookOpen,
+  FileText,
+  Link2,
+  Sun,
+  Palette,
+  Boxes,
+  History,
+  RectangleHorizontal,
+  Clock,
+  DollarSign,
+  Ban,
+  Move,
+  ArrowRightCircle,
+  ArrowUpFromLine,
+  ZoomIn,
+  Plane,
+  Droplets,
+  Wind,
+  Hammer,
+  LayoutTemplate,
+  CircleDot,
+  Film,
+  Cpu,
 } from 'lucide-react';
 import FreehandStudio from './FreehandStudio';
 
@@ -76,17 +100,18 @@ function solidColorToPngDataUrl(hex: string): string {
 import './spaces.css';
 import { FOLDDER_FIT_VIEW_EASE } from '@/lib/fit-view-ease';
 import { readResponseJson } from '@/lib/read-response-json';
+import { estimateVideoGeneratorPreviewUsd } from '@/lib/pricing-config';
 import { runAiJobWithNotification } from '@/lib/ai-job-notifications';
 import {
   aiHudNanoBananaJobStart,
   aiHudNanoBananaJobProgress,
   aiHudNanoBananaJobEnd,
   getAiHudNanoBananaJobProgressForNode,
-  subscribeAiHudGenerationProgress,
 } from '@/lib/ai-hud-generation-progress';
 import { geminiGenerateWithServerProgress } from '@/lib/gemini-generate-stream-client';
 import { isFoldderMediaPreviewAutoFitSuppressed } from '@/lib/media-preview-fit-suppress';
 import { deleteSupersededS3Key } from '@/lib/s3-delete-client';
+import { usePreventBrowserPinchZoom } from '@/lib/use-prevent-browser-pinch-zoom';
 import { NODE_REGISTRY } from './nodeRegistry';
 import { useRegisterAssistantNodeRun } from './use-assistant-node-run';
 import { DEFAULT_EDGE_COLOR, FOLDDER_LOGO_BLUE, HANDLE_COLORS } from './handle-type-colors';
@@ -97,7 +122,28 @@ import {
   FOLDDER_INTERNAL_CATEGORY_TO_ICON,
   type FoldderIconKey,
 } from './foldder-icons';
-import { resolvePromptValueFromEdgeSource } from './canvas-group-logic';
+import { applyPromptValueToEdgeSource, resolvePromptValueFromEdgeSource } from './canvas-group-logic';
+import {
+  buildDirectorEnhancementSuffix,
+  buildPhysicsFlagsFromNodeData,
+  countReferenceFiles,
+  DIRECTOR_PROMPT_TEMPLATE_EN,
+  estimatedApiImageCount,
+  mergeBasePromptWithDirectorBlock,
+  parseVideoRefSlots,
+  refTag,
+  SEEDANCE_CAMERA_QUICK_INSERTS,
+  SEEDANCE_PROMPT_GUIDE_ES,
+  SEEDANCE_REF_LIMITS,
+  VIDEO_LIGHTING_PRESETS,
+  VIDEO_PHYSICS_OPTIONS,
+  VIDEO_VISUAL_STYLE_PRESETS,
+  type VideoRefSlotAudioKey,
+  type VideoRefSlotImageKey,
+  type VideoRefSlotKey,
+  type VideoRefSlotVideoKey,
+  type VideoRefSlotsState,
+} from '@/lib/video-generator-studio';
 import {
   FoldderDataHandle,
   foldderDataTypeFromHandleClass,
@@ -211,6 +257,40 @@ function NanoBananaStudioModeButton({
           </span>
           <span className="text-center text-[10px] font-semibold uppercase leading-tight tracking-wide text-zinc-500">
             y abre Studio
+          </span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Media Input: mismo patrón que Studio Mode — hover sobre el preview para elegir otro archivo (misma lógica que upload inicial). */
+function MediaInputChangeMediaButton({
+  onClick,
+  disabled,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="pointer-events-none absolute inset-0 z-[20] overflow-hidden opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+      <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-2">
+        <button
+          type="button"
+          disabled={disabled}
+          title="Subir otro archivo y reemplazar el actual"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!disabled) onClick();
+          }}
+          className="pointer-events-auto nodrag flex max-w-[min(100%,240px)] flex-col items-center gap-1.5 rounded-2xl border border-white/30 bg-white/[0.12] px-6 py-3.5 shadow-xl backdrop-blur-xl transition-all duration-300 ease-out hover:scale-[1.03] hover:bg-white/[0.22] hover:shadow-2xl disabled:pointer-events-none disabled:opacity-35"
+        >
+          <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-400">
+            Change
+          </span>
+          <span className="flex items-center gap-2 font-mono text-[17px] font-black uppercase tracking-wide text-zinc-50">
+            <Upload size={22} strokeWidth={2.5} className="shrink-0 text-violet-200" />
+            Media
           </span>
         </button>
       </div>
@@ -2311,6 +2391,18 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
     }
   };
 
+  /** Misma acción que «subir» inicial: abrir selector y dejar que onChange → handleFileUpload. */
+  const triggerReplaceFile = useCallback(() => {
+    const el = fileInputRef.current;
+    if (!el) return;
+    try {
+      el.value = '';
+    } catch {
+      /* ignore */
+    }
+    el.click();
+  }, []);
+
   const mediaIconKey = (): FoldderIconKey => {
     switch (nodeData.type) {
       case 'image': return 'asset';
@@ -2337,6 +2429,13 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   const hasMedia = !!nodeData.value;
   const isVisual = nodeData.type === 'image' || nodeData.type === 'video';
+  /** Preview: vídeo 16:9; imagen conserva ratio dentro del ancho del nodo y tope de alto (cabecera + resizer ~520px). */
+  const mediaPreviewFrameClass =
+    hasMedia && nodeData.type === 'video'
+      ? 'aspect-video'
+      : hasMedia && nodeData.type === 'image'
+        ? 'flex min-h-[160px] max-h-[min(440px,58vh)] items-center justify-center'
+        : 'flex min-h-[160px] items-center justify-center';
 
   return (
     <div
@@ -2365,19 +2464,25 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
       {/* Full-bleed drop zone / preview */}
       <div
-        className={`relative w-full ${hasMedia && isVisual ? 'aspect-video' : 'min-h-[160px] flex items-center justify-center'} bg-zinc-900 cursor-pointer transition-all overflow-hidden`}
+        className={`group relative w-full ${mediaPreviewFrameClass} overflow-hidden bg-zinc-900 ${hasMedia ? 'cursor-default' : 'cursor-pointer'} transition-all`}
         style={{ outline: isDragOver ? `2px dashed ${FOLDDER_LOGO_BLUE}` : 'none', outlineOffset: '-2px' }}
         onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
         onDragLeave={() => setIsDragOver(false)}
         onDrop={(e) => { e.preventDefault(); setIsDragOver(false); const file = e.dataTransfer.files[0]; if (file) handleFileUpload(file); }}
         onClick={() => !hasMedia && fileInputRef.current?.click()}
       >
+        {/* sr-only: no usar display:none — en varios navegadores el .click() programático no abre el diálogo */}
         <input
           ref={fileInputRef}
           type="file"
           accept="video/*,image/*,audio/*,.pdf,.txt"
-          className="hidden"
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileUpload(f); }}
+          className="sr-only"
+          aria-hidden
+          tabIndex={-1}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void handleFileUpload(f);
+          }}
         />
 
         {/* Preview */}
@@ -2401,7 +2506,7 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
               className="nodrag mt-1 rounded-lg border border-white/20 bg-white/10 px-3 py-1.5 text-[9px] font-black uppercase tracking-widest text-white hover:bg-white/20"
               onClick={(e) => {
                 e.stopPropagation();
-                fileInputRef.current?.click();
+                triggerReplaceFile();
               }}
             >
               Reintentar
@@ -2457,7 +2562,7 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
         ) : hasMedia && nodeData.type === 'image' ? (
           <img
             src={nodeData.value}
-            className="w-full h-full object-cover"
+            className="mx-auto block h-auto w-auto max-h-[min(440px,58vh)] max-w-full object-contain"
             alt="Preview"
             onLoad={() => scheduleFitViewportToThisNode()}
           />
@@ -2515,7 +2620,7 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
         {/* Fullscreen button top-right */}
         {hasMedia && isVisual && (
           <button
-            className="absolute top-2 right-2 w-7 h-7 rounded-full flex items-center justify-center transition-all hover:scale-110 nodrag"
+            className="absolute top-2 right-2 z-[21] w-7 h-7 rounded-full flex items-center justify-center transition-all hover:scale-110 nodrag"
             style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(6px)' }}
             onClick={(e) => { e.stopPropagation(); setShowFullSize(true); }}
             title="Ver tamaño completo"
@@ -2524,16 +2629,22 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
           </button>
         )}
 
-        {/* Replace hint when has media */}
-        {hasMedia && !isDragOver && (
-          <button
-            className="absolute bottom-8 right-2 w-6 h-6 rounded-full flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity nodrag"
-            style={{ background: 'rgba(0,0,0,0.55)' }}
-            onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
-            title="Reemplazar archivo"
-          >
-            <FilePlus size={10} className="text-white/70" />
-          </button>
+        {hasMedia && !isUploading && (
+          <>
+            <MediaInputChangeMediaButton disabled={isUploadingLocal} onClick={triggerReplaceFile} />
+            <button
+              type="button"
+              className="absolute bottom-2 right-2 z-[22] flex h-8 w-8 items-center justify-center rounded-full nodrag transition-opacity hover:opacity-100"
+              style={{ background: 'rgba(0,0,0,0.6)' }}
+              title="Reemplazar archivo"
+              onClick={(e) => {
+                e.stopPropagation();
+                triggerReplaceFile();
+              }}
+            >
+              <FilePlus size={14} className="text-white/90" />
+            </button>
+          </>
         )}
       </div>
 
@@ -2720,15 +2831,24 @@ export const ConcatenatorNode = memo(({ id, data, selected }: NodeProps<any>) =>
         </FoldderNodeHeaderTitle>
         <div className="node-badge">UTILITY</div>
       </div>
-      <div className="node-content">
-        <div className="p-3 bg-slate-50/50 rounded-lg text-[10px] text-gray-400 font-mono italic min-h-[50px] max-h-[150px] overflow-y-auto">
-          {nodeData.value || 'Connect prompts to combine them...'}
+      <div className="node-content flex min-w-0 flex-col gap-3 px-3 pb-3 pt-2">
+        <div className="min-w-0">
+          <span className="node-label">Salida concatenada</span>
+          <div className="max-h-[180px] min-h-[50px] min-w-0 w-full max-w-full overflow-y-auto break-words whitespace-pre-wrap rounded-xl border border-slate-200/60 bg-slate-50/50 p-3 shadow-inner">
+            {nodeData.value?.trim() ? (
+              <span className="font-mono text-[10px] leading-relaxed text-slate-900">{nodeData.value}</span>
+            ) : (
+              <span className="text-[10px] italic text-slate-500">
+                Conecta prompts a la izquierda para combinarlos…
+              </span>
+            )}
+          </div>
         </div>
-        <div className="mt-2 text-[8px] text-gray-600 uppercase font-bold tracking-tighter">
-          {connectedEdges.length} Inputs active
+        <div className="text-[8px] font-bold uppercase tracking-tighter text-slate-500">
+          {connectedEdges.length} inputs activos
         </div>
       </div>
-      
+
       <div className="handle-wrapper handle-right">
         <span className="handle-label">Result</span>
         <FoldderDataHandle type="source" position={Position.Right} id="prompt" dataType="prompt" />
@@ -3005,12 +3125,19 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
         <div className="node-badge">UTILITY</div>
       </div>
 
-      <div className="node-content flex min-w-0 flex-col gap-2">
-        <div className="min-w-0 w-full max-w-full p-3 bg-slate-50/50 rounded-lg text-[10px] text-gray-400 font-mono italic min-h-[50px] max-h-[150px] overflow-y-auto break-words whitespace-pre-wrap">
-          {concatenated || 'Connect prompts to combine them…'}
+      <div className="node-content flex min-w-0 flex-col gap-3 px-3 pb-3 pt-2">
+        <div className="min-w-0">
+          <span className="node-label">Entrada combinada</span>
+          <div className="max-h-[150px] min-h-[50px] min-w-0 w-full max-w-full overflow-y-auto break-words whitespace-pre-wrap rounded-xl border border-slate-200/60 bg-slate-50/50 p-3 shadow-inner">
+            {concatenated ? (
+              <span className="font-mono text-[10px] leading-relaxed text-slate-800">{concatenated}</span>
+            ) : (
+              <span className="text-[10px] italic text-slate-500">Conecta prompts a la izquierda para combinarlos…</span>
+            )}
+          </div>
         </div>
-        <div className="text-[8px] text-gray-600 uppercase font-bold tracking-tighter">
-          {connectedEdges.length} Inputs active
+        <div className="text-[8px] font-bold uppercase tracking-tighter text-slate-500">
+          {connectedEdges.length} inputs activos
         </div>
 
         <button type="button" className="execute-btn w-full shrink-0" onClick={handleEnhance} disabled={loading}>
@@ -3023,8 +3150,15 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
           )}
         </button>
 
-        <div className="min-w-0 w-full max-w-full p-3 bg-slate-50/50 rounded-lg text-[10px] text-gray-400 font-mono italic min-h-[50px] max-h-[180px] overflow-y-auto break-words whitespace-pre-wrap">
-          {nodeData.value || 'Enhanced prompt appears here…'}
+        <div className="min-w-0">
+          <span className="node-label">Salida mejorada</span>
+          <div className="max-h-[180px] min-h-[50px] min-w-0 w-full max-w-full overflow-y-auto break-words whitespace-pre-wrap rounded-xl border border-slate-200/60 bg-slate-50/50 p-3 shadow-inner">
+            {nodeData.value ? (
+              <span className="font-mono text-[10px] leading-relaxed text-slate-800">{String(nodeData.value)}</span>
+            ) : (
+              <span className="text-[10px] italic text-slate-500">El prompt mejorado aparecerá aquí…</span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -3610,6 +3744,8 @@ const NanoBananaStudio = memo(({
 
   // ── Canvas size ─────────────────────────────────────────────────────────
   const containerRef = useRef<HTMLDivElement>(null);
+  /** Pinch/trackpad zoom must not change browser zoom; only this viewer (same pattern as FreehandStudio). */
+  usePreventBrowserPinchZoom(containerRef);
   const imgRef = useRef<HTMLImageElement>(null);
   // Natural image dimensions (resolution for the color map canvas)
   const [imgNat, setImgNat] = useState({ w: 1280, h: 720 });
@@ -3692,6 +3828,7 @@ const NanoBananaStudio = memo(({
     const maskImages = changes.map(c => c.paintData).filter(Boolean) as string[];
     const refImages = [...(imageToSend ? [imageToSend] : []), ...maskImages];
 
+    let genFinishedOk = false;
     try {
       const ok = await runAiJobWithNotification({ nodeId, label: 'Nano Banana Studio' }, async () => {
         const json = await geminiGenerateWithServerProgress(
@@ -3720,15 +3857,21 @@ const NanoBananaStudio = memo(({
         setCurrentImage(out);
         setGeneratedOnce(true);
         setReSendGenerated(true);
-        setGenStatus('success');
         onGenerated(out, typeof json.key === 'string' ? json.key : undefined);
+        genFinishedOk = true;
       });
-      if (ok) setProgress(100);
-      else setGenStatus('error');
+      if (!ok) setGenStatus('error');
     } catch (e: any) {
       console.error('[NanoBananaStudio] onGenerate:', e);
       setGenStatus('error');
     } finally {
+      if (genFinishedOk) {
+        flushSync(() => {
+          setProgress(100);
+          setGenStatus('success');
+          aiHudNanoBananaJobProgress(nodeId, 100);
+        });
+      }
       aiHudNanoBananaJobEnd(nodeId);
       setTimeout(() => setProgress(0), 1000);
     }
@@ -3820,59 +3963,29 @@ const NanoBananaStudio = memo(({
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, W, H);
 
-    // For each change with paintData, blit it onto a temp canvas, detect painted bounds,
-    // then fill that bounding region with the assigned color on our offscreen canvas.
+    // Render actual user strokes (tinted in assigned color) instead of abstracted ellipses.
     for (const change of changes) {
       if (!change.paintData) continue;
       await new Promise<void>(resolve => {
         const img = new Image();
         img.onload = () => {
-          // Draw into temp canvas to read pixel data
           const tmp = document.createElement('canvas');
-          tmp.width  = W;
-          tmp.height = H;
+          tmp.width = W; tmp.height = H;
           const tc = tmp.getContext('2d')!;
           tc.drawImage(img, 0, 0, W, H);
-          const pd = tc.getImageData(0, 0, W, H);
-
-          // Find bounding box of non-transparent pixels
-          let minX = W, minY = H, maxX = 0, maxY = 0, found = false;
-          for (let y = 0; y < H; y++) {
-            for (let x = 0; x < W; x++) {
-              const a = pd.data[(y * W + x) * 4 + 3];
-              if (a > 30) {
-                if (x < minX) minX = x;
-                if (y < minY) minY = y;
-                if (x > maxX) maxX = x;
-                if (y > maxY) maxY = y;
-                found = true;
-              }
+          const id = tc.getImageData(0, 0, W, H);
+          const hex = change.assignedColor.hex.replace('#', '');
+          const cr = parseInt(hex.slice(0, 2), 16);
+          const cg = parseInt(hex.slice(2, 4), 16);
+          const cb = parseInt(hex.slice(4, 6), 16);
+          for (let i = 0; i < id.data.length; i += 4) {
+            if (id.data[i + 3] > 30) {
+              id.data[i] = cr; id.data[i + 1] = cg; id.data[i + 2] = cb;
+              id.data[i + 3] = 255;
             }
           }
-          if (!found) { resolve(); return; }
-
-          // Expand bounds slightly for a clear filled region
-          const pad = 8;
-          const bx = Math.max(0, minX - pad);
-          const by = Math.max(0, minY - pad);
-          const bw = Math.min(W, maxX + pad) - bx;
-          const bh = Math.min(H, maxY + pad) - by;
-          const cx = bx + bw / 2;
-          const cy = by + bh / 2;
-          const rx = bw / 2;
-          const ry = bh / 2;
-
-          // Draw filled ellipse in assigned color on offscreen
-          ctx.fillStyle = change.assignedColor.hex;
-          ctx.beginPath();
-          ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-          ctx.fill();
-
-          // Also draw the original strokes on top in white for clarity
-          ctx.globalAlpha = 0.5;
-          ctx.drawImage(img, 0, 0, W, H);
-          ctx.globalAlpha = 1;
-
+          tc.putImageData(id, 0, 0);
+          ctx.drawImage(tmp, 0, 0);
           resolve();
         };
         img.src = change.paintData!;
@@ -3899,6 +4012,9 @@ const NanoBananaStudio = memo(({
 
     let fullPrompt = '';
     let markedRef2DataUrl: string | null = null;
+
+    type PosEntry = { cx: number; cy: number; x1: number; y1: number; x2: number; y2: number; areaPct: number; quadrant: string };
+    let positionData: Record<string, PosEntry> = {};
 
     await runAiJobWithNotification({ nodeId, label: 'Nano Banana · Áreas' }, async () => {
       setAnalyzingCall(true);
@@ -3949,8 +4065,8 @@ const NanoBananaStudio = memo(({
         }
       }
 
-      // Build position metadata: center of each area as % of image (for AI spatial guidance)
-      const positionData: Record<string, { cx: number; cy: number }> = {};
+      // Build rich position metadata: centroid + bbox + area% + quadrant
+      positionData = {};
       for (const change of validChanges) {
         if (!change.paintData) continue;
         await new Promise<void>(resolve => {
@@ -3962,20 +4078,35 @@ const NanoBananaStudio = memo(({
             tc2.drawImage(img2, 0, 0, W, H);
             const pd2 = tc2.getImageData(0, 0, W, H);
             let mx = W, my = H, Mx = 0, My = 0, found2 = false;
+            let paintedPixels = 0;
             for (let y = 0; y < H; y++) {
               for (let x = 0; x < W; x++) {
                 if (pd2.data[(y * W + x) * 4 + 3] > 30) {
                   if (x < mx) mx = x; if (y < my) my = y;
                   if (x > Mx) Mx = x; if (y > My) My = y;
                   found2 = true;
+                  paintedPixels++;
                 }
               }
             }
             if (found2) {
-              positionData[change.assignedColor.name] = {
-                cx: Math.round(((mx + Mx) / 2 / W) * 100),
-                cy: Math.round(((my + My) / 2 / H) * 100),
-              };
+              const cx = Math.round(((mx + Mx) / 2 / W) * 100);
+              const cy = Math.round(((my + My) / 2 / H) * 100);
+              const x1 = Math.round((mx / W) * 100);
+              const y1 = Math.round((my / H) * 100);
+              const x2 = Math.round((Mx / W) * 100);
+              const y2 = Math.round((My / H) * 100);
+              const areaPct = Math.round((paintedPixels / (W * H)) * 100 * 10) / 10;
+
+              const row = cy < 33 ? 'superior' : cy > 66 ? 'inferior' : 'central';
+              const col = cx < 33 ? 'izquierdo' : cx > 66 ? 'derecho' : 'central';
+              const quadrant = row === 'central' && col === 'central'
+                ? 'centro de la imagen'
+                : row === col
+                  ? `tercio ${row}`
+                  : `tercio ${row}-${col}`;
+
+              positionData[change.assignedColor.name] = { cx, cy, x1, y1, x2, y2, areaPct, quadrant };
             }
             resolve();
           };
@@ -3991,16 +4122,25 @@ const NanoBananaStudio = memo(({
           baseImage: currentImage,
           // Sin zonas pintadas no enviamos un segundo bitmap (evita duplicar la base o un mapa negro inútil).
           colorMapImage: hasPaintedZones ? markedBaseUrl : null,
-          changes: validChanges.map(c => ({
-            color: c.assignedColor.name,
-            description: c.description.trim(),
-            posX: positionData[c.assignedColor.name]?.cx ?? null,
-            posY: positionData[c.assignedColor.name]?.cy ?? null,
-            paintData: c.paintData ?? null,
-            assignedColorHex: c.assignedColor.hex,
-            referenceImageData: c.referenceImage ?? null,
-            isGlobal: !!c.isGlobal,
-          })),
+          changes: validChanges.map(c => {
+            const pd = positionData[c.assignedColor.name];
+            return {
+              color: c.assignedColor.name,
+              description: c.description.trim(),
+              posX: pd?.cx ?? null,
+              posY: pd?.cy ?? null,
+              bboxX1: pd?.x1 ?? null,
+              bboxY1: pd?.y1 ?? null,
+              bboxX2: pd?.x2 ?? null,
+              bboxY2: pd?.y2 ?? null,
+              areaPct: pd?.areaPct ?? null,
+              quadrant: pd?.quadrant ?? null,
+              paintData: c.paintData ?? null,
+              assignedColorHex: c.assignedColor.hex,
+              referenceImageData: c.referenceImage ?? null,
+              isGlobal: !!c.isGlobal,
+            };
+          }),
         }),
       });
       const aiJson = await aiRes.json();
@@ -4022,10 +4162,16 @@ const NanoBananaStudio = memo(({
       // Fallback: basic prompt without object identification
       const validChangesFb = changes.filter(c => c.description.trim());
       fullPrompt = [
-        'REFERENCIA 1: imagen base. Mantén todo lo que no se indica cambiar.',
-        'REFERENCIA 2: mapa de colores con áreas de cambio.',
+        'REFERENCIA 1: imagen base. Mantén todo lo que no se indica cambiar, conservando composición donde aplique.',
+        'REFERENCIA 2: zonas marcadas en color (trazos reales) — respetar la posición, forma y extensión de cada trazo.',
         '',
-        ...validChangesFb.filter(c => !c.isGlobal).map(c => `En el área ${c.assignedColor.name} de la referencia 2: ${c.description}`),
+        ...validChangesFb.filter(c => !c.isGlobal).map(c => {
+          const pd = positionData[c.assignedColor.name];
+          const spatial = pd
+            ? ` (${pd.quadrant}; centroide ${pd.cx}% izq. ${pd.cy}% arriba; bbox ${pd.x1}%-${pd.x2}% horiz., ${pd.y1}%-${pd.y2}% vert.; ~${pd.areaPct}% de la imagen)`
+            : '';
+          return `En la zona del trazo ${c.assignedColor.name} en REF 2${spatial}: ${c.description}`;
+        }),
         ...validChangesFb.filter(c => c.isGlobal).map(c => `CAMBIO GLOBAL: ${c.description}`),
       ].join('\n');
     } finally {
@@ -4053,6 +4199,7 @@ const NanoBananaStudio = memo(({
       ...(referenceGridUrl ? [referenceGridUrl] : []),
     ];
 
+    let genFinishedOk = false;
     try {
       const ok = await runAiJobWithNotification({ nodeId, label: 'Nano Banana Studio' }, async () => {
         const json = await geminiGenerateWithServerProgress(
@@ -4081,15 +4228,21 @@ const NanoBananaStudio = memo(({
         setCurrentImage(out);
         setGeneratedOnce(true);
         setReSendGenerated(true);
-        setGenStatus('success');
         onGenerated(out, typeof json.key === 'string' ? json.key : undefined);
+        genFinishedOk = true;
       });
-      if (ok) setProgress(100);
-      else setGenStatus('error');
+      if (!ok) setGenStatus('error');
     } catch (e: any) {
       console.error('[NanoBananaStudio] onGenerateFromCall:', e);
       setGenStatus('error');
     } finally {
+      if (genFinishedOk) {
+        flushSync(() => {
+          setProgress(100);
+          setGenStatus('success');
+          aiHudNanoBananaJobProgress(nodeId, 100);
+        });
+      }
       aiHudNanoBananaJobEnd(nodeId);
       setTimeout(() => setProgress(0), 1000);
     }
@@ -4316,7 +4469,7 @@ const NanoBananaStudio = memo(({
       {/* ══ CANVAS (flex-1) ════════════════════════════════════════════════════ */}
       <div
           ref={containerRef}
-          className="relative min-w-0 flex-1 overflow-hidden"
+          className="relative min-w-0 flex-1 touch-none overflow-hidden"
           style={{ background: '#0a0a0f', cursor: addingChange ? 'crosshair' : 'grab' }}
           onWheel={e => {
             e.preventDefault();
@@ -4404,8 +4557,8 @@ const NanoBananaStudio = memo(({
         ))}
         </div>{/* end zoom-transform */}
 
-        {/* Progress bar */}
-        {genStatus === 'running' && (
+        {/* Progress bar — oculta al 100% aunque genStatus tarde un tick (misma lógica que el nodo) */}
+        {genStatus === 'running' && progress < 100 && (
           <div className="absolute bottom-0 left-0 right-0">
             <div className="w-full h-1 bg-black/50">
               <div className="h-full bg-gradient-to-r from-[#6C5CE7] to-[#a78bfa] transition-all duration-500"
@@ -4495,8 +4648,8 @@ const NanoBananaStudio = memo(({
             style={{ borderRight: '1px solid rgba(255,255,255,0.12)' }}
           >
             <span className="text-[10px] font-black text-zinc-200 uppercase tracking-[0.12em]">Cambios</span>
-            <span className="text-[8px] font-medium text-zinc-500 normal-case tracking-normal max-w-[5.5rem] leading-tight">
-              Instrucciones para la IA
+            <span className="text-[8px] font-medium text-zinc-500 normal-case tracking-normal max-w-[11rem] leading-tight">
+              En REF 2: 1.º azul · 2.º rojo · 3.º verde… (orden de creación)
             </span>
           </div>
 
@@ -4514,9 +4667,8 @@ const NanoBananaStudio = memo(({
             )}
 
             {/* Change chips — larger and with ref upload */}
-            {changes.map((ch, idx) => {
-              const pal = CHANGE_PALETTE[idx % CHANGE_PALETTE.length];
-              const hex = pal.hex;
+            {changes.map((ch) => {
+              const hex = ch.assignedColor.hex;
               return (
                 <div key={ch.id}
                   className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl flex-shrink-0 transition-all"
@@ -4525,10 +4677,10 @@ const NanoBananaStudio = memo(({
                     : { background: 'rgba(39,39,48,0.85)', color: '#a1a1aa', border: '1px solid rgba(113,113,122,0.4)' }
                   }
                 >
-                  {/* Color dot or global indicator */}
+                  {/* Color dot — mismo color que REF 2 / API (assignedColor), no el índice en lista */}
                   {ch.isGlobal
                     ? <Globe size={11} className="flex-shrink-0" style={{ color: hex }} />
-                    : <span className="w-3 h-3 rounded-full flex-shrink-0 ring-1 ring-white/20" style={{ background: hex }} />
+                    : <span className="w-3 h-3 rounded-full flex-shrink-0 ring-1 ring-white/20" style={{ background: hex }} title={ch.assignedColor.name} />
                   }
 
                   {/* Description */}
@@ -4846,27 +4998,20 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
   );
 
   /**
-   * Rehidratar solo mientras el trabajo va por debajo del 100%.
-   * Si incluimos p===100, el listener puede dejar `status === 'running'` tras acabar
-   * (barra al 100% + «Generando…» y sin botón Studio).
+   * Rehidratar al montar/volver al espacio si el HUD sigue con un trabajo activo para este nodo.
+   * No suscribimos al HUD en cada notify: duplicaba el callback del stream y un notify tardío con ~90%
+   * podía pisar `progress`/`status` tras terminar (barra + glow + sin Studio).
    */
   useLayoutEffect(() => {
     const p = getAiHudNanoBananaJobProgressForNode(id);
     if (p != null && p < 100) {
-      // No bajar de success/error por rehidratación: evita «Generando 90%» tras terminar.
       setStatus((s) => (s === 'success' || s === 'error' ? s : 'running'));
-      setProgress(p);
+      setProgress((prev) => Math.max(prev, p));
     }
   }, [id]);
-  useEffect(() => {
-    return subscribeAiHudGenerationProgress(() => {
-      const p = getAiHudNanoBananaJobProgressForNode(id);
-      if (p != null && p < 100) {
-        setStatus((s) => (s === 'success' || s === 'error' ? s : 'running'));
-        setProgress(p);
-      }
-    });
-  }, [id]);
+
+  /** Incrementa en cada onRun para ignorar callbacks de progreso de una petición anterior. */
+  const graphGenEpochRef = useRef(0);
 
   const selectedModel = nodeData.modelKey || 'flash31';
   const modelInfo = NB_MODELS.find(m => m.id === selectedModel) || NB_MODELS[0];
@@ -4899,10 +5044,12 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
     const refImages = getRefImages().filter(Boolean) as string[];
 
+    const epoch = ++graphGenEpochRef.current;
     setStatus('running');
     setProgress(0);
     aiHudNanoBananaJobStart(id);
 
+    let genFinishedOk = false;
     try {
       const ok = await runAiJobWithNotification({ nodeId: id, label: 'Nano Banana' }, async () => {
         const json = await geminiGenerateWithServerProgress(
@@ -4915,14 +5062,13 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
             thinking: nodeData.thinking && isPro,
           },
           (pct) => {
+            if (graphGenEpochRef.current !== epoch) return;
             setProgress(pct);
             aiHudNanoBananaJobProgress(id, pct);
           }
         );
         const out = json.output;
         setResult(out);
-        setProgress(100);
-        aiHudNanoBananaJobProgress(id, 100);
         setNodes(nds => nds.map(n => {
           if (n.id !== id) return n;
           const prevKey = (n.data as { s3Key?: string }).s3Key;
@@ -4945,11 +5091,23 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
             },
           };
         }));
+        genFinishedOk = true;
       });
-      setStatus(ok ? 'success' : 'error');
+      if (!ok && graphGenEpochRef.current === epoch) setStatus('error');
     } finally {
-      aiHudNanoBananaJobEnd(id);
-      setTimeout(() => setProgress(0), 1000);
+      if (genFinishedOk && graphGenEpochRef.current === epoch) {
+        flushSync(() => {
+          setProgress(100);
+          setStatus('success');
+          aiHudNanoBananaJobProgress(id, 100);
+        });
+      }
+      if (graphGenEpochRef.current === epoch) {
+        aiHudNanoBananaJobEnd(id);
+        setTimeout(() => {
+          if (graphGenEpochRef.current === epoch) setProgress(0);
+        }, 1000);
+      }
     }
   };
 
@@ -5090,9 +5248,8 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
           )
         )}
 
-        {!isActivelyGenerating && (
-          <NanoBananaStudioModeButton onClick={() => setShowStudio(true)} />
-        )}
+        {/* Siempre visible: al quedar el estado «generando» por carrera, el usuario puede reabrir Studio */}
+        <NanoBananaStudioModeButton onClick={() => setShowStudio(true)} />
 
         {/* INPUT image badge — bottom-left corner overlay (always visible when connected) */}
         {refImgPreview && outputImage && (
@@ -6304,7 +6461,16 @@ export const MediaDescriberNode = memo(({ id, data, selected }: NodeProps<any>) 
   );
 });
 
-const CameraMotionSelector = ({ value, onChange }: { value: string, onChange: (val: string) => void }) => {
+const CameraMotionSelector = ({
+  value,
+  onChange,
+  compact,
+}: {
+  value: string;
+  onChange: (val: string) => void;
+  /** Una fila densa (p. ej. Video Studio fullscreen sin scroll). */
+  compact?: boolean;
+}) => {
   const motions = [
     { id: '', label: 'Auto', icon: <div className="w-full h-full border border-dashed border-white/20 rounded-md" /> },
     { id: 'Dolly-in', label: 'Dolly-in', icon: (
@@ -6340,29 +6506,1252 @@ const CameraMotionSelector = ({ value, onChange }: { value: string, onChange: (v
   ];
 
   return (
-    <div className="grid grid-cols-3 gap-2">
-      {motions.map(m => (
+    <div className={compact ? 'grid grid-cols-6 gap-1' : 'grid grid-cols-3 gap-2'}>
+      {motions.map((m) => (
         <button
           key={m.id}
+          type="button"
           onClick={() => onChange(m.id)}
-          className={`group flex flex-col items-center gap-1.5 p-2 rounded-xl transition-all border ${value === m.id ? 'bg-cyan-500/20 border-cyan-500 text-cyan-400' : 'bg-white/5 border-slate-200/60 text-zinc-500 hover:border-white/20'}`}
+          className={`group flex flex-col items-center border transition-all ${
+            compact ? 'gap-0.5 rounded-md p-1' : 'gap-1.5 rounded-xl p-2'
+          } ${
+            value === m.id
+              ? 'bg-cyan-500/20 border-cyan-500 text-cyan-400'
+              : 'bg-white/5 border-slate-200/60 text-zinc-500 hover:border-white/20'
+          }`}
         >
-          <div className="w-10 h-10 flex items-center justify-center">
+          <div
+            className={`flex items-center justify-center ${compact ? 'h-6 w-6' : 'h-10 w-10'}`}
+          >
             {m.icon}
           </div>
-          <span className="text-[7px] font-black uppercase tracking-widest">{m.label}</span>
+          <span
+            className={`font-black uppercase tracking-widest ${compact ? 'text-[5px] leading-tight' : 'text-[7px]'}`}
+          >
+            {m.label}
+          </span>
         </button>
       ))}
     </div>
   );
 };
 
+const VEO_ASPECT_OPTIONS = [
+  { value: '16:9', label: '16:9 horizontal' },
+  { value: '9:16', label: '9:16 vertical' },
+] as const;
+const SEEDANCE_ASPECT_OPTIONS = [
+  { value: '16:9', label: '16:9' },
+  { value: '9:16', label: '9:16' },
+  { value: '1:1', label: '1:1' },
+] as const;
+const VEO_RESOLUTION_OPTIONS = [
+  { value: '720p', label: '720p (4–8 s)' },
+  { value: '1080p', label: '1080p (8 s)' },
+  { value: '4K', label: '4K (8 s)' },
+] as const;
+const VEO_DURATION_OPTIONS = [4, 6, 8] as const;
+const SEEDANCE_DURATION_OPTIONS = Array.from({ length: 11 }, (_, i) => i + 2) as number[];
+
+/** Veo: 1080p y 4K solo 8 s en API. 720p: 4 / 6 / 8. */
+function veoDurationChoicesForResolution(resolution: string): number[] {
+  const r = resolution.toLowerCase();
+  if (r.includes('1080') || r.includes('4k')) return [8];
+  return [...VEO_DURATION_OPTIONS];
+}
+
+function normalizeVeoDuration(raw: unknown): number {
+  const n = Math.round(Number(raw));
+  if (!Number.isFinite(n)) return 6;
+  if (n < 5) return 4;
+  if (n < 7) return 6;
+  return 8;
+}
+
+interface GeminiVideoStudioProps {
+  onClose: () => void;
+  updateData: (key: string, val: unknown) => void;
+  onGenerate: () => void;
+  status: string;
+  progress: number;
+  outputVideo: string | null;
+  /** Texto del prompt conectado al handle (sin recortar; sincroniza `data.value` del nodo fuente al editar). */
+  graphPromptFromEdge: string;
+  hasPromptEdge: boolean;
+  onGraphPromptChange: (text: string) => void;
+  useSeedance: boolean;
+  videoFormatForApi: string;
+  resolutionForApi: string;
+  durationSecondsForApi: number;
+  previewCost: { usdPerSecond: number; totalUsd: number };
+  preGenProgressPct: number;
+  nodeData: BaseNodeData & {
+    videoModel?: 'veo31' | 'seedance2';
+    videoFormat?: string;
+    prompt?: string;
+    negativePrompt?: string;
+    audio?: boolean;
+    seed?: number;
+    animationPrompt?: string;
+    cameraPreset?: string;
+    videoLightingPreset?: string;
+    videoVisualStylePreset?: string;
+    videoPhysics_cloth?: boolean;
+    videoPhysics_fluid?: boolean;
+    videoPhysics_hair?: boolean;
+    videoPhysics_collision?: boolean;
+    videoPhysics_gravity?: boolean;
+    videoRefSlots?: VideoRefSlotsState;
+  };
+  historyUrls: string[];
+  /** Imágenes resueltas desde los handles del grafo (firstFrame / lastFrame). */
+  connectedFirstFrame: string | null;
+  connectedLastFrame: string | null;
+}
+
+function VideoStudioFrameSlot({
+  label,
+  url,
+  icon: Icon,
+}: {
+  label: string;
+  url: string | null;
+  icon: React.ComponentType<{ className?: string; size?: number }>;
+}) {
+  return (
+    <div className="min-w-0 flex-1">
+      <div className="mb-1 flex items-center gap-1 text-zinc-500">
+        <Icon className="h-3 w-3 shrink-0 text-emerald-500/80" aria-hidden />
+        <span className="truncate text-[8px] font-black uppercase tracking-wider">{label}</span>
+      </div>
+      <div className="relative aspect-[4/3] w-full overflow-hidden rounded-md border border-white/[0.1] bg-zinc-950/90 ring-1 ring-inset ring-white/[0.04]">
+        {url ? (
+          <img src={url} alt="" className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full min-h-[3.25rem] flex-col items-center justify-center gap-0.5 px-1 text-center">
+            <ImageIcon className="h-4 w-4 text-zinc-700" strokeWidth={1.25} aria-hidden />
+            <span className="text-[7px] leading-tight text-zinc-600">—</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const GeminiVideoStudio = memo(function GeminiVideoStudio({
+  onClose,
+  updateData,
+  onGenerate,
+  status,
+  progress,
+  outputVideo,
+  graphPromptFromEdge,
+  hasPromptEdge,
+  onGraphPromptChange,
+  useSeedance,
+  videoFormatForApi,
+  resolutionForApi,
+  durationSecondsForApi,
+  previewCost,
+  preGenProgressPct,
+  nodeData,
+  historyUrls,
+  connectedFirstFrame,
+  connectedLastFrame,
+}: GeminiVideoStudioProps) {
+  useEffect(() => {
+    document.body.classList.add('nb-studio-open');
+    return () => document.body.classList.remove('nb-studio-open');
+  }, []);
+
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [refsPanelOpen, setRefsPanelOpen] = useState(false);
+  const promptLocalRef = useRef<HTMLTextAreaElement>(null);
+  const isRunning = status === 'running';
+  const hasPrompt =
+    graphPromptFromEdge.trim().length > 0 ||
+    (typeof nodeData.prompt === 'string' && nodeData.prompt.trim().length > 0);
+  const historyPreview = historyUrls.slice(0, 4);
+  const historyExtra = Math.max(0, historyUrls.length - historyPreview.length);
+
+  const refSlots = useMemo(() => parseVideoRefSlots(nodeData.videoRefSlots), [nodeData.videoRefSlots]);
+  const refFileCounts = useMemo(() => countReferenceFiles(refSlots), [refSlots]);
+
+  const insertIntoPromptLocal = useCallback(
+    (snippet: string) => {
+      const cur = typeof nodeData.prompt === 'string' ? nodeData.prompt : '';
+      const ins = snippet.endsWith(' ') ? snippet : `${snippet} `;
+      const el = promptLocalRef.current;
+      if (el) {
+        const start = el.selectionStart ?? cur.length;
+        const end = el.selectionEnd ?? cur.length;
+        updateData('prompt', cur.slice(0, start) + ins + cur.slice(end));
+        requestAnimationFrame(() => {
+          el.focus();
+          const pos = start + ins.length;
+          el.setSelectionRange(pos, pos);
+        });
+      } else {
+        updateData('prompt', `${cur}${cur && !cur.endsWith(' ') ? ' ' : ''}${ins}`);
+      }
+    },
+    [nodeData.prompt, updateData],
+  );
+
+  const setRefSlotFile = useCallback(
+    (key: VideoRefSlotKey, file: File | null) => {
+      if (!file) {
+        const next = { ...refSlots };
+        delete next[key];
+        updateData('videoRefSlots', Object.keys(next).length ? next : undefined);
+        return;
+      }
+      const maxBytes = 35 * 1024 * 1024;
+      if (file.size > maxBytes) {
+        alert('Archivo demasiado grande (máx. ~35 MB por slot).');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        const next = { ...refSlots, [key]: dataUrl };
+        const imgTotal = estimatedApiImageCount({
+          graphFirstFrame: connectedFirstFrame,
+          graphLastFrame: connectedLastFrame,
+          extraSlots: next,
+        });
+        if (key.startsWith('Image') && imgTotal > SEEDANCE_REF_LIMITS.maxImages) {
+          alert(
+            `Máximo ${SEEDANCE_REF_LIMITS.maxImages} imágenes en total (primer/último frame del grafo + referencias @Image).`,
+          );
+          return;
+        }
+        const c = countReferenceFiles(next);
+        if (c.total > SEEDANCE_REF_LIMITS.maxTotal) {
+          alert(`Máximo ${SEEDANCE_REF_LIMITS.maxTotal} archivos de referencia por petición.`);
+          return;
+        }
+        if (key.startsWith('Video') && c.videos > SEEDANCE_REF_LIMITS.maxVideos) {
+          alert(`Máximo ${SEEDANCE_REF_LIMITS.maxVideos} vídeos de referencia (≤15 s c/u recomendado).`);
+          return;
+        }
+        if (key.startsWith('Audio') && c.audios > SEEDANCE_REF_LIMITS.maxAudios) {
+          alert(`Máximo ${SEEDANCE_REF_LIMITS.maxAudios} audios de referencia.`);
+          return;
+        }
+        updateData('videoRefSlots', next);
+      };
+      reader.readAsDataURL(file);
+    },
+    [refSlots, connectedFirstFrame, connectedLastFrame, updateData],
+  );
+
+  const seedCamIcon = (id: string): React.ComponentType<{ className?: string }> => {
+    switch (id) {
+      case 'dolly_in':
+        return Move;
+      case 'tracking':
+        return ArrowRight;
+      case 'crane_up':
+        return ArrowUpFromLine;
+      case 'orbit':
+        return RefreshCw;
+      case 'vertigo':
+        return ZoomIn;
+      case 'fpv':
+        return Plane;
+      default:
+        return Move;
+    }
+  };
+
+  const physicIcon = (id: string): React.ComponentType<{ className?: string }> => {
+    switch (id) {
+      case 'cloth':
+        return Layers;
+      case 'fluid':
+        return Droplets;
+      case 'hair':
+        return Wind;
+      case 'collision':
+        return Hammer;
+      case 'gravity':
+        return CircleDot;
+      default:
+        return Boxes;
+    }
+  };
+
+  return createPortal(
+    <div
+      className="nb-studio-root fixed inset-0 z-[10050] flex h-[100dvh] max-h-[100dvh] flex-col overflow-hidden overscroll-none"
+      data-foldder-studio-canvas=""
+      data-gv-video-studio=""
+    >
+      <div className="nb-studio-topbar flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.07] bg-[#08080c] px-2 py-1.5">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1">
+          <div className="flex shrink-0 items-center gap-2 border-r border-white/10 pr-2">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-violet-600/35 to-cyan-600/20 ring-1 ring-white/10">
+              <Video className="h-[18px] w-[18px] text-violet-200" strokeWidth={1.75} aria-hidden />
+            </div>
+            <div className="leading-tight">
+              <p className="text-[10px] font-black uppercase tracking-[0.14em] text-zinc-100">Studio</p>
+              <p className="text-[7px] font-medium text-zinc-500">Vídeo IA</p>
+            </div>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-1" role="group" aria-label="Motor">
+            {(
+              [
+                {
+                  key: 'veo31' as const,
+                  label: 'Veo',
+                  sub: 'Gemini',
+                  Icon: Sparkles,
+                  activeBg: 'rgba(34,211,238,0.12)',
+                  activeBorder: 'rgba(34,211,238,0.45)',
+                  iconColor: '#22d3ee',
+                },
+                {
+                  key: 'seedance2' as const,
+                  label: 'Seed',
+                  sub: 'Ark',
+                  Icon: Film,
+                  activeBg: 'rgba(244,114,182,0.12)',
+                  activeBorder: 'rgba(244,114,182,0.45)',
+                  iconColor: '#f472b6',
+                },
+              ] as const
+            ).map((m) => {
+              const active = (nodeData.videoModel || 'veo31') === m.key;
+              const Icon = m.Icon;
+              return (
+                <button
+                  key={m.key}
+                  type="button"
+                  onClick={() => {
+                    updateData('videoModel', m.key);
+                    if (m.key === 'seedance2') {
+                      const f = nodeData.videoFormat;
+                      const fmt = f === '1:1' || f === '9:16' || f === '16:9' ? f : '16:9';
+                      updateData('videoFormat', fmt);
+                      updateData(
+                        'duration',
+                        String(Math.min(12, Math.max(2, Number(nodeData.duration) || 5))),
+                      );
+                    } else {
+                      updateData('videoFormat', nodeData.videoFormat === '9:16' ? '9:16' : '16:9');
+                      updateData(
+                        'resolution',
+                        nodeData.resolution && ['720p', '1080p', '4K'].includes(nodeData.resolution)
+                          ? nodeData.resolution
+                          : '1080p',
+                      );
+                      updateData('duration', String(normalizeVeoDuration(nodeData.duration)));
+                    }
+                  }}
+                  title={`${m.label} · ${m.sub}`}
+                  className="flex items-center gap-1 rounded-lg border px-2 py-1 transition-all"
+                  style={{
+                    background: active ? m.activeBg : 'rgba(24,24,32,0.95)',
+                    borderColor: active ? m.activeBorder : 'rgba(82,82,91,0.45)',
+                    color: active ? '#fafafa' : '#a1a1aa',
+                  }}
+                >
+                  <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: active ? m.iconColor : '#71717a' }} />
+                  <span className="text-[9px] font-black uppercase tracking-wide">{m.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center gap-0.5 rounded-lg border border-white/[0.08] bg-black/40 px-1 py-0.5">
+            <RectangleHorizontal className="h-3 w-3 shrink-0 text-zinc-500" aria-hidden />
+            <select
+              className="max-w-[5.5rem] cursor-pointer border-0 bg-transparent py-0 pl-0.5 pr-0 text-[9px] font-bold text-zinc-200 outline-none"
+              value={videoFormatForApi}
+              onChange={(e) => updateData('videoFormat', e.target.value)}
+            >
+              {(useSeedance ? SEEDANCE_ASPECT_OPTIONS : VEO_ASPECT_OPTIONS).map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.value}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {!useSeedance && (
+            <div className="flex items-center gap-0.5 rounded-lg border border-white/[0.08] bg-black/40 px-1 py-0.5">
+              <Cpu className="h-3 w-3 shrink-0 text-zinc-500" aria-hidden />
+              <select
+                className="max-w-[4.5rem] cursor-pointer border-0 bg-transparent py-0 pl-0.5 pr-0 text-[9px] font-bold text-zinc-200 outline-none"
+                value={resolutionForApi}
+                onChange={(e) => updateData('resolution', e.target.value)}
+              >
+                {VEO_RESOLUTION_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.value}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <div className="flex items-center gap-0.5 rounded-lg border border-white/[0.08] bg-black/40 px-1 py-0.5">
+            <Clock className="h-3 w-3 shrink-0 text-zinc-500" aria-hidden />
+            <select
+              className="w-[3.25rem] cursor-pointer border-0 bg-transparent py-0 pl-0.5 pr-0 text-[9px] font-bold text-zinc-200 outline-none"
+              value={String(durationSecondsForApi)}
+              onChange={(e) => updateData('duration', e.target.value)}
+            >
+              {(useSeedance
+                ? SEEDANCE_DURATION_OPTIONS
+                : veoDurationChoicesForResolution(resolutionForApi)
+              ).map((sec) => (
+                <option key={sec} value={String(sec)}>
+                  {sec}s
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex min-w-0 max-w-[11rem] shrink flex-col gap-0.5 rounded-lg border border-emerald-500/20 bg-emerald-950/15 px-1.5 py-1">
+            <div className="flex items-center gap-1">
+              <DollarSign className="h-2.5 w-2.5 shrink-0 text-emerald-500/80" aria-hidden />
+              <span className="truncate text-[8px] font-mono tabular-nums leading-none text-emerald-400/95">
+                {previewCost.usdPerSecond.toFixed(3)}/s · ${previewCost.totalUsd.toFixed(2)}
+              </span>
+            </div>
+            <div className="h-0.5 w-full overflow-hidden rounded-full bg-white/10">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-emerald-600/90 to-cyan-500/80 transition-all duration-300"
+                style={{ width: `${preGenProgressPct}%` }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            onClick={onGenerate}
+            disabled={isRunning || !hasPrompt}
+            className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-[9px] font-black uppercase tracking-wide transition-all disabled:cursor-not-allowed disabled:opacity-45"
+            style={{
+              background: 'linear-gradient(135deg,#6C5CE7,#5548c8)',
+              color: '#fafafa',
+              border: '1px solid rgba(108,92,231,0.45)',
+              boxShadow: '0 2px 10px rgba(108,92,231,0.35)',
+            }}
+            title={!hasPrompt ? 'Conecta un prompt o rellena el panel' : undefined}
+          >
+            {isRunning ? (
+              <>
+                <Loader2 size={14} className="shrink-0 animate-spin" /> {Math.round(progress)}%
+              </>
+            ) : (
+              <>
+                <Zap size={14} className="shrink-0" /> Generar
+              </>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.05] text-zinc-400 transition-all hover:border-white/20 hover:bg-white/[0.09] hover:text-white"
+            title="Cerrar"
+          >
+            <X size={17} strokeWidth={2.25} />
+          </button>
+        </div>
+      </div>
+
+      <div className="flex min-h-0 w-full flex-1 flex-row overflow-hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden">
+          <div
+            className="flex shrink-0 flex-col overflow-hidden border-r border-white/[0.08] bg-[#08080c]/98 transition-[width] duration-200 ease-out"
+            style={{ width: galleryOpen ? 112 : 36 }}
+          >
+            <button
+              type="button"
+              onClick={() => setGalleryOpen((o) => !o)}
+              className="flex flex-col items-center justify-center gap-0.5 border-b border-white/[0.08] py-2 text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-zinc-200"
+              title={galleryOpen ? 'Ocultar historial' : 'Historial'}
+            >
+              <History size={15} strokeWidth={1.75} className="shrink-0 opacity-80" />
+              <ChevronRight size={10} className={`shrink-0 opacity-60 transition-transform ${galleryOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {galleryOpen && (
+              <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-hidden p-1.5">
+                {historyUrls.length === 0 ? (
+                  <p className="px-0.5 text-[7px] leading-tight text-zinc-600">
+                    Las versiones aparecen aquí (máx. 4 vista previa).
+                  </p>
+                ) : (
+                  <>
+                    {historyPreview.map((url, i) => (
+                      <button
+                        key={`vh-${i}-${url.slice(0, 48)}`}
+                        type="button"
+                        onClick={() => {
+                          updateData('value', url);
+                          updateData('type', 'video');
+                        }}
+                        className="relative h-12 w-full shrink-0 overflow-hidden rounded-sm border border-white/10 transition-colors hover:border-cyan-500/55"
+                        title={`Versión ${historyUrls.length - i}`}
+                      >
+                        <video src={url} className="h-full w-full object-cover" muted playsInline />
+                        <span className="absolute bottom-0.5 right-0.5 rounded bg-black/75 px-0.5 text-[7px] font-bold text-zinc-200">
+                          {historyUrls.length - i}
+                        </span>
+                      </button>
+                    ))}
+                    {historyExtra > 0 && (
+                      <p className="text-center text-[7px] font-mono text-zinc-600">+{historyExtra}</p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-[#0a0a0f] p-2">
+            {outputVideo ? (
+              <video
+                src={outputVideo}
+                className="max-h-full max-w-full object-contain"
+                controls
+                loop
+                muted
+                playsInline
+              />
+            ) : (
+              <div className="flex max-w-xs flex-col items-center justify-center gap-2 px-4 text-center">
+                <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-white/[0.06] bg-zinc-900/50">
+                  <Video size={28} className="text-zinc-600" strokeWidth={1.15} />
+                </div>
+                <p className="text-[11px] font-bold text-zinc-500">Sin vídeo</p>
+                <p className="flex flex-wrap items-center justify-center gap-1 text-[9px] leading-snug text-zinc-600">
+                  <span>Panel derecho</span>
+                  <Zap className="h-3 w-3 shrink-0 text-violet-400" aria-hidden />
+                  <span>Generar</span>
+                </p>
+              </div>
+            )}
+            {isRunning && (
+              <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-10">
+                <div className="h-0.5 w-full bg-black/50">
+                  <div
+                    className="h-full bg-gradient-to-r from-[#6C5CE7] to-cyan-400 transition-all duration-500"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+                <p className="bg-black/85 py-0.5 text-center text-[8px] font-black uppercase tracking-widest text-violet-200">
+                  Generando… {Math.round(progress)}%
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <aside className="nb-studio-bottombar flex w-[min(100%,400px)] shrink-0 flex-col overflow-y-auto border-l border-white/[0.09] bg-[#06060a] sm:w-[min(100%,430px)]">
+          <div className="sticky top-0 z-[1] flex items-center gap-2 border-b border-white/[0.07] bg-[#07070c]/98 px-2.5 py-2 backdrop-blur-md">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-violet-600/30 to-fuchsia-600/15 ring-1 ring-white/10">
+              <Sparkles className="h-4 w-4 text-violet-200" strokeWidth={1.75} aria-hidden />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-black uppercase tracking-[0.12em] text-zinc-100">Director</p>
+              <p className="truncate text-[7px] text-zinc-500">Flujo 1→4 · 7 capas en texto · refuerzos API · cola</p>
+            </div>
+          </div>
+          <div className="flex flex-col gap-2 p-2">
+            <details className="group rounded-lg border border-white/[0.07] bg-zinc-950/40">
+              <summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-2 text-zinc-300 marker:content-none [&::-webkit-details-marker]:hidden">
+                <BookOpen className="h-3.5 w-3.5 shrink-0 text-amber-400/95" aria-hidden />
+                <span className="text-[9px] font-black uppercase tracking-wider">Guía prompt</span>
+                <ChevronDown className="ml-auto h-3.5 w-3.5 shrink-0 text-zinc-500 transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="space-y-1.5 border-t border-white/[0.05] px-2 pb-2 pt-1.5 text-[8px] leading-snug text-zinc-400">
+                <p>
+                  <span className="font-bold text-zinc-300">Siete capas:</span> {SEEDANCE_PROMPT_GUIDE_ES.sevenLayersIntro}
+                </p>
+                <p className="space-y-0.5 text-[7px] leading-snug text-zinc-500">
+                  <span className="block text-zinc-400">1 {SEEDANCE_PROMPT_GUIDE_ES.layer1}</span>
+                  <span className="block">2 {SEEDANCE_PROMPT_GUIDE_ES.layer2}</span>
+                  <span className="block">3 {SEEDANCE_PROMPT_GUIDE_ES.layer3}</span>
+                  <span className="block">4 {SEEDANCE_PROMPT_GUIDE_ES.layer4}</span>
+                  <span className="block">5 {SEEDANCE_PROMPT_GUIDE_ES.layer5}</span>
+                  <span className="block">6 {SEEDANCE_PROMPT_GUIDE_ES.layer6}</span>
+                  <span className="block">7 {SEEDANCE_PROMPT_GUIDE_ES.layer7}</span>
+                </p>
+                <p>
+                  <span className="font-bold text-zinc-300">Gestor (cómo encaja):</span> {SEEDANCE_PROMPT_GUIDE_ES.gestorMapping}
+                </p>
+                <p>
+                  <span className="font-bold text-zinc-300">Resumen orden texto:</span> {SEEDANCE_PROMPT_GUIDE_ES.structure}
+                </p>
+                <p className="rounded bg-black/30 px-1.5 py-1 font-mono text-[6.5px] leading-relaxed text-zinc-500 whitespace-pre-wrap">
+                  {DIRECTOR_PROMPT_TEMPLATE_EN}
+                </p>
+                <p>
+                  <span className="font-bold text-zinc-300">Iluminación:</span> {SEEDANCE_PROMPT_GUIDE_ES.lighting}
+                </p>
+                <p>
+                  <span className="font-bold text-zinc-300">Cámara vs sujeto:</span>{' '}
+                  {SEEDANCE_PROMPT_GUIDE_ES.cameraVsSubject}
+                </p>
+                <p>
+                  <span className="font-bold text-zinc-300">Ritmo:</span> {SEEDANCE_PROMPT_GUIDE_ES.fastWarning}
+                </p>
+                <p>
+                  <span className="font-bold text-zinc-300">@Reference:</span> {SEEDANCE_PROMPT_GUIDE_ES.references}
+                </p>
+              </div>
+            </details>
+
+            <div className="rounded-md border border-dashed border-white/[0.08] bg-zinc-950/25 px-2 py-1.5">
+              <p className="text-[7px] font-bold uppercase tracking-wider text-zinc-500">Orden en el gestor</p>
+              <ol className="mt-1 list-decimal space-y-0.5 pl-3.5 text-[7px] leading-snug text-zinc-400">
+                <li>Medios: frames del grafo y @Refs (sube archivos; luego inserta @ImageN… en el texto, capa 2).</li>
+                <li>Texto: prompt del grafo o local en inglés (capas 1–7; puede ir incompleto).</li>
+                <li>Refuerzos: presets Luz, Estilo y Física (keywords en inglés tras tu párrafo al generar).</li>
+                <li>Cola API: animación → preset cámara → negative (el servidor las concatena al final del prompt).</li>
+              </ol>
+            </div>
+
+            <div className="space-y-2">
+              <p className="px-0.5 text-[7px] font-black uppercase tracking-[0.18em] text-zinc-500">1 · Medios</p>
+              <div className="rounded-lg border border-white/[0.06] bg-zinc-950/30 p-2">
+                <div className="mb-1.5 flex items-center gap-1.5 text-zinc-500">
+                  <ImageIcon className="h-3 w-3 text-cyan-500/80" aria-hidden />
+                  <span className="text-[8px] font-black uppercase tracking-wider">Frames grafo</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <VideoStudioFrameSlot label="1º frame" icon={ImageIcon} url={connectedFirstFrame} />
+                  <VideoStudioFrameSlot label="Último" icon={ArrowRightCircle} url={connectedLastFrame} />
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-lg border border-fuchsia-500/15 bg-fuchsia-950/[0.08]">
+                <button
+                  type="button"
+                  aria-expanded={refsPanelOpen}
+                  onClick={() => setRefsPanelOpen((v) => !v)}
+                  className="flex w-full cursor-pointer items-center justify-between gap-2 px-2 py-2 text-left outline-none ring-fuchsia-500/40 focus-visible:ring-2"
+                >
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <Link className="h-3.5 w-3.5 shrink-0 text-fuchsia-400/90" aria-hidden />
+                    <span className="truncate text-[8px] font-black uppercase tracking-wider text-fuchsia-100/90">
+                      @Refs
+                    </span>
+                    <span className="hidden text-[7px] text-zinc-500 sm:inline">img · vídeo · audio</span>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <span className="text-[7px] font-mono text-zinc-500">
+                      {refFileCounts.total}/{SEEDANCE_REF_LIMITS.maxTotal} · img{' '}
+                      {estimatedApiImageCount({
+                        graphFirstFrame: connectedFirstFrame,
+                        graphLastFrame: connectedLastFrame,
+                        extraSlots: refSlots,
+                      })}
+                      /{SEEDANCE_REF_LIMITS.maxImages}
+                    </span>
+                    <ChevronDown
+                      className={`h-3.5 w-3.5 shrink-0 text-zinc-400 transition-transform ${refsPanelOpen ? 'rotate-180' : ''}`}
+                      aria-hidden
+                    />
+                  </div>
+                </button>
+                {refsPanelOpen ? (
+                  <div className="space-y-2 border-t border-white/[0.06] px-2 pb-2 pt-1.5">
+                    <p className="text-[7px] leading-tight text-zinc-500">
+                      Pulsa <Upload className="inline h-2.5 w-2.5 opacity-70" /> o slot; chip inserta tag en prompt (capa
+                      2).
+                    </p>
+                    <div className="mb-0">
+                      <div className="mb-1 flex items-center gap-1 text-[7px] font-bold uppercase tracking-wider text-fuchsia-400/80">
+                        <ImageIcon className="h-3 w-3" />
+                        Img
+                      </div>
+                      <div className="grid grid-cols-3 gap-1">
+                        {([1, 2, 3, 4, 5, 6, 7, 8, 9] as const).map((n) => {
+                          const key = `Image${n}` as VideoRefSlotImageKey;
+                          const tag = refTag(key);
+                          const url = refSlots[key];
+                          return (
+                            <div key={key} className="min-w-0">
+                              <div className="relative aspect-square overflow-hidden rounded-md border border-white/[0.08] bg-zinc-950/90">
+                                {url ? (
+                                  <img src={url} alt="" className="h-full w-full object-cover" />
+                                ) : (
+                                  <div className="flex h-full min-h-[2.25rem] flex-col items-center justify-center gap-0.5">
+                                    <Upload className="h-3 w-3 text-zinc-600" strokeWidth={1.5} />
+                                    <span className="font-mono text-[6px] text-zinc-600">{n}</span>
+                                  </div>
+                                )}
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  className="absolute inset-0 cursor-pointer opacity-0"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    setRefSlotFile(key, f ?? null);
+                                    e.target.value = '';
+                                  }}
+                                />
+                              </div>
+                              {url ? (
+                                <div className="mt-0.5 flex justify-center gap-0.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => insertIntoPromptLocal(tag)}
+                                    className="rounded bg-fuchsia-600/30 px-1 py-px font-mono text-[6px] font-bold text-fuchsia-100"
+                                  >
+                                    {tag}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setRefSlotFile(key, null)}
+                                    className="rounded p-0.5 text-zinc-500 hover:text-rose-400"
+                                    title="Quitar"
+                                  >
+                                    <Trash2 className="h-2.5 w-2.5" />
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div className="mb-2">
+                      <div className="mb-1 flex items-center gap-1 text-[7px] font-bold uppercase tracking-wider text-cyan-400/80">
+                        <Film className="h-3 w-3" />
+                        Vídeo
+                      </div>
+                      <div className="grid grid-cols-3 gap-1">
+                        {([1, 2, 3] as const).map((n) => {
+                          const key = `Video${n}` as VideoRefSlotVideoKey;
+                          const tag = refTag(key);
+                          const url = refSlots[key];
+                          return (
+                            <div key={key} className="min-w-0">
+                              <div className="relative flex min-h-[2.5rem] flex-col justify-center rounded-md border border-white/[0.08] bg-zinc-950/90 px-1 py-1">
+                                <Film className={`mx-auto h-3 w-3 ${url ? 'text-cyan-400' : 'text-zinc-600'}`} />
+                                <input
+                                  type="file"
+                                  accept="video/*"
+                                  className="absolute inset-0 cursor-pointer opacity-0"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    setRefSlotFile(key, f ?? null);
+                                    e.target.value = '';
+                                  }}
+                                />
+                              </div>
+                              {url ? (
+                                <div className="mt-0.5 flex justify-center gap-0.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => insertIntoPromptLocal(tag)}
+                                    className="rounded bg-cyan-600/30 px-1 py-px font-mono text-[6px] font-bold text-cyan-100"
+                                  >
+                                    {tag}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setRefSlotFile(key, null)}
+                                    className="rounded p-0.5 text-zinc-500 hover:text-rose-400"
+                                    title="Quitar"
+                                  >
+                                    <Trash2 className="h-2.5 w-2.5" />
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="mb-1 flex items-center gap-1 text-[7px] font-bold uppercase tracking-wider text-emerald-400/80">
+                        <Music className="h-3 w-3" />
+                        Audio
+                      </div>
+                      <div className="grid grid-cols-3 gap-1">
+                        {([1, 2, 3] as const).map((n) => {
+                          const key = `Audio${n}` as VideoRefSlotAudioKey;
+                          const tag = refTag(key);
+                          const url = refSlots[key];
+                          return (
+                            <div key={key} className="min-w-0">
+                              <div className="relative flex min-h-[2.5rem] flex-col justify-center rounded-md border border-white/[0.08] bg-zinc-950/90 px-1 py-1">
+                                <Music className={`mx-auto h-3 w-3 ${url ? 'text-emerald-400' : 'text-zinc-600'}`} />
+                                <input
+                                  type="file"
+                                  accept="audio/*"
+                                  className="absolute inset-0 cursor-pointer opacity-0"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    setRefSlotFile(key, f ?? null);
+                                    e.target.value = '';
+                                  }}
+                                />
+                              </div>
+                              {url ? (
+                                <div className="mt-0.5 flex justify-center gap-0.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => insertIntoPromptLocal(tag)}
+                                    className="rounded bg-emerald-600/30 px-1 py-px font-mono text-[6px] font-bold text-emerald-100"
+                                  >
+                                    {tag}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setRefSlotFile(key, null)}
+                                    className="rounded p-0.5 text-zinc-500 hover:text-rose-400"
+                                    title="Quitar"
+                                  >
+                                    <Trash2 className="h-2.5 w-2.5" />
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <p className="px-0.5 text-[7px] font-black uppercase tracking-[0.18em] text-zinc-500">2 · Texto director</p>
+            <div className="rounded-lg border border-emerald-500/20 bg-emerald-950/[0.12] p-2">
+              <div className="mb-1 flex items-center gap-1.5">
+                <Link2 className="h-3.5 w-3.5 text-emerald-400/90" aria-hidden />
+                <span className="text-[8px] font-black uppercase tracking-wider text-emerald-200/90">
+                  Prompt grafo
+                </span>
+              </div>
+              {hasPromptEdge ? (
+                <textarea
+                  value={graphPromptFromEdge}
+                  onChange={(e) => onGraphPromptChange(e.target.value)}
+                  rows={3}
+                  className="max-h-36 w-full resize-y rounded-md border border-emerald-500/25 bg-black/30 px-2 py-1.5 text-[10px] leading-snug text-zinc-100 outline-none focus:border-emerald-400/50"
+                />
+              ) : (
+                <div className="flex items-start gap-2 rounded-md border border-dashed border-white/10 bg-black/25 px-2 py-2 text-[9px] leading-snug text-zinc-500">
+                  <Link2 className="mt-0.5 h-3 w-3 shrink-0 opacity-40" />
+                  Sin cable al Prompt — usa prompt local o conecta un nodo.
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-lg border border-violet-500/15 bg-violet-950/10 p-2">
+              <div className="mb-1 flex items-center gap-1.5">
+                <FileText className="h-3.5 w-3.5 text-violet-300/90" aria-hidden />
+                <span className="text-[8px] font-black uppercase tracking-wider text-violet-200/90">
+                  Prompt local
+                </span>
+              </div>
+              <textarea
+                ref={promptLocalRef}
+                value={nodeData.prompt ?? ''}
+                onChange={(e) => updateData('prompt', e.target.value)}
+                rows={4}
+                placeholder="Inglés · 7 capas: 1 cámara → 2 sujeto/@Image → 3 acción+físicas → 4 entorno → 5 luz → 6 estilo → 7 locks (puedes acortar)"
+                className="w-full resize-y rounded-md border border-white/10 bg-black/40 px-2 py-1.5 text-[10px] leading-snug text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500/45"
+              />
+              <div className="mt-2 space-y-2">
+                <div className="rounded-md border border-violet-500/25 bg-violet-950/20 px-2 py-1.5">
+                  <div className="mb-1 flex items-center gap-1.5">
+                    <LayoutTemplate className="h-3.5 w-3.5 text-violet-300" aria-hidden />
+                    <span className="text-[8px] font-black uppercase tracking-wider text-violet-100/95">
+                      Plantilla de escena
+                    </span>
+                  </div>
+                  <p className="mb-1.5 text-[7px] leading-snug text-zinc-500">
+                    Esqueleto en 7 capas (inglés); el gestor añade luz/estilo/física y el preset de cámara al enviar.
+                    Puedes borrar líneas que no uses. No sustituye el preset API ni las frases rápidas de cámara.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => insertIntoPromptLocal(DIRECTOR_PROMPT_TEMPLATE_EN)}
+                    className="inline-flex h-7 items-center gap-1 rounded-md border border-violet-500/40 bg-violet-950/40 px-2 text-[7px] font-bold uppercase tracking-wide text-violet-100 hover:bg-violet-900/50"
+                    title={DIRECTOR_PROMPT_TEMPLATE_EN}
+                  >
+                    <LayoutTemplate className="h-3 w-3 shrink-0" />
+                    Insertar plantilla
+                  </button>
+                </div>
+                <div className="rounded-md border border-cyan-500/25 bg-cyan-950/15 px-2 py-1.5">
+                  <div className="mb-1 flex items-center gap-1.5">
+                    <Camera className="h-3.5 w-3.5 text-cyan-300" aria-hidden />
+                    <span className="text-[8px] font-black uppercase tracking-wider text-cyan-100/95">
+                      Frases de cámara (prompt)
+                    </span>
+                  </div>
+                  <p className="mb-1.5 text-[7px] leading-snug text-zinc-500">
+                    Atajos que insertan una frase en inglés sobre cómo se mueve la cámara (distinto de la plantilla
+                    de escena y del bloque «Cámara (preset)» de la API).
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {SEEDANCE_CAMERA_QUICK_INSERTS.map((c) => {
+                      const CamI = seedCamIcon(c.id);
+                      return (
+                        <button
+                          key={c.id}
+                          type="button"
+                          title={`${c.label}: ${c.en}`}
+                          onClick={() => insertIntoPromptLocal(c.en + ',')}
+                          className="flex h-7 w-7 items-center justify-center rounded-md border border-cyan-500/35 bg-cyan-950/30 text-cyan-200/90 hover:bg-cyan-900/45"
+                        >
+                          <CamI className="h-3.5 w-3.5" aria-hidden />
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+              {hasPromptEdge ? (
+                <p className="mt-1 flex items-start gap-1 text-[7px] leading-tight text-zinc-500">
+                  <Info className="mt-0.5 h-3 w-3 shrink-0 opacity-70" />
+                  El grafo tiene prioridad; editar arriba actualiza el nodo fuente.
+                </p>
+              ) : null}
+            </div>
+            </div>
+
+            <div className="space-y-2">
+              <p className="px-0.5 text-[7px] font-black uppercase tracking-[0.18em] text-zinc-500">3 · Refuerzos API</p>
+              <p className="px-0.5 text-[7px] leading-snug text-zinc-600">
+                Keywords en inglés tras tu párrafo: refuerzan luz (capa 5), estilo (6) y física (3). Opcional si ya lo
+                describes en el texto.
+              </p>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div className="rounded-lg border border-amber-500/15 bg-amber-950/10 p-2">
+                <div className="mb-1 flex items-center gap-1.5">
+                  <Sun className="h-3.5 w-3.5 text-amber-400" aria-hidden />
+                  <span className="text-[8px] font-black uppercase tracking-wider text-amber-100/90">Luz</span>
+                </div>
+                <select
+                  className="w-full rounded-md border border-white/10 bg-black/45 py-1 pl-1.5 pr-1 text-[9px] text-zinc-100 outline-none focus:border-amber-500/40"
+                  value={nodeData.videoLightingPreset ?? ''}
+                  onChange={(e) => updateData('videoLightingPreset', e.target.value || undefined)}
+                >
+                  {VIDEO_LIGHTING_PRESETS.map((p) => (
+                    <option key={p.id || 'none'} value={p.id}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="rounded-lg border border-sky-500/15 bg-sky-950/10 p-2">
+                <div className="mb-1 flex items-center gap-1.5">
+                  <Palette className="h-3.5 w-3.5 text-sky-400" aria-hidden />
+                  <span className="text-[8px] font-black uppercase tracking-wider text-sky-100/90">Estilo</span>
+                </div>
+                <select
+                  className="w-full rounded-md border border-white/10 bg-black/45 py-1 pl-1.5 pr-1 text-[9px] text-zinc-100 outline-none focus:border-sky-500/40"
+                  value={nodeData.videoVisualStylePreset ?? ''}
+                  onChange={(e) => updateData('videoVisualStylePreset', e.target.value || undefined)}
+                >
+                  {VIDEO_VISUAL_STYLE_PRESETS.map((p) => (
+                    <option key={p.id || 'none'} value={p.id}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-white/[0.06] bg-zinc-950/35 p-2">
+              <div className="mb-1.5 flex items-center gap-1.5 text-zinc-500">
+                <Boxes className="h-3 w-3 text-zinc-400" aria-hidden />
+                <span className="text-[8px] font-black uppercase tracking-wider">Física</span>
+              </div>
+              <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                {VIDEO_PHYSICS_OPTIONS.map((p) => {
+                  const PI = physicIcon(p.id);
+                  return (
+                    <label
+                      key={p.id}
+                      className="flex cursor-pointer items-center gap-2 rounded-md border border-white/[0.05] bg-black/25 px-1.5 py-1 text-[8px] text-zinc-400 hover:bg-white/[0.03]"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!!(nodeData as Record<string, unknown>)[`videoPhysics_${p.id}`]}
+                        onChange={(e) => updateData(`videoPhysics_${p.id}`, e.target.checked)}
+                        className="rounded border-zinc-600"
+                      />
+                      <PI className="h-3 w-3 shrink-0 text-zinc-500" aria-hidden />
+                      <span className="leading-tight">{p.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+            </div>
+
+            <div className="space-y-2">
+              <p className="px-0.5 text-[7px] font-black uppercase tracking-[0.18em] text-zinc-500">4 · Cola API</p>
+              <p className="px-0.5 text-[7px] leading-snug text-zinc-600">
+                El servidor concatena al final del prompt, en este orden:{' '}
+                <span className="text-zinc-500">Animación</span> →{' '}
+                <span className="text-zinc-500">Cámara (preset)</span> →{' '}
+                <span className="text-zinc-500">Negative</span>. La capa 1 sigue siendo la primera frase de tu texto
+                principal.
+              </p>
+
+              <div className="flex flex-col gap-2 rounded-lg border border-white/[0.06] bg-zinc-950/30 p-2 sm:flex-row sm:items-end">
+                <div className="min-w-0 flex-1">
+                  <div className="mb-1 flex items-center gap-1.5">
+                    <Move className="h-3 w-3 text-zinc-500" aria-hidden />
+                    <span className="text-[8px] font-black uppercase tracking-wider text-zinc-500">Animación (API)</span>
+                  </div>
+                  <p className="mb-1 text-[7px] leading-snug text-zinc-600">
+                    Fragmento extra de movimiento; distinto del preset de cámara y de la capa 1 en el prompt.
+                  </p>
+                  <input
+                    type="text"
+                    value={nodeData.animationPrompt ?? ''}
+                    onChange={(e) => updateData('animationPrompt', e.target.value)}
+                    className="w-full rounded-md border border-white/10 bg-black/40 px-2 py-1.5 text-[10px] text-zinc-100 outline-none focus:border-violet-500/40"
+                    placeholder="Opcional (inglés)…"
+                  />
+                </div>
+                <label className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-white/[0.06] bg-black/30 px-2 py-2 text-[8px] text-zinc-400">
+                  <input
+                    type="checkbox"
+                    checked={!!nodeData.audio}
+                    onChange={(e) => updateData('audio', e.target.checked)}
+                    className="rounded border-zinc-600"
+                  />
+                  <Music className="h-3.5 w-3.5 text-violet-400/80" />
+                  Gen. audio
+                </label>
+              </div>
+
+              <div className="rounded-lg border border-white/[0.06] bg-zinc-950/35 p-2">
+                <div className="mb-1.5 flex items-center gap-1.5">
+                  <Compass className="h-3.5 w-3.5 text-cyan-400/80" aria-hidden />
+                  <span className="text-[8px] font-black uppercase tracking-wider text-zinc-400">Cámara (preset API)</span>
+                </div>
+                <p className="mb-1.5 text-[7px] leading-snug text-zinc-600">
+                  Etiqueta de movimiento que añade el backend; puedes combinarla con la capa 1 del prompt local.
+                </p>
+                <CameraMotionSelector
+                  compact
+                  value={nodeData.cameraPreset || ''}
+                  onChange={(val) => updateData('cameraPreset', val)}
+                />
+              </div>
+
+              <div className="rounded-lg border border-rose-500/15 bg-rose-950/10 p-2">
+                <div className="mb-1 flex items-center gap-1.5">
+                  <Ban className="h-3.5 w-3.5 text-rose-400/85" aria-hidden />
+                  <span className="text-[8px] font-black uppercase tracking-wider text-rose-100/90">
+                    Negative / exclusión
+                  </span>
+                </div>
+                <p className="mb-1 text-[7px] leading-snug text-zinc-600">
+                  Complementa la capa 7 (locks) del texto; el backend lo añade al final como exclusión.
+                </p>
+                <textarea
+                  value={nodeData.negativePrompt ?? ''}
+                  onChange={(e) => updateData('negativePrompt', e.target.value)}
+                  rows={2}
+                  className="w-full resize-none rounded-md border border-white/10 bg-black/40 px-2 py-1 text-[10px] leading-snug text-zinc-100 placeholder-zinc-600 outline-none focus:border-rose-500/35"
+                  placeholder="Opcional (inglés)…"
+                />
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>,
+    document.body,
+  );
+});
+GeminiVideoStudio.displayName = 'GeminiVideoStudio';
+
 export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => {
-  const nodeData = data as any;
+  const nodeData = data as BaseNodeData & {
+    videoModel?: 'veo31' | 'seedance2';
+    videoFormat?: string;
+    prompt?: string;
+    negativePrompt?: string;
+    audio?: boolean;
+    seed?: number;
+    animationPrompt?: string;
+    cameraPreset?: string;
+    videoLightingPreset?: string;
+    videoVisualStylePreset?: string;
+    videoPhysics_cloth?: boolean;
+    videoPhysics_fluid?: boolean;
+    videoPhysics_hair?: boolean;
+    videoPhysics_collision?: boolean;
+    videoPhysics_gravity?: boolean;
+    videoRefSlots?: VideoRefSlotsState;
+  };
   const { setNodes, getEdges, getNodes } = useReactFlow();
+  const edges = useEdges();
+  const nodes = useNodes();
   const [status, setStatus] = useState('idle');
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<string | null>(nodeData.value || null);
+  const [showStudio, setShowStudio] = useState(false);
+
+  const useSeedance = nodeData.videoModel === 'seedance2';
+  const modelKey = useSeedance ? 'seedance2' : 'veo31';
+
+  const videoFormatForApi = useMemo(() => {
+    const f = (nodeData.videoFormat || '16:9').trim();
+    if (useSeedance) {
+      if (f === '9:16' || f === '1:1' || f === '16:9') return f;
+      return '16:9';
+    }
+    return f === '9:16' ? '9:16' : '16:9';
+  }, [nodeData.videoFormat, useSeedance]);
+
+  const resolutionForApi = useMemo(() => {
+    const r = nodeData.resolution || '1080p';
+    if (['720p', '1080p', '4K'].includes(r)) return r;
+    return '1080p';
+  }, [nodeData.resolution]);
+
+  const durationSecondsForApi = useMemo(() => {
+    if (useSeedance) {
+      const n = Math.round(Number(nodeData.duration));
+      const d = Number.isFinite(n) ? n : 5;
+      return Math.min(12, Math.max(2, d));
+    }
+    const rl = resolutionForApi.toLowerCase();
+    if (rl.includes('1080') || rl.includes('4k')) return 8;
+    return normalizeVeoDuration(nodeData.duration);
+  }, [nodeData.duration, useSeedance, resolutionForApi]);
+
+  useEffect(() => {
+    const nextFmt = videoFormatForApi;
+    const nextDur = durationSecondsForApi;
+    const nextRes = resolutionForApi;
+    const durRaw = nodeData.duration;
+    const durMatch =
+      durRaw != null &&
+      String(durRaw).trim() !== "" &&
+      Math.round(Number(durRaw)) === nextDur;
+    const fmtMatch = nextFmt === (nodeData.videoFormat || "16:9");
+    const resMatch =
+      useSeedance || nextRes === (nodeData.resolution || "1080p");
+    if (fmtMatch && durMatch && resMatch) {
+      return;
+    }
+    setNodes((nds: any) =>
+      nds.map((n: any) => {
+        if (n.id !== id) return n;
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            videoFormat: nextFmt,
+            duration: String(nextDur),
+            resolution: useSeedance ? n.data.resolution : nextRes,
+          },
+        };
+      }),
+    );
+  }, [
+    id,
+    setNodes,
+    useSeedance,
+    videoFormatForApi,
+    durationSecondsForApi,
+    resolutionForApi,
+    nodeData.videoFormat,
+    nodeData.duration,
+    nodeData.resolution,
+  ]);
+
+  const previewCost = useMemo(
+    () =>
+      estimateVideoGeneratorPreviewUsd({
+        model: modelKey,
+        resolution: resolutionForApi,
+        durationSec: durationSecondsForApi,
+        videoFormat: videoFormatForApi,
+      }),
+    [modelKey, resolutionForApi, durationSecondsForApi, videoFormatForApi],
+  );
+
+  const preGenProgressPct = useMemo(() => {
+    const max = useSeedance ? 12 : 8;
+    return Math.min(100, (durationSecondsForApi / max) * 100);
+  }, [useSeedance, durationSecondsForApi]);
+
+  const displayVideo = useMemo(() => {
+    const v = nodeData.value;
+    if (typeof v === 'string' && v.length > 0) return v;
+    return result;
+  }, [nodeData.value, result]);
+
+  const historyUrls = useMemo(() => {
+    const raw = (nodeData as { _assetVersions?: unknown })._assetVersions;
+    if (!Array.isArray(raw)) return [];
+    const urls = raw
+      .map((x: unknown) =>
+        x &&
+        typeof x === 'object' &&
+        x !== null &&
+        'url' in x &&
+        typeof (x as { url: unknown }).url === 'string'
+          ? (x as { url: string }).url
+          : null,
+      )
+      .filter((u): u is string => typeof u === 'string' && u.length > 0);
+    return [...urls].reverse();
+  }, [nodeData]);
+
+  const promptEdge = useMemo(
+    () => edges.find((e) => e.target === id && e.targetHandle === 'prompt'),
+    [edges, id],
+  );
+
+  const graphPromptFromEdge = useMemo(() => {
+    if (!promptEdge) return '';
+    return String(resolvePromptValueFromEdgeSource(promptEdge, nodes as Node[]) ?? '');
+  }, [promptEdge, nodes]);
+
+  const onGraphPromptChange = useCallback(
+    (text: string) => {
+      if (!promptEdge) return;
+      setNodes((nds) => applyPromptValueToEdgeSource(promptEdge, nds as Node[], text));
+    },
+    [promptEdge, setNodes],
+  );
+
+  const connectedFirstFrame = useMemo(() => {
+    const edge = edges.find((e) => e.target === id && e.targetHandle === 'firstFrame');
+    if (!edge) return null;
+    const v = resolvePromptValueFromEdgeSource(edge, nodes as Node[]);
+    return typeof v === 'string' && v.trim().length > 0 ? v : null;
+  }, [edges, nodes, id]);
+
+  const connectedLastFrame = useMemo(() => {
+    const edge = edges.find((e) => e.target === id && e.targetHandle === 'lastFrame');
+    if (!edge) return null;
+    const v = resolvePromptValueFromEdgeSource(edge, nodes as Node[]);
+    return typeof v === 'string' && v.trim().length > 0 ? v : null;
+  }, [edges, nodes, id]);
+
+  const hasPrompt =
+    graphPromptFromEdge.trim().length > 0 ||
+    (typeof nodeData.prompt === 'string' && nodeData.prompt.trim().length > 0);
+
+  const isActivelyGenerating = status === 'running' && progress < 100;
 
   const onRun = async () => {
     const edges = getEdges();
@@ -6380,12 +7769,24 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
       return v || null;
     };
 
-    const prompt = findSourceValue(promptEdge) || nodeData.prompt || "";
+    const basePrompt = findSourceValue(promptEdge) || nodeData.prompt || "";
+    const enhancement = buildDirectorEnhancementSuffix({
+      lightingId: nodeData.videoLightingPreset,
+      visualStyleId: nodeData.videoVisualStylePreset,
+      physics: buildPhysicsFlagsFromNodeData(nodeData as Record<string, unknown>),
+    });
+    const prompt = mergeBasePromptWithDirectorBlock(basePrompt, enhancement);
     const firstFrame = findSourceValue(firstFrameEdge);
     const lastFrame = findSourceValue(lastFrameEdge);
     const negativePrompt = findSourceValue(negativePromptEdge) || nodeData.negativePrompt;
 
-    if (!prompt) return alert("Se necesita un Creative Prompt para generar video. Puedes escribirlo en el nodo o conectar un nodo de Prompt.");
+    if (!basePrompt.trim())
+      return alert(
+        "Se necesita un Creative Prompt para generar video. Escribe en el panel (7 capas recomendadas) o conecta un nodo de Prompt.",
+      );
+
+    const apiPath = useSeedance ? '/api/seedance/video' : '/api/gemini/video';
+    const modelLabel = useSeedance ? 'Seedance 2' : 'Gemini Veo 3.1';
 
     setStatus('running');
     setProgress(0);
@@ -6398,22 +7799,26 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
     }, 2000);
 
     try {
-      const ok = await runAiJobWithNotification({ nodeId: id, label: 'Gemini Video (Veo)' }, async () => {
-        const res = await fetch('/api/gemini/video', {
+      const ok = await runAiJobWithNotification(
+        { nodeId: id, label: `Video Generator (${modelLabel})` },
+        async () => {
+        const res = await fetch(apiPath, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt,
             firstFrame,
             lastFrame,
-            resolution: nodeData.resolution || "1080p",
-            durationSeconds: nodeData.duration || "5",
+            videoRefSlots: nodeData.videoRefSlots,
+            resolution: useSeedance ? videoFormatForApi : resolutionForApi,
+            aspectRatio: videoFormatForApi,
+            durationSeconds: durationSecondsForApi,
             audio: nodeData.audio || false,
             seed: nodeData.seed,
             negativePrompt: negativePrompt,
             animationPrompt: nodeData.animationPrompt,
-            cameraPreset: nodeData.cameraPreset
-          })
+            cameraPreset: nodeData.cameraPreset,
+          }),
         });
 
         if (!res.ok) {
@@ -6447,7 +7852,8 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
             };
           }),
         );
-      });
+      },
+      );
       setStatus(ok ? 'success' : 'error');
     } finally {
       clearInterval(progressInterval);
@@ -6455,20 +7861,22 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
     }
   };
 
-  const veoOnRunRef = useRef(onRun);
-  veoOnRunRef.current = onRun;
-  useRegisterAssistantNodeRun(id, () => veoOnRunRef.current());
+  const videoGenOnRunRef = useRef(onRun);
+  videoGenOnRunRef.current = onRun;
+  useRegisterAssistantNodeRun(id, () => videoGenOnRunRef.current());
 
   const updateData = (key: string, val: any) => {
     setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n));
   };
 
   return (
-    <div className={`custom-node processor-node ${status === 'running' ? 'node-glow-running' : ''}`} style={{ minWidth: 320, maxHeight: 600 }}>
-      <FoldderNodeResizer minWidth={320} minHeight={220} maxWidth={960} maxHeight={600} isVisible={selected} />
-      <NodeLabel id={id} label={nodeData.label} defaultLabel="Gemini Video" />
+    <div
+      className={`custom-node processor-node group/node ${isActivelyGenerating ? 'node-glow-running' : ''}`}
+      style={{ minWidth: 280, maxHeight: 600 }}
+    >
+      <FoldderNodeResizer minWidth={280} minHeight={200} maxWidth={960} maxHeight={600} isVisible={selected} />
+      <NodeLabel id={id} label={nodeData.label} defaultLabel="Video Generator" />
 
-      {/* Handles */}
       <div className="handle-wrapper handle-left !top-[20%]">
         <FoldderDataHandle type="target" position={Position.Left} id="firstFrame" dataType="image" />
         <span className="handle-label text-emerald-600">First Frame</span>
@@ -6486,94 +7894,123 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
         <span className="handle-label text-rose-600">Negative</span>
       </div>
 
-      {/* Header */}
       <div className="node-header">
-        <NodeIcon type="geminiVideo" selected={selected} state={resolveFoldderNodeState({ loading: status === 'running', done: !!result, error: status === 'error' })} size={16} />
-        <FoldderNodeHeaderTitle className="flex-1" introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
-          Gemini Video
+        <NodeIcon
+          type="geminiVideo"
+          selected={selected}
+          state={resolveFoldderNodeState({
+            loading: isActivelyGenerating,
+            done: !!displayVideo,
+            error: status === 'error',
+          })}
+          size={16}
+        />
+        <FoldderNodeHeaderTitle
+          className="flex-1"
+          introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}
+        >
+          Video Generator
         </FoldderNodeHeaderTitle>
-        <div className="node-badge">VEO 3.1</div>
-        <ViewerOpenButton nodeId={id} disabled={!(result || nodeData.value)} />
+        <div
+          className="node-badge max-w-[7rem] truncate"
+          title={nodeData.videoModel === 'seedance2' ? 'Seedance 2 (火山方舟)' : 'Gemini Veo 3.1'}
+        >
+          {nodeData.videoModel === 'seedance2' ? 'SEEDANCE 2' : 'VEO 3.1'}
+        </div>
+        <ViewerOpenButton nodeId={id} disabled={!displayVideo} />
       </div>
 
-      {/* ── Video preview: encaja en el marco (contain); resolución del archivo = la generada ── */}
-      <div className="relative flex min-h-0 w-full flex-1 items-center justify-center bg-[#0a0a0a] group/media overflow-hidden">
-        {result ? (
+      <div
+        className="relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden rounded-b-[24px] bg-[#0a0a0a] group/out"
+        style={{ minHeight: 140 }}
+      >
+        {displayVideo ? (
           <>
             <video
-              src={result}
+              src={displayVideo}
               className="max-h-full max-w-full object-contain"
               controls
               loop
               muted
               playsInline
             />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover/media:opacity-100 transition-opacity pointer-events-none" />
-            <div className="absolute bottom-2 left-2 opacity-0 group-hover/media:opacity-100 transition-opacity">
-              <span className="text-[7px] font-black uppercase tracking-widest text-white/60 bg-black/50 px-1.5 py-0.5 rounded">
-                {nodeData.resolution || '1080p'} · {nodeData.duration || '5'}s
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent opacity-0 transition-opacity group-hover/out:opacity-100" />
+            <div className="pointer-events-none absolute top-2 left-2 z-20 opacity-0 transition-opacity group-hover/out:opacity-100">
+              <span className="rounded bg-black/55 px-1.5 py-0.5 text-[6px] font-black uppercase tracking-widest text-white/75">
+                {useSeedance ? videoFormatForApi : resolutionForApi} · {durationSecondsForApi}s
               </span>
             </div>
           </>
         ) : (
-          <div className="flex flex-col items-center justify-center h-full gap-3 opacity-25">
-            <Video size={36} className="text-zinc-400" />
-            <span className="text-[8px] font-black uppercase tracking-widest text-zinc-500">No video generated</span>
+          <div className="flex flex-col items-center justify-center gap-2 px-4 py-6 opacity-30">
+            <Video size={32} className="text-zinc-400" />
+            <span className="text-center text-[8px] font-black uppercase tracking-widest text-zinc-500">
+              Sin vídeo · Studio para opciones
+            </span>
           </div>
         )}
-        {status === 'running' && (
-          <div className="absolute bottom-0 left-0 right-0">
-            <div className="w-full bg-black/60 h-0.5">
-              <div className="h-full bg-gradient-to-r from-emerald-500 to-cyan-500 transition-all duration-500" style={{ width: `${progress}%` }} />
+
+        <StudioModeCenterButton onClick={() => setShowStudio(true)} />
+
+        {isActivelyGenerating && (
+          <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-[50]">
+            <div className="h-px w-full bg-white/15">
+              <div
+                className="h-full bg-white transition-all duration-500"
+                style={{ width: `${Math.min(100, progress)}%` }}
+              />
             </div>
-            <p className="text-[6px] text-emerald-400/80 font-black text-center uppercase tracking-widest py-0.5 bg-black/70 animate-pulse">
-              Generating… {Math.round(progress)}%
+            <p className="bg-black/80 px-2 py-1 text-center text-[7px] font-black uppercase tracking-widest text-white/95 backdrop-blur-sm">
+              Generando… {Math.round(progress)}%
             </p>
           </div>
         )}
       </div>
 
-      {/* ── Controls — compact, bottom ── */}
-      <div className="px-3 pt-2.5 pb-3 space-y-2" style={{ flexShrink: 0 }}>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="space-y-0.5">
-            <span className="text-[7px] font-black text-slate-500 uppercase tracking-widest">Resolution</span>
-            <select className="w-full bg-[#1a1a1a] text-zinc-300 border border-white/10 rounded-lg px-2 py-1.5 text-[8px] font-black cursor-pointer hover:border-white/20 transition-colors"
-              value={nodeData.resolution || '1080p'}
-              onChange={(e) => updateData('resolution', e.target.value)}>
-              <option value="720p">720p HD</option>
-              <option value="1080p">1080p Full HD</option>
-              <option value="4K">4K Ultra HD</option>
-            </select>
-          </div>
-          <div className="space-y-0.5">
-            <span className="text-[7px] font-black text-slate-500 uppercase tracking-widest">Duration</span>
-            <select className="w-full bg-[#1a1a1a] text-zinc-300 border border-white/10 rounded-lg px-2 py-1.5 text-[8px] font-black cursor-pointer hover:border-white/20 transition-colors"
-              value={nodeData.duration || '5'}
-              onChange={(e) => updateData('duration', e.target.value)}>
-              <option value="4">4s</option>
-              <option value="5">5s</option>
-              <option value="6">6s</option>
-              <option value="8">8s</option>
-            </select>
-          </div>
+      {!showStudio && (
+        <div className="nodrag flex shrink-0 border-t border-black/[0.06] bg-white/[0.04] px-2 py-2">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRun();
+            }}
+            disabled={isActivelyGenerating || !hasPrompt}
+            title={
+              !hasPrompt
+                ? 'Conecta un prompt o abre Studio y escribe el guion en Prompt local'
+                : undefined
+            }
+            className="execute-btn nodrag w-full !py-2.5 !text-[9px] justify-center disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Generar vídeo
+          </button>
         </div>
-        <div className="space-y-0.5">
-          <span className="text-[7px] font-black text-slate-500 uppercase tracking-widest">Camera Motion</span>
-          <CameraMotionSelector value={nodeData.cameraPreset || ''} onChange={(val) => updateData('cameraPreset', val)} />
-        </div>
-        <button
-          onClick={onRun}
-          disabled={status === 'running'}
-          className="execute-btn w-full !py-2.5 !text-[10px] justify-center gap-2 group relative overflow-hidden"
-        >
-          {status === 'running' && (
-            <div className="absolute inset-0 bg-white/15" style={{ width: `${progress}%`, transition: 'width 0.5s ease-out' }} />
-          )}
-          <Zap size={11} className={status === 'running' ? 'animate-pulse' : 'group-hover:scale-125 transition-transform'} />
-          <span className="relative z-10">{status === 'running' ? `GENERATING ${Math.round(progress)}%` : 'GENERATE VIDEO'}</span>
-        </button>
-      </div>
+      )}
+
+      {showStudio && (
+        <GeminiVideoStudio
+          onClose={() => setShowStudio(false)}
+          updateData={updateData}
+          onGenerate={onRun}
+          status={status}
+          progress={progress}
+          outputVideo={displayVideo}
+          graphPromptFromEdge={graphPromptFromEdge}
+          hasPromptEdge={!!promptEdge}
+          onGraphPromptChange={onGraphPromptChange}
+          useSeedance={useSeedance}
+          videoFormatForApi={videoFormatForApi}
+          resolutionForApi={resolutionForApi}
+          durationSecondsForApi={durationSecondsForApi}
+          previewCost={previewCost}
+          preGenProgressPct={preGenProgressPct}
+          nodeData={nodeData}
+          historyUrls={historyUrls}
+          connectedFirstFrame={connectedFirstFrame}
+          connectedLastFrame={connectedLastFrame}
+        />
+      )}
 
       <div className="handle-wrapper handle-right" style={{ top: '50%' }}>
         <span className="handle-label text-cyan-400">Video Out</span>
@@ -7001,17 +8438,27 @@ function containedImageRect(cw: number, ch: number, nw: number, nh: number) {
 
 /** Evita canvas “tainted” con URLs externas (misma lógica que en otros nodos). */
 function imageUrlForCanvasCrop(src: string): string {
-  if (src.startsWith('data:') || src.startsWith('blob:')) return src;
+  const trimmed = src.trim();
+  if (!trimmed) return src;
+  if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return trimmed;
+  /** Ya pasó por el proxy — no volver a envolver */
+  if (trimmed.includes('/api/spaces/proxy') && trimmed.includes('url=')) return trimmed;
+
+  let abs = trimmed;
+  if (trimmed.startsWith('//') && typeof window !== 'undefined') {
+    abs = `${window.location.protocol}${trimmed}`;
+  }
+
   try {
-    const u = new URL(src, typeof window !== 'undefined' ? window.location.href : 'http://localhost');
-    if (typeof window !== 'undefined' && u.origin === window.location.origin) return src;
+    const u = new URL(abs, typeof window !== 'undefined' ? window.location.href : 'http://localhost');
+    if (typeof window !== 'undefined' && u.origin === window.location.origin) return abs;
   } catch {
     /* ignore */
   }
-  if (/^https?:\/\//i.test(src)) {
-    return `/api/spaces/proxy?url=${encodeURIComponent(src)}`;
+  if (/^https?:\/\//i.test(abs)) {
+    return `/api/spaces/proxy?url=${encodeURIComponent(abs)}`;
   }
-  return src;
+  return abs;
 }
 
 // --- CROP NODE ---
@@ -7055,8 +8502,12 @@ export const CropNode = memo(({ id, data, selected }: NodeProps<any>) => {
     (rect: { x: number; y: number; w: number; h: number }) => {
       if (!sourceImage || !containerRef.current) return;
 
+      const loadUrl = imageUrlForCanvasCrop(sourceImage);
       const img = new Image();
-      img.crossOrigin = 'anonymous';
+      /** `crossOrigin='anonymous'` hace fallar la carga de muchos `data:` / `blob:` en `Image()`. */
+      if (!loadUrl.startsWith('data:') && !loadUrl.startsWith('blob:')) {
+        img.crossOrigin = 'anonymous';
+      }
       img.onload = () => {
         const container = containerRef.current;
         if (!container) return;
@@ -7113,8 +8564,13 @@ export const CropNode = memo(({ id, data, selected }: NodeProps<any>) => {
           },
         } : n));
       };
-      img.onerror = () => console.error('[CropNode] could not load image for cropping');
-      img.src = imageUrlForCanvasCrop(sourceImage);
+      img.onerror = () => {
+        console.warn('[CropNode] could not load image for cropping', {
+          loadUrlPrefix: loadUrl.slice(0, 96),
+          sourcePrefix: sourceImage.slice(0, 96),
+        });
+      };
+      img.src = loadUrl;
     },
     [sourceImage, id, setNodes, aspectRatio],
   );

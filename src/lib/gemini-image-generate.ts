@@ -9,6 +9,7 @@
 import { uploadToS3, getPresignedUrl } from "@/lib/s3-utils";
 import { parseGeminiUsageMetadata, recordApiUsage } from "@/lib/api-usage";
 import { estimateGeminiImageGenerationUsd } from "@/lib/pricing-config";
+import { parseReferenceImageForGemini } from "@/lib/parse-reference-image";
 import crypto from "crypto";
 
 export const GEMINI_IMAGE_MODELS = {
@@ -49,39 +50,6 @@ export class GeminiGenerateError extends Error {
     super(message);
     this.name = "GeminiGenerateError";
   }
-}
-
-async function imageUrlToBase64(url: string): Promise<{ data: string; mimeType: string } | null> {
-  try {
-    const res = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      },
-    });
-    if (!res.ok) return null;
-    const buffer = await res.arrayBuffer();
-    const headerMime = res.headers.get("content-type")?.split(";")[0]?.trim();
-    const mimeType =
-      headerMime || (url.toLowerCase().includes(".png") ? "image/png" : "image/jpeg");
-    return {
-      data: Buffer.from(buffer).toString("base64"),
-      mimeType,
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function parseImage(image: string): Promise<{ data: string; mimeType: string } | null> {
-  if (!image) return null;
-  if (image.startsWith("data:")) {
-    const [meta, data] = image.split(";base64,");
-    return { data, mimeType: meta.split(":")[1] };
-  }
-  if (image.startsWith("http")) {
-    return imageUrlToBase64(image);
-  }
-  return null;
 }
 
 function expectedGeminiWaitMs(modelKey: string, thinking: boolean): number {
@@ -133,20 +101,36 @@ export async function geminiImageGenerate(
   const MAX_REFS = modelKey === "pro3" ? 5 : 4;
   const slice = allImages.slice(0, MAX_REFS);
   const n = slice.length || 1;
+  let inlineImageCount = 0;
   for (let i = 0; i < slice.length; i++) {
-    const parsed = await parseImage(slice[i]);
+    const parsed = await parseReferenceImageForGemini(slice[i]);
     if (parsed) {
       parts.push({ inline_data: { mime_type: parsed.mimeType, data: parsed.data } });
+      inlineImageCount += 1;
+    } else {
+      console.warn(
+        `[gemini-image] reference ${i + 1}/${slice.length} unreadable (prefix=${String(slice[i]).slice(0, 40)}…)`,
+      );
     }
     report(10 + Math.round(((i + 1) / n) * 8), "refs");
   }
   if (slice.length === 0) report(12, "refs");
 
+  if (slice.length > 0 && inlineImageCount !== slice.length) {
+    throw new GeminiGenerateError(
+      `Referencias incompletas: se enviaron ${inlineImageCount} de ${slice.length} imagen(es) a Gemini (data URL o URL inválida o expirada).`,
+      400,
+    );
+  }
+
   parts.push({ text: prompt });
   report(18, "payload");
 
+  // Debe coincidir con normalizeNanoBananaResolution en el cliente (por defecto 2k si el nodo no trae dato).
   let imageSize = "1K";
-  const resInput = (resolution || "1k").toLowerCase();
+  const resInput = (resolution && String(resolution).trim()
+    ? String(resolution).toLowerCase()
+    : "2k");
   if (resInput === "0.5k" || resInput === "512") imageSize = "512";
   else imageSize = resInput.toUpperCase();
 

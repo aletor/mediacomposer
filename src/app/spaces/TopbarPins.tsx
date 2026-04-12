@@ -9,17 +9,15 @@ export const TOPBAR_PIN_ICON_SIZE = 28;
 
 const PIN_ICON_COLOR = '#171717';
 
-export const MAX_TOPBAR_PINS = 5;
+/** Solo estos tipos pueden figurar en la barra inferior de accesos (antes «topbar»). */
+export const TOPBAR_ALLOWED_PIN_TYPES = ["nanoBanana", "geminiVideo", "freehand"] as const;
+export const TOPBAR_PIN_ALLOWLIST = new Set<string>(TOPBAR_ALLOWED_PIN_TYPES);
+
+export const MAX_TOPBAR_PINS = TOPBAR_ALLOWED_PIN_TYPES.length;
 export const TOPBAR_PINS_STORAGE_KEY = "foldder-topbar-pins";
 
-/** Valores por defecto: Prompt, Nano, Video (Veo), Export, Freehand */
-export const DEFAULT_TOPBAR_PIN_TYPES: string[] = [
-  "promptInput",
-  "nanoBanana",
-  "geminiVideo",
-  "imageExport",
-  "freehand",
-];
+/** Por defecto: Nano Banana, Video Generator, Freehand */
+export const DEFAULT_TOPBAR_PIN_TYPES: string[] = [...TOPBAR_ALLOWED_PIN_TYPES];
 
 type TopbarPinsProps = {
   pinnedTypes: string[];
@@ -183,7 +181,7 @@ export function TopbarPins({
         onDragEnter={allowDrop}
         onDragOver={allowDrop}
         onDrop={handleDrop}
-        aria-label="Accesos directos del topbar, máximo cinco. Arrastra o doble clic para añadir al lienzo. Clic derecho en un icono para quitarlo."
+        aria-label="Accesos directos (Nano Banana, Video Generator, Freehand). Arrastra o doble clic para añadir al lienzo. Clic derecho en un icono para quitarlo."
       >
         {pinnedTypes.length === 0 && (
           <span className="whitespace-nowrap px-1 text-[9px] font-bold uppercase tracking-widest text-white/40">

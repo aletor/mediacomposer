@@ -157,7 +157,20 @@
       "background": "bg-slate-50/50",
       "borderRadius": "rounded-xl",
       "border": "border border-slate-200/60",
-      "minHeightPx": 80
+      "minHeightPx": 80,
+      "shadowInner": "shadow-inner (bloques de texto prompt / Enhancer)"
+    },
+    "promptTextReadable": {
+      "note": "Sobre fondo slate-50/50 el cuerpo legible debe ser oscuro (no text-gray-400).",
+      "content": {
+        "tailwind": "font-mono text-[10px] leading-relaxed text-slate-800",
+        "hex": "#1a1a1b",
+        "mapsTo": "colors.text.primaryDark"
+      },
+      "placeholder": {
+        "tailwind": "text-[10px] italic text-slate-500",
+        "mapsTo": "colors.text.muted (#6b7280 aprox.)"
+      }
     },
     "overflow": "El contenedor del preview debe usar overflow-hidden + border-radius inferior alineado al nodo si hay imagen a pantalla completa (evitar picos en esquinas)."
   },

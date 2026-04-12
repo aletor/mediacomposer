@@ -16,6 +16,7 @@ export const DEFAULT_USAGE_SINCE_ISO = USAGE_PERIOD_START_ISO;
 export const USAGE_SERVICES = [
   { id: "gemini-nano", label: "Gemini · Nano Banana (imagen 3 Flash / Pro)" },
   { id: "gemini-veo", label: "Gemini · Veo 3.1 (vídeo)" },
+  { id: "seedance-video", label: "Volcengine Ark · Seedance (vídeo)" },
   { id: "gemini-analyze", label: "Gemini · Análisis de áreas (2.5 Flash)" },
   { id: "gemini-search-verify", label: "Gemini · Verificación imágenes (búsqueda web)" },
   { id: "openai-assistant", label: "OpenAI · Asistente del lienzo (GPT-4o mini)" },
@@ -34,7 +35,8 @@ export type UsageProvider =
   | "openai"
   | "grok"
   | "runway"
-  | "replicate";
+  | "replicate"
+  | "volcengine";
 
 export type UsageRecordLine = {
   ts: string;
@@ -78,6 +80,7 @@ export function inferServiceIdFromRecord(r: UsageRecordLine): UsageServiceId {
   const routePath = r.route || "";
   if (routePath.includes("/gemini/generate")) return "gemini-nano";
   if (routePath.includes("/gemini/video")) return "gemini-veo";
+  if (routePath.includes("/seedance/video")) return "seedance-video";
   if (routePath.includes("/analyze-areas")) return "gemini-analyze";
   if (routePath.includes("/assistant")) return "openai-assistant";
   if (routePath.includes("/enhance")) return "openai-enhance";

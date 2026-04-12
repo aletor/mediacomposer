@@ -8,6 +8,7 @@ export function getAiRequestLabelForPathname(pathname: string): string | null {
     { test: /^\/api\/gemini\/generate$/, label: "Nano Banana" },
     { test: /^\/api\/gemini\/generate-stream$/, label: "Nano Banana" },
     { test: /^\/api\/gemini\/video$/, label: "Veo" },
+    { test: /^\/api\/seedance\/video$/, label: "Seedance" },
     { test: /^\/api\/gemini\/analyze-areas$/, label: "Gemini" },
     { test: /^\/api\/openai\/enhance$/, label: "OpenAI" },
     { test: /^\/api\/spaces\/assistant$/, label: "Asistente" },

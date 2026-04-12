@@ -23,8 +23,10 @@ export async function geminiGenerateWithServerProgress(
     const t = await res.text().catch(() => "");
     let msg = `HTTP ${res.status}`;
     try {
-      const j = JSON.parse(t) as { error?: string };
-      if (j?.error) msg = String(j.error);
+      const j = JSON.parse(t) as { error?: string; message?: string; details?: string };
+      if (j?.message) msg = String(j.message);
+      else if (j?.details) msg = String(j.details);
+      else if (j?.error) msg = String(j.error);
       else if (t) msg = t.slice(0, 300);
     } catch {
       if (t) msg = t.slice(0, 300);
@@ -38,48 +40,74 @@ export async function geminiGenerateWithServerProgress(
   const dec = new TextDecoder();
   let buf = "";
   let result: GeminiStreamResult | null = null;
+  let lastProgress = 0;
+
+  const handleMessage = (msg: {
+    type?: string;
+    progress?: number;
+    stage?: string;
+    output?: string;
+    key?: string;
+    model?: string;
+    time?: number;
+    error?: string;
+  }) => {
+    if (msg.type === "phase" && typeof msg.progress === "number") {
+      lastProgress = msg.progress;
+      onProgress(msg.progress, msg.stage || "");
+    }
+    if (msg.type === "done" && typeof msg.output === "string") {
+      if (lastProgress < 100) {
+        onProgress(100, "complete");
+      }
+      result = {
+        output: msg.output,
+        key: typeof msg.key === "string" ? msg.key : undefined,
+        model: typeof msg.model === "string" ? msg.model : undefined,
+        time: typeof msg.time === "number" ? msg.time : undefined,
+      };
+    }
+    if (msg.type === "error") {
+      throw new Error(msg.error || "Error en generación");
+    }
+  };
+
+  const consumeLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let msg: Parameters<typeof handleMessage>[0];
+    try {
+      msg = JSON.parse(trimmed);
+    } catch {
+      return;
+    }
+    handleMessage(msg);
+  };
 
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
+    if (value) {
+      buf += dec.decode(value, { stream: !done });
+    }
     for (;;) {
       const nl = buf.indexOf("\n");
       if (nl < 0) break;
-      const line = buf.slice(0, nl).trim();
+      const line = buf.slice(0, nl);
       buf = buf.slice(nl + 1);
-      if (!line) continue;
-
-      const msg = JSON.parse(line) as {
-        type?: string;
-        progress?: number;
-        stage?: string;
-        output?: string;
-        key?: string;
-        model?: string;
-        time?: number;
-        error?: string;
-      };
-
-      if (msg.type === "phase" && typeof msg.progress === "number") {
-        onProgress(msg.progress, msg.stage || "");
-      }
-      if (msg.type === "done" && typeof msg.output === "string") {
-        result = {
-          output: msg.output,
-          key: typeof msg.key === "string" ? msg.key : undefined,
-          model: typeof msg.model === "string" ? msg.model : undefined,
-          time: typeof msg.time === "number" ? msg.time : undefined,
-        };
-      }
-      if (msg.type === "error") {
-        throw new Error(msg.error || "Error en generación");
-      }
+      consumeLine(line);
     }
+    if (done) break;
+  }
+  // Última línea sin \n final (algunos runtimes no la entregan en el buffer)
+  if (buf.trim()) {
+    consumeLine(buf);
   }
 
-  if (!result?.output) {
+  if (!result) {
     throw new Error("Respuesta incompleta del servidor");
+  }
+  if (lastProgress < 100) {
+    onProgress(100, "complete");
   }
   return result;
 }

@@ -17,8 +17,8 @@ export const SIDEBAR_HOVER_HELP: Record<string, { title: string; line: string }>
     line: 'Genera imagen desde prompt y referencias',
   },
   geminiVideo: {
-    title: 'Gemini Video',
-    line: 'Genera vídeo desde frames y prompt',
+    title: 'Video Generator',
+    line: 'Veo 3.1 o Seedance 2: prompt y frames opcionales',
   },
   grokProcessor: {
     title: 'Grok Imagine',

@@ -113,6 +113,46 @@ export function resolvePromptValueFromEdgeSource(
   return typeof v === "string" ? v : "";
 }
 
+/**
+ * Escribe `data.value` en el nodo que alimenta la arista (mismo criterio que
+ * `resolvePromptValueFromEdgeSource`), para editar el prompt desde Studio y verlo en el grafo.
+ */
+export function applyPromptValueToEdgeSource(
+  edge: Pick<Edge, "source" | "sourceHandle">,
+  nodes: Node[],
+  newValue: string
+): Node[] {
+  const src = nodes.find((n) => n.id === edge.source);
+  if (!src) return nodes;
+  if (src.type === "canvasGroup" && edge.sourceHandle?.startsWith("g_out_")) {
+    const p = parseCanvasGroupOutHandle(edge.sourceHandle);
+    if (!p) return nodes;
+    const memberId = p.memberId;
+    return nodes.map((n) =>
+      n.id === memberId
+        ? {
+            ...n,
+            data: {
+              ...(typeof n.data === "object" && n.data !== null ? n.data : {}),
+              value: newValue,
+            },
+          }
+        : n
+    );
+  }
+  return nodes.map((n) =>
+    n.id === edge.source
+      ? {
+          ...n,
+          data: {
+            ...(typeof n.data === "object" && n.data !== null ? n.data : {}),
+            value: newValue,
+          },
+        }
+      : n
+  );
+}
+
 export type CanvasGroupBackup = {
   /** Aristas originales (cruce + internas) antes del colapso */
   crossingEdges: Edge[];

@@ -241,7 +241,7 @@ const Sidebar = ({
       { type: 'enhancer',          label: 'Enhance' },
       { type: 'grokProcessor',     label: 'Grok' },
       { type: 'nanoBanana',        label: 'Nano' },
-      { type: 'geminiVideo',       label: 'Veo' },
+      { type: 'geminiVideo',       label: 'Video Gen' },
       null,
       { type: 'concatenator',      label: 'Concat' },
       { type: 'listado',           label: 'Listado' },
@@ -396,7 +396,7 @@ const Sidebar = ({
                   { type: 'enhancer',          label: 'Enhance' },
                   { type: 'grokProcessor',     label: 'Grok' },
                   { type: 'nanoBanana',        label: 'Nano' },
-                  { type: 'geminiVideo',       label: 'Veo 3.1' },
+                  { type: 'geminiVideo',       label: 'Video Generator' },
                 ].map(item => (
                   <div key={item.type}
                     className="dndnode relative flex flex-col items-center justify-center gap-1 py-3 px-2 !bg-white/20 hover:!bg-white/30 border border-white/25 hover:border-cyan-400/50 rounded-2xl cursor-grab active:scale-95 transition-all text-center aspect-square"
