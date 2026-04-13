@@ -168,7 +168,7 @@ export function createStoryWithFrame(
 export function updateTextFrameGeometry(
   textFrames: TextFrame[],
   frameId: string,
-  patch: Partial<Pick<TextFrame, "x" | "y" | "width" | "height" | "padding">>,
+  patch: Partial<Pick<TextFrame, "x" | "y" | "width" | "height" | "padding" | "opacity">>,
 ): TextFrame[] {
   return textFrames.map((f) => (f.id === frameId ? { ...f, ...patch } : f));
 }

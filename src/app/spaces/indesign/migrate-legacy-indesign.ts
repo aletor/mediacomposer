@@ -22,15 +22,28 @@ type LegacyFrame = {
 
 function mapTypo(t?: Record<string, unknown>): Typography {
   if (!t) return { ...DEFAULT_TYPOGRAPHY };
+  const base = { ...DEFAULT_TYPOGRAPHY };
   return {
-    fontFamily: (t.fontFamily as string) || DEFAULT_TYPOGRAPHY.fontFamily,
-    fontSize: Number(t.fontSize) || DEFAULT_TYPOGRAPHY.fontSize,
-    lineHeight: Number(t.lineHeight) || DEFAULT_TYPOGRAPHY.lineHeight,
+    ...base,
+    fontFamily: (t.fontFamily as string) || base.fontFamily,
+    fontSize: Number(t.fontSize) || base.fontSize,
+    lineHeight: Number(t.lineHeight) || base.lineHeight,
     letterSpacing: Number(t.charSpacing ?? t.letterSpacing) || 0,
-    align: (t.textAlign as Typography["align"]) || DEFAULT_TYPOGRAPHY.align,
-    color: (t.fill as string) || (t.color as string) || DEFAULT_TYPOGRAPHY.color,
-    fontWeight: (t.fontWeight as string) || DEFAULT_TYPOGRAPHY.fontWeight,
-    fontStyle: (t.fontStyle as string) || DEFAULT_TYPOGRAPHY.fontStyle,
+    align: (t.textAlign as Typography["align"]) || base.align,
+    color: (t.fill as string) || (t.color as string) || base.color,
+    fontWeight: (t.fontWeight as string) || base.fontWeight,
+    fontStyle: (t.fontStyle as string) || base.fontStyle,
+    paragraphIndent:
+      t.paragraphIndent != null && String(t.paragraphIndent) !== ""
+        ? Number(t.paragraphIndent)
+        : base.paragraphIndent,
+    fontKerning: (t.fontKerning as Typography["fontKerning"]) || base.fontKerning,
+    fontVariantCaps: (t.fontVariantCaps as Typography["fontVariantCaps"]) || base.fontVariantCaps,
+    textUnderline: t.textUnderline !== undefined ? Boolean(t.textUnderline) : base.textUnderline,
+    textStrikethrough:
+      t.textStrikethrough !== undefined ? Boolean(t.textStrikethrough) : base.textStrikethrough,
+    fontFeatureSettings:
+      typeof t.fontFeatureSettings === "string" ? t.fontFeatureSettings : base.fontFeatureSettings,
   };
 }
 
@@ -47,7 +60,14 @@ export function migrateIndesignPageState(page: IndesignPageState): IndesignPageS
 
   const first = rawStories[0] as unknown as LegacyStory & Story;
   if (!("fullText" in first) && page.textFrames?.length) {
-    return { ...page, textFrames: page.textFrames ?? [] };
+    return {
+      ...page,
+      textFrames: page.textFrames ?? [],
+      stories: (page.stories ?? []).map((s) => ({
+        ...s,
+        typography: { ...DEFAULT_TYPOGRAPHY, ...s.typography },
+      })),
+    };
   }
 
   const newStories: Story[] = [];

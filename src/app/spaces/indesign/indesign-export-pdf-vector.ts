@@ -45,7 +45,12 @@ export function exportIndesignPagesPdfVector(
       if (!fr || !st) continue;
 
       doc.setFont("helvetica", st.typography.fontStyle === "italic" ? "italic" : "normal");
-      if (st.typography.fontWeight === "bold" || st.typography.fontWeight === "700") {
+      const wn = Number.parseInt(String(st.typography.fontWeight).trim(), 10);
+      if (
+        st.typography.fontWeight === "bold" ||
+        st.typography.fontWeight === "700" ||
+        (Number.isFinite(wn) && wn >= 600)
+      ) {
         doc.setFont("helvetica", "bold");
       }
 

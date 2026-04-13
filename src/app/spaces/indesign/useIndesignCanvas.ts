@@ -604,7 +604,6 @@ export function useIndesignCanvas(opts: UseIndesignCanvasOpts): IndesignCanvasAp
       const onWinResizeOrScroll = () => syncInlineTextareaLayout();
 
       const onWheelZoom = (e: WheelEvent) => {
-        if (!e.ctrlKey && !e.metaKey) return;
         e.preventDefault();
         e.stopPropagation();
         const pointer = canvas.getPointer(e, true);
@@ -615,11 +614,53 @@ export function useIndesignCanvas(opts: UseIndesignCanvasOpts): IndesignCanvasAp
         syncInlineAfterViewport();
       };
 
+      const middlePan = { active: false, lastX: 0, lastY: 0 };
+      const onMiddleMouseDown = (e: MouseEvent) => {
+        if (e.button !== 1) return;
+        if (!upper.contains(e.target as Node)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        middlePan.active = true;
+        middlePan.lastX = e.clientX;
+        middlePan.lastY = e.clientY;
+        upper.style.cursor = "grabbing";
+      };
+      const onMiddleMouseMove = (e: MouseEvent) => {
+        if (!middlePan.active) return;
+        e.preventDefault();
+        const dx = e.clientX - middlePan.lastX;
+        const dy = e.clientY - middlePan.lastY;
+        middlePan.lastX = e.clientX;
+        middlePan.lastY = e.clientY;
+        const v = canvas.viewportTransform;
+        if (!v) return;
+        v[4] += dx;
+        v[5] += dy;
+        canvas.setViewportTransform(v);
+        canvas.requestRenderAll();
+        syncInlineAfterViewport();
+      };
+      const onMiddleMouseUp = (e: MouseEvent) => {
+        if (e.button !== 1) return;
+        if (middlePan.active) {
+          middlePan.active = false;
+          upper.style.cursor = "";
+        }
+      };
+
       window.addEventListener("keydown", onWinKeyDown, true);
       window.addEventListener("resize", onWinResizeOrScroll);
       window.addEventListener("scroll", onWinResizeOrScroll, true);
       upper.addEventListener("wheel", onWheelZoom, { passive: false });
-      cleanupWheelZoom = () => upper.removeEventListener("wheel", onWheelZoom);
+      upper.addEventListener("mousedown", onMiddleMouseDown);
+      window.addEventListener("mousemove", onMiddleMouseMove, true);
+      window.addEventListener("mouseup", onMiddleMouseUp, true);
+      cleanupWheelZoom = () => {
+        upper.removeEventListener("wheel", onWheelZoom);
+        upper.removeEventListener("mousedown", onMiddleMouseDown);
+        window.removeEventListener("mousemove", onMiddleMouseMove, true);
+        window.removeEventListener("mouseup", onMiddleMouseUp, true);
+      };
       cleanupWindows = () => {
         window.removeEventListener("keydown", onWinKeyDown, true);
         window.removeEventListener("resize", onWinResizeOrScroll);
@@ -691,11 +732,13 @@ export function useIndesignCanvas(opts: UseIndesignCanvasOpts): IndesignCanvasAp
               const fid = hit.get("frameId") as string;
               hit.setCoords();
               const box = hit.getBoundingRect();
+              const op = hit.opacity;
               tf = updateTextFrameGeometry(tf, fid, {
                 x: box.left,
                 y: box.top,
                 width: Math.max(24, box.width),
                 height: Math.max(24, box.height),
+                opacity: typeof op === "number" && Number.isFinite(op) ? op : 1,
               });
             }
             textFramesRef.current = tf;
@@ -715,11 +758,13 @@ export function useIndesignCanvas(opts: UseIndesignCanvasOpts): IndesignCanvasAp
           const h = (o.height || 0) * (o.scaleY || 1);
           const left = o.left || 0;
           const top = o.top || 0;
+          const op = o.opacity;
           const tf = updateTextFrameGeometry(textFramesRef.current, fid, {
             x: left,
             y: top,
             width: Math.max(24, w),
             height: Math.max(24, h),
+            opacity: typeof op === "number" && Number.isFinite(op) ? op : 1,
           });
           textFramesRef.current = tf;
           onTextModelChangeRef.current({

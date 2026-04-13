@@ -27,4 +27,5 @@ export const INDESIGN_CUSTOM_PROPS = [
   "frameUid",
   "hasImage",
   "lineIndex",
+  "indesignLocked",
 ] as const;

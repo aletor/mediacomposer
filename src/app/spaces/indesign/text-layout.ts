@@ -35,9 +35,20 @@ export function getLayoutCanvasContext(): CanvasRenderingContext2D {
   return ctx;
 }
 
+export function normalizeFontWeightCss(w: string | number | undefined): string {
+  if (typeof w === "number" && Number.isFinite(w)) return String(Math.round(w));
+  const s = String(w ?? "400").trim().toLowerCase();
+  if (s === "bold") return "700";
+  if (s === "normal") return "400";
+  if (/^\d+$/.test(s)) return s;
+  return "400";
+}
+
 export function fontStringFromTypography(t: Typography): string {
   const style = t.fontStyle === "italic" ? "italic " : "";
-  return `${style}${t.fontWeight} ${t.fontSize}px ${t.fontFamily}`;
+  const caps = t.fontVariantCaps === "small-caps" ? "small-caps " : "";
+  const weight = normalizeFontWeightCss(t.fontWeight);
+  return `${caps}${style}${weight} ${t.fontSize}px ${t.fontFamily}`;
 }
 
 function measureLineWidth(ctx: CanvasRenderingContext2D, line: string, typo: Typography): number {
@@ -101,14 +112,17 @@ export function layoutTextInFrame(
   let pos = 0;
   while (lines.length < maxLines && pos <= text.length) {
     if (pos === text.length) break;
-    const { line, next } = nextLineFrom(text, pos, innerW, ctx, typo);
+    const atParagraphStart = pos === 0 || text[pos - 1] === "\n";
+    const ind = atParagraphStart ? typo.paragraphIndent : 0;
+    const wrapW = Math.max(4, innerW - (atParagraphStart ? ind : 0));
+    const { line, next } = nextLineFrom(text, pos, wrapW, ctx, typo);
     if (next === pos && pos < text.length) break;
-    let x = pad;
+    let x = pad + ind;
     const w = measureLineWidth(ctx, line, typo);
-    if (typo.align === "center") x = pad + (innerW - w) / 2;
+    if (typo.align === "center") x = pad + ind + (innerW - ind - w) / 2;
     else if (typo.align === "right") x = pad + innerW - w;
     else if (typo.align === "justify" && lines.length < maxLines - 1 && line.includes(" ")) {
-      x = pad;
+      x = pad + ind;
     }
     lines.push({
       text: line,

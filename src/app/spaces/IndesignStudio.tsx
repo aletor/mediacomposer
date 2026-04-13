@@ -12,12 +12,23 @@ import {
   Trash2,
   ChevronDown,
   ChevronUp,
+  Eye,
+  EyeOff,
+  Lock,
+  Unlock,
+  Image as ImageIcon,
+  PenTool,
   Layers,
   Unlink,
   Grid3x3,
   ArrowLeftRight,
   Square,
   Circle,
+  Minus,
+  Triangle,
+  Diamond,
+  RectangleHorizontal,
+  GripVertical,
 } from "lucide-react";
 import type {
   Canvas as FabricCanvas,
@@ -37,6 +48,8 @@ import {
   linkFrameAfter,
   unlinkFrameAt,
   updateStoryTypography,
+  updateTextFrameGeometry,
+  deleteTextFrame,
   patchStoryContentPlain,
 } from "./indesign/text-threading";
 import { layoutPageStories, type FrameLayout } from "./indesign/text-layout";
@@ -56,6 +69,109 @@ import { isFabricActiveSelection } from "./indesign/fabric-active-selection";
 import { scenePointToAreaPixels } from "./indesign/port-overlay-layout";
 import { ScrubNumberInput } from "./ScrubNumberInput";
 import { IndesignCanvasGrid } from "./indesign/IndesignCanvasGrid";
+import { GOOGLE_FONTS_POPULAR } from "./freehand/google-fonts";
+import { parseOpenTypeFeatureMap, stringifyOpenTypeFeatureMap, OPEN_TYPE_PANEL_TAGS } from "./indesign/open-type";
+import { parsePrimaryFontFamily, registerUserFontBuffer } from "./freehand/text-outline";
+import { reorderIndesignLayersInCanvas, splitIndesignPrefixAndLayerBlocks } from "./indesign/layer-stack";
+import {
+  buildAbsolutePasteOptionsFromTargets,
+  buildIndesignClipboardPayload,
+  collectSelectionTargets,
+  pasteIndesignClipboard,
+  type IndesignClipboardPayload,
+} from "./indesign/indesign-clipboard";
+const FH_LBL = "text-[10px] text-zinc-500 uppercase tracking-wider";
+const FH_INP =
+  "w-full cursor-ew-resize rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1 font-mono text-[12px] text-zinc-100 outline-none focus:ring-1 focus:ring-[#534AB7]/40";
+const FH_PILL_ON = "border-[#534AB7] bg-[#534AB7] text-white";
+const FH_PILL_OFF = "border-white/[0.08] bg-transparent text-zinc-400 hover:text-zinc-200";
+
+function clamp(n: number, a: number, b: number): number {
+  return Math.min(b, Math.max(a, n));
+}
+
+function typoWeightToNumber(t: Typography): number {
+  const w = t.fontWeight;
+  if (typeof w === "string") {
+    const s = w.trim().toLowerCase();
+    if (s === "bold") return 700;
+    if (s === "normal") return 400;
+    const n = parseInt(s, 10);
+    if (Number.isFinite(n)) return clamp(n, 100, 900);
+  }
+  return 400;
+}
+
+/** Valores de panel (bounding rect + ángulo del objeto) para transformaciones estilo Freehand. */
+function readBoundingTransform(o: FabricObject): {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rot: number;
+  opacityPct: number;
+} {
+  const box = o.getBoundingRect();
+  const op = typeof o.opacity === "number" && Number.isFinite(o.opacity) ? o.opacity : 1;
+  return {
+    x: Math.round(box.left),
+    y: Math.round(box.top),
+    w: Math.max(1, Math.round(box.width)),
+    h: Math.max(1, Math.round(box.height)),
+    rot: Math.round((o.angle ?? 0) * 1000) / 1000,
+    opacityPct: Math.round(op * 100),
+  };
+}
+
+function isIndesignPageBackground(o: FabricObject): boolean {
+  return o.get?.("name") === "indesignPageBg";
+}
+
+function isIndesignLayerListObject(o: FabricObject): boolean {
+  if (isIndesignPageBackground(o)) return false;
+  if (o.get?.("indesignType") === "textLine") return false;
+  return true;
+}
+
+function indesignLayerDisplayName(o: FabricObject): string {
+  const it = o.get?.("indesignType") as string | undefined;
+  const kind = o.get?.("shapeKind") as string | undefined;
+  const fid = o.get?.("frameId") as string | undefined;
+  if (it === "textFrameHit") return `Texto${fid ? ` ${fid.slice(-6)}` : ""}`;
+  if (it === "frameImage") return "Imagen";
+  if (it === "frame") return "Marco";
+  if (it === "vectorShape") return kind === "ellipse" ? "Elipse" : "Rectángulo";
+  const t = (o.type || "obj").toString();
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+function IndesignLayerRowIcon({ o }: { o: FabricObject }) {
+  const cls = "shrink-0 text-zinc-500";
+  const it = o.get?.("indesignType") as string | undefined;
+  const kind = o.get?.("shapeKind") as string | undefined;
+  if (it === "textFrameHit") return <Type size={12} className={cls} strokeWidth={2} />;
+  if (it === "frameImage") return <ImageIcon size={12} className={cls} strokeWidth={2} />;
+  if (it === "frame") return <Frame size={12} className={cls} strokeWidth={2} />;
+  if (it === "vectorShape")
+    return kind === "ellipse" ? (
+      <Circle size={12} className={cls} strokeWidth={2} />
+    ) : (
+      <Square size={12} className={cls} strokeWidth={2} />
+    );
+  const ty = (o.type || "").toLowerCase();
+  if (ty === "path" || ty === "polygon" || ty === "polyline")
+    return <PenTool size={12} className={cls} strokeWidth={2} />;
+  return <Square size={12} className={cls} strokeWidth={2} />;
+}
+
+function fabricObjectIsInSelection(canvas: FabricCanvas | null, o: FabricObject): boolean {
+  if (!canvas) return false;
+  const a = canvas.getActiveObject();
+  if (!a) return false;
+  if (a === o) return true;
+  if (isFabricActiveSelection(a)) return (a as FabricGroup).getObjects().includes(o);
+  return false;
+}
 
 /** Primer marco de texto en la selección (incluye ActiveSelection / varias cajas). */
 function primaryTextFrameFromSelection(sel: FabricObject | null): FabricObject | null {
@@ -68,6 +184,65 @@ function primaryTextFrameFromSelection(sel: FabricObject | null): FabricObject |
     return hit ?? null;
   }
   return null;
+}
+
+/** Primer rectángulo/elipse vectorial en la selección (incluye ActiveSelection). */
+function primaryVectorShapeFromSelection(sel: FabricObject | null): FabricObject | null {
+  if (!sel) return null;
+  if (sel.get?.("indesignType") === "vectorShape") return sel;
+  if (isFabricActiveSelection(sel)) {
+    const v = (sel as FabricGroup)
+      .getObjects()
+      .find((o) => o.get?.("indesignType") === "vectorShape");
+    return v ?? null;
+  }
+  return null;
+}
+
+function fabricFillIsEmpty(fill: unknown): boolean {
+  if (fill == null || fill === "") return true;
+  const s = String(fill).trim().toLowerCase();
+  return (
+    s === "transparent" ||
+    s === "rgba(0, 0, 0, 0)" ||
+    s === "rgba(0,0,0,0)" ||
+    s === "none"
+  );
+}
+
+function fabricStrokeDisplayColor(o: FabricObject): string {
+  const st = o.get("stroke") as string | null | undefined;
+  if (st && /^#([0-9A-Fa-f]{6})$/.test(st)) return st;
+  return "#60a5fa";
+}
+
+function fabricStrokeIsNone(o: FabricObject): boolean {
+  const sw = Number(o.get("strokeWidth") ?? 0);
+  const st = o.get("stroke") as string | null | undefined;
+  if (!Number.isFinite(sw) || sw <= 0) return true;
+  if (st == null || st === "" || st === "none") return true;
+  return false;
+}
+
+function fabricFillDisplayHex(o: FabricObject): string {
+  const fill = o.get("fill");
+  if (fabricFillIsEmpty(fill)) return "#93c5fd";
+  const s = String(fill);
+  if (/^#([0-9A-Fa-f]{6})$/.test(s)) return s;
+  return "#93c5fd";
+}
+
+function parseStrokeDashInput(s: string): number[] | undefined {
+  const t = s.trim().replace(/,/g, " ");
+  if (!t) return undefined;
+  const parts = t.split(/\s+/).map((p) => parseFloat(p)).filter((n) => Number.isFinite(n));
+  return parts.length ? parts : undefined;
+}
+
+function formatStrokeDashArray(v: unknown): string {
+  if (v == null) return "";
+  if (Array.isArray(v)) return v.map((n) => String(n)).join(" ");
+  return "";
 }
 
 const GOOGLE_FONT_FAMILIES = [
@@ -129,8 +304,17 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
   const [flowSourceFrameId, setFlowSourceFrameId] = useState<string | null>(null);
   const [showGrid, setShowGrid] = useState(true);
   const [gridStep, setGridStep] = useState(16);
+  /** Panel derecho: propiedades del objeto vs. documento (rejilla, pliego, lista de páginas). */
+  const [rightPanelTab, setRightPanelTab] = useState<"properties" | "pages">("properties");
+  const [layersPanelExpanded, setLayersPanelExpanded] = useState(true);
+  const [layerListTick, setLayerListTick] = useState(0);
+  const [layerDragOverIdx, setLayerDragOverIdx] = useState<number | null>(null);
+  /** Incrementa en deshacer/rehacer para forzar que el canvas vuelva a cargar el `fabricJSON` de la página activa. */
+  const [canvasHydrationEpoch, setCanvasHydrationEpoch] = useState(0);
 
+  const clipboardPayloadRef = useRef<IndesignClipboardPayload | null>(null);
   const exportMenuRef = useRef<HTMLDivElement>(null);
+  const customFontFileRef = useRef<HTMLInputElement>(null);
   const studioRootRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   /** Contenedor común del canvas HTML y del overlay de puertos (coords absolutas relativas a este nodo). */
@@ -145,6 +329,8 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
   const restoringHistoryRef = useRef(false);
   /** Un solo paso de deshacer al terminar un arrastre tipo scrub en tipografía. */
   const typographyScrubPrimedRef = useRef(false);
+  /** Igual para grosor de trazo en formas vectoriales. */
+  const vectorStrokeScrubPrimedRef = useRef(false);
   const pageDimScrubPrimedRef = useRef(false);
 
   const snapshotPages = useCallback(
@@ -170,6 +356,7 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
     redoStackRef.current.push(snapshotPages(pagesRef.current));
     restoringHistoryRef.current = true;
     setPages(prev);
+    setCanvasHydrationEpoch((n) => n + 1);
     queueMicrotask(() => {
       restoringHistoryRef.current = false;
     });
@@ -181,6 +368,7 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
     undoStackRef.current.push(snapshotPages(pagesRef.current));
     restoringHistoryRef.current = true;
     setPages(next);
+    setCanvasHydrationEpoch((n) => n + 1);
     queueMicrotask(() => {
       restoringHistoryRef.current = false;
     });
@@ -237,6 +425,17 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
     },
     [activePageIndex, commitPages],
   );
+
+  const handleTextModelChangeRef = useRef(handleTextModelChange);
+  handleTextModelChangeRef.current = handleTextModelChange;
+  const handleJSONChangeRef = useRef(handleJSONChange);
+  handleJSONChangeRef.current = handleJSONChange;
+  const activePageIndexRef = useRef(activePageIndex);
+  activePageIndexRef.current = activePageIndex;
+  const toolRef = useRef(tool);
+  toolRef.current = tool;
+  const linkingFlowRef = useRef(linkingFlow);
+  linkingFlowRef.current = linkingFlow;
 
   const patchActivePage = useCallback(
     (patch: Partial<IndesignPageState>) => {
@@ -355,7 +554,7 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
 
   const canvasApi = useIndesignCanvas({
     hostRef,
-    pageKey: activePage?.id ?? "p",
+    pageKey: `${activePage?.id ?? "p"}#${canvasHydrationEpoch}`,
     pageWidth: pageDims.width,
     pageHeight: pageDims.height,
     getPageSnapshot: getPageSnapshotRef,
@@ -404,12 +603,22 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
       ) {
         return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.shiftKey) redoStudio();
-        else undoStudio();
-        return;
+      if (e.ctrlKey || e.metaKey) {
+        const isZ = e.code === "KeyZ" || e.key.toLowerCase() === "z";
+        const isY = e.code === "KeyY" || e.key.toLowerCase() === "y";
+        if (isZ && !e.altKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.shiftKey) redoStudio();
+          else undoStudio();
+          return;
+        }
+        if (isY && !e.altKey && !e.shiftKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          redoStudio();
+          return;
+        }
       }
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         const k = e.key.toLowerCase();
@@ -528,6 +737,9 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
   }, [linkingFlow]);
 
   const selectedTextFrameHit = primaryTextFrameFromSelection(selected);
+  const selectedVectorShape = selectedTextFrameHit
+    ? null
+    : primaryVectorShapeFromSelection(selected);
   const selectedFrameImg =
     selected && (selected as FabricObject).get?.("indesignType") === "frameImage"
       ? (selected as FabricImageType)
@@ -557,8 +769,19 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
     "imageFit",
     "storyId",
     "frameId",
+    "shapeKind",
+    "indesignLocked",
     ...INDESIGN_PAGE_BG_SERIAL_PROPS,
   ];
+  const serialPropsRef = useRef(SERIAL);
+  serialPropsRef.current = SERIAL;
+
+  const layerObjects = useMemo(() => {
+    const c = getFabricCanvas();
+    if (!c) return [];
+    const { blocks } = splitIndesignPrefixAndLayerBlocks(c.getObjects());
+    return [...blocks].reverse().map((b) => b[0]!);
+  }, [getFabricCanvas, layerListTick, activePage?.id]);
 
   const applyTextTypography = useCallback(
     (patch: Partial<Typography>) => {
@@ -655,6 +878,626 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
     },
     [canvasApi, handleJSONChange],
   );
+
+  const applyVectorShapePatch = useCallback(
+    (patch: Record<string, unknown>) => {
+      const c = canvasApi.getCanvas();
+      if (!c) return;
+      const raw = c.getActiveObject() as FabricObject | undefined;
+      const target = primaryVectorShapeFromSelection(raw ?? null);
+      if (!target) return;
+      target.set(patch);
+      target.setCoords();
+      c.requestRenderAll();
+      setSelected(c.getActiveObject() ?? null);
+      handleJSONChange(c.toObject(SERIAL) as Record<string, unknown>);
+    },
+    [canvasApi, handleJSONChange, setSelected],
+  );
+
+  const endVectorStrokeScrubGesture = useCallback(() => {
+    vectorStrokeScrubPrimedRef.current = false;
+  }, []);
+
+  /** Scrub de grosor: un solo undo al inicio; actualiza `fabricJSON` sin `commitPages` en cada frame. */
+  const applyVectorShapeStrokeWidthSilent = useCallback(
+    (strokeWidth: number) => {
+      const c = canvasApi.getCanvas();
+      if (!c) return;
+      const raw = c.getActiveObject() as FabricObject | undefined;
+      const target = primaryVectorShapeFromSelection(raw ?? null);
+      if (!target) return;
+      if (!vectorStrokeScrubPrimedRef.current) {
+        vectorStrokeScrubPrimedRef.current = true;
+        if (!restoringHistoryRef.current) {
+          undoStackRef.current.push(snapshotPages(pagesRef.current));
+          redoStackRef.current = [];
+          if (undoStackRef.current.length > 100) undoStackRef.current.shift();
+        }
+      }
+      target.set({ strokeWidth });
+      target.setCoords();
+      c.requestRenderAll();
+      setSelected(c.getActiveObject() ?? null);
+      const json = c.toObject(SERIAL) as Record<string, unknown>;
+      setPages((prev) => {
+        const next = [...prev];
+        if (!next[activePageIndex]) return prev;
+        next[activePageIndex] = { ...next[activePageIndex], fabricJSON: json };
+        return next;
+      });
+    },
+    [activePageIndex, canvasApi, setSelected, setPages, snapshotPages],
+  );
+
+  const applyTextFrameGeomPatch = useCallback(
+    (patch: Partial<Pick<TextFrame, "x" | "y" | "width" | "height" | "opacity">>) => {
+      if (!selectedFrameId) return;
+      handleTextModelChange({
+        textFrames: updateTextFrameGeometry(textFrames, selectedFrameId, patch),
+        stories,
+      });
+    },
+    [selectedFrameId, textFrames, stories, handleTextModelChange],
+  );
+
+  const refreshLayerList = useCallback(() => {
+    setLayerListTick((n) => n + 1);
+  }, []);
+
+  const applyBoundingTransformCommit = useCallback(
+    (next: { x: number; y: number; w: number; h: number; rot: number; opacityPct: number }) => {
+      const c = canvasApi.getCanvas();
+      const raw = c?.getActiveObject() as FabricObject | undefined;
+      if (!c || !raw) return;
+      const op = clamp(next.opacityPct, 0, 100) / 100;
+      const typ = (raw.type || "").toLowerCase();
+      if (typ === "ellipse") {
+        raw.set({
+          originX: "center",
+          originY: "center",
+          left: next.x + next.w / 2,
+          top: next.y + next.h / 2,
+          rx: Math.max(4, next.w / 2),
+          ry: Math.max(4, next.h / 2),
+          scaleX: 1,
+          scaleY: 1,
+          angle: next.rot,
+          opacity: op,
+        });
+      } else {
+        raw.set({
+          originX: "left",
+          originY: "top",
+          left: next.x,
+          top: next.y,
+          width: Math.max(4, next.w),
+          height: Math.max(4, next.h),
+          scaleX: 1,
+          scaleY: 1,
+          angle: next.rot,
+          opacity: op,
+        });
+      }
+      raw.setCoords();
+      c.requestRenderAll();
+      setSelected(c.getActiveObject() ?? null);
+      handleJSONChange(c.toObject(SERIAL) as Record<string, unknown>);
+    },
+    [canvasApi, handleJSONChange, setSelected],
+  );
+
+  const toggleLayerObjectVisibility = useCallback(
+    (o: FabricObject) => {
+      const c = canvasApi.getCanvas();
+      if (!c) return;
+      const nextVis = o.visible === false;
+      const fid = o.get("frameId") as string | undefined;
+      if (fid) {
+        for (const obj of c.getObjects()) {
+          if (obj.get("frameId") === fid) obj.set("visible", nextVis);
+        }
+      } else {
+        o.set("visible", nextVis);
+      }
+      c.requestRenderAll();
+      handleJSONChange(c.toObject(SERIAL) as Record<string, unknown>);
+      refreshLayerList();
+    },
+    [canvasApi, handleJSONChange, refreshLayerList],
+  );
+
+  const toggleLayerObjectLock = useCallback(
+    (o: FabricObject) => {
+      const c = canvasApi.getCanvas();
+      if (!c) return;
+      const locked = o.get("indesignLocked") === true || o.selectable === false;
+      const nextLocked = !locked;
+      const patch = nextLocked
+        ? { indesignLocked: true, selectable: false, evented: false, hasControls: false }
+        : { indesignLocked: false, selectable: true, evented: true, hasControls: true };
+      const fid = o.get("frameId") as string | undefined;
+      if (fid) {
+        for (const obj of c.getObjects()) {
+          if (obj.get("frameId") === fid) obj.set(patch);
+        }
+      } else {
+        o.set(patch);
+      }
+      c.requestRenderAll();
+      handleJSONChange(c.toObject(SERIAL) as Record<string, unknown>);
+      refreshLayerList();
+    },
+    [canvasApi, handleJSONChange, refreshLayerList],
+  );
+
+  const selectCanvasObject = useCallback(
+    (o: FabricObject) => {
+      const c = canvasApi.getCanvas();
+      if (!c) return;
+      c.setActiveObject(o);
+      c.requestRenderAll();
+      setSelected(o);
+    },
+    [canvasApi, setSelected],
+  );
+
+  const applyLayerReorder = useCallback(
+    (fromDisplayIndex: number, toDisplayIndex: number) => {
+      const c = canvasApi.getCanvas();
+      if (!c) return;
+      reorderIndesignLayersInCanvas(c, fromDisplayIndex, toDisplayIndex);
+      handleJSONChange(c.toObject(SERIAL) as Record<string, unknown>);
+      refreshLayerList();
+    },
+    [canvasApi, handleJSONChange, refreshLayerList],
+  );
+
+  const removeLayerObject = useCallback(
+    (o: FabricObject) => {
+      const c = canvasApi.getCanvas();
+      if (!c) return;
+      const it = o.get("indesignType") as string | undefined;
+      if (it === "textFrameHit") {
+        const frameId = o.get("frameId") as string;
+        handleTextModelChange(deleteTextFrame(stories, textFrames, frameId));
+        c.discardActiveObject();
+        setSelected(null);
+        refreshLayerList();
+        return;
+      }
+      if (it === "vectorShape") {
+        c.remove(o);
+        c.discardActiveObject();
+        setSelected(null);
+        handleJSONChange(c.toObject(SERIAL) as Record<string, unknown>);
+        refreshLayerList();
+        return;
+      }
+      if (it === "frame") {
+        const uid = o.get("indesignUid") as string;
+        for (const obj of [...c.getObjects()]) {
+          if (obj.get("frameUid") === uid) c.remove(obj);
+        }
+        c.remove(o);
+        c.discardActiveObject();
+        setSelected(null);
+        handleJSONChange(c.toObject(SERIAL) as Record<string, unknown>);
+        refreshLayerList();
+        return;
+      }
+      if (it === "frameImage") {
+        c.remove(o);
+        c.discardActiveObject();
+        setSelected(null);
+        handleJSONChange(c.toObject(SERIAL) as Record<string, unknown>);
+        refreshLayerList();
+        return;
+      }
+      c.remove(o);
+      c.discardActiveObject();
+      setSelected(null);
+      handleJSONChange(c.toObject(SERIAL) as Record<string, unknown>);
+      refreshLayerList();
+    },
+    [
+      canvasApi,
+      handleJSONChange,
+      handleTextModelChange,
+      refreshLayerList,
+      setSelected,
+      stories,
+      textFrames,
+    ],
+  );
+
+  /** Desplaza la selección 1 px (marcos de texto vía modelo; resto vía Fabric). */
+  const nudgeSelectedObjects = useCallback(
+    (dx: number, dy: number) => {
+      if (dx === 0 && dy === 0) return;
+      const c = canvasApi.getCanvas();
+      if (!c) return;
+      const raw = c.getActiveObject() as FabricObject | undefined;
+      if (!raw) return;
+
+      const collectTargets = (): FabricObject[] => {
+        if (isFabricActiveSelection(raw)) {
+          const out: FabricObject[] = [];
+          for (const o of (raw as FabricGroup).getObjects()) {
+            if (o.get?.("name") === "indesignPageBg") continue;
+            if (o.get?.("indesignType") === "textLine") continue;
+            if (o.get?.("indesignLocked") === true || o.selectable === false) continue;
+            out.push(o);
+          }
+          return out;
+        }
+        if (raw.get?.("name") === "indesignPageBg") return [];
+        if (raw.get?.("indesignType") === "textLine") return [];
+        if (raw.get?.("indesignLocked") === true || raw.selectable === false) return [];
+        return [raw];
+      };
+
+      const targets = collectTargets();
+      if (targets.length === 0) return;
+
+      let nextFrames = textFrames;
+      let movedText = false;
+      let movedFabricNonText = false;
+
+      for (const o of targets) {
+        const it = o.get("indesignType") as string | undefined;
+        if (it === "textFrameHit") {
+          const fid = o.get("frameId") as string;
+          const fr = nextFrames.find((f) => f.id === fid);
+          if (fr) {
+            nextFrames = updateTextFrameGeometry(nextFrames, fid, {
+              x: Math.round(fr.x + dx),
+              y: Math.round(fr.y + dy),
+            });
+            movedText = true;
+          }
+        } else {
+          o.set({ left: (o.left ?? 0) + dx, top: (o.top ?? 0) + dy });
+          o.setCoords();
+          movedFabricNonText = true;
+        }
+      }
+
+      c.requestRenderAll();
+      setSelected(c.getActiveObject() ?? null);
+
+      if (movedText) {
+        handleTextModelChange({ stories, textFrames: nextFrames });
+      } else if (movedFabricNonText) {
+        handleJSONChange(c.toObject(SERIAL) as Record<string, unknown>);
+      }
+    },
+    [
+      canvasApi,
+      handleJSONChange,
+      handleTextModelChange,
+      setSelected,
+      stories,
+      textFrames,
+    ],
+  );
+
+  const selectPastedFabricAndText = useCallback(
+    async (c: FabricCanvas, fabricObjs: FabricObject[], textFrameIds: string[]) => {
+      const { ActiveSelection } = await import("fabric");
+      const picks: FabricObject[] = [...fabricObjs];
+      for (const fid of textFrameIds) {
+        const hit = c
+          .getObjects()
+          .find(
+            (o) =>
+              o.get?.("frameId") === fid && o.get?.("indesignType") === "textFrameHit",
+          );
+        if (hit) picks.push(hit);
+      }
+      if (picks.length === 0) return;
+      if (picks.length === 1) c.setActiveObject(picks[0]!);
+      else c.setActiveObject(new ActiveSelection(picks, { canvas: c }));
+      c.requestRenderAll();
+      setSelected(c.getActiveObject() ?? null);
+    },
+    [setSelected],
+  );
+
+  const copySelectionToClipboard = useCallback(() => {
+    const c = getFabricCanvas();
+    if (!c) return;
+    clipboardPayloadRef.current = buildIndesignClipboardPayload(c, stories, textFrames, SERIAL);
+  }, [getFabricCanvas, stories, textFrames]);
+
+  const pasteFromClipboard = useCallback(async () => {
+    const raw = clipboardPayloadRef.current;
+    if (!raw) return;
+    const c = getFabricCanvas();
+    if (!c) return;
+    const fabricNS = await import("fabric");
+    const result = await pasteIndesignClipboard(c, fabricNS, stories, textFrames, raw, {
+      uniformDelta: { dx: 16, dy: 16 },
+    });
+    if (result.createdTextFrameIds.length > 0) {
+      handleTextModelChange({ stories: result.stories, textFrames: result.textFrames });
+    } else {
+      handleJSONChange(c.toObject(SERIAL) as Record<string, unknown>);
+    }
+    requestAnimationFrame(() => {
+      void selectPastedFabricAndText(c, result.addedFabricObjects, result.createdTextFrameIds);
+    });
+  }, [
+    getFabricCanvas,
+    stories,
+    textFrames,
+    handleTextModelChange,
+    handleJSONChange,
+    selectPastedFabricAndText,
+  ]);
+
+  const cutSelection = useCallback(() => {
+    copySelectionToClipboard();
+    const c = getFabricCanvas();
+    if (!c) return;
+    const targets = collectSelectionTargets(c.getActiveObject() ?? null);
+    const seen = new Set<FabricObject>();
+    for (const o of targets) {
+      if (seen.has(o)) continue;
+      seen.add(o);
+      removeLayerObject(o);
+    }
+  }, [copySelectionToClipboard, getFabricCanvas, removeLayerObject]);
+
+  useEffect(() => {
+    const rootSel = "[data-indesign-studio]";
+    const inStudio = (n: EventTarget | null) => {
+      const root = document.querySelector(rootSel);
+      if (!root) return false;
+      if (n instanceof Node && root.contains(n)) return true;
+      const ae = document.activeElement;
+      if (ae instanceof Node && root.contains(ae)) return true;
+      if (ae === document.body || ae === document.documentElement) return true;
+      return false;
+    };
+
+    const onClipboardKeys = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const k = e.key.toLowerCase();
+      if (k !== "c" && k !== "v" && k !== "x") return;
+      if (!inStudio(e.target)) return;
+      const el = e.target as HTMLElement;
+      if (
+        el.tagName === "INPUT" ||
+        el.tagName === "TEXTAREA" ||
+        el.tagName === "SELECT" ||
+        el.isContentEditable
+      ) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      if (k === "c") copySelectionToClipboard();
+      else if (k === "v") void pasteFromClipboard();
+      else cutSelection();
+    };
+
+    window.addEventListener("keydown", onClipboardKeys, true);
+    return () => window.removeEventListener("keydown", onClipboardKeys, true);
+  }, [copySelectionToClipboard, pasteFromClipboard, cutSelection]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let raf = 0;
+    let cleanupCanvas: (() => void) | undefined;
+
+    const tryAttach = () => {
+      if (cancelled) return;
+      const c = canvasApiRef.current?.getCanvas();
+      if (!c) {
+        raf = requestAnimationFrame(tryAttach);
+        return;
+      }
+
+      type Snap = {
+        fab: Map<FabricObject, { left: number; top: number }>;
+        text: Map<string, { x: number; y: number }>;
+      };
+      let shiftSnap: Snap | null = null;
+      let shiftDupDone = false;
+
+      const onDown = (opt: { e?: { shiftKey?: boolean }; target?: FabricObject }) => {
+        shiftSnap = null;
+        shiftDupDone = false;
+        const ev = opt.e;
+        if (!ev?.shiftKey || !opt.target) return;
+        if (linkingFlowRef.current || toolRef.current !== "select") return;
+        const pageIdx = activePageIndexRef.current;
+        const p = pagesRef.current[pageIdx];
+        if (!p) return;
+        const active = c.getActiveObject() as FabricObject | undefined;
+        if (!active) return;
+        const targets = collectSelectionTargets(active);
+        if (targets.length === 0) return;
+        const fab = new Map<FabricObject, { left: number; top: number }>();
+        const text = new Map<string, { x: number; y: number }>();
+        const tfList = p.textFrames ?? [];
+        for (const o of targets) {
+          const it = o.get("indesignType") as string | undefined;
+          if (it === "textFrameHit") {
+            const fid = o.get("frameId") as string;
+            const fr = tfList.find((x) => x.id === fid);
+            if (fr) text.set(fid, { x: fr.x, y: fr.y });
+          } else {
+            fab.set(o, { left: o.left ?? 0, top: o.top ?? 0 });
+          }
+        }
+        shiftSnap = { fab, text };
+      };
+
+      const runShiftDup = async () => {
+        const g = shiftSnap;
+        if (!g || shiftDupDone) return;
+        shiftDupDone = true;
+        const c2 = canvasApiRef.current?.getCanvas();
+        if (!c2) return;
+        const pageIdx = activePageIndexRef.current;
+        const p = pagesRef.current[pageIdx];
+        if (!p) return;
+        const st = p.stories ?? [];
+        const tf = p.textFrames ?? [];
+        const ser = serialPropsRef.current;
+        const payload = buildIndesignClipboardPayload(c2, st, tf, ser);
+        if (!payload) {
+          shiftDupDone = false;
+          return;
+        }
+        const targets = collectSelectionTargets(c2.getActiveObject() ?? null);
+        const abs = buildAbsolutePasteOptionsFromTargets(targets);
+        const fabricNS = await import("fabric");
+        const result = await pasteIndesignClipboard(c2, fabricNS, st, tf, payload, {
+          uniformDelta: { dx: 0, dy: 0 },
+          ...abs,
+        });
+        let nextTf = result.textFrames;
+        for (const [fid, pos] of g.text) {
+          nextTf = updateTextFrameGeometry(nextTf, fid, { x: pos.x, y: pos.y });
+        }
+        for (const [o, pos] of g.fab) {
+          o.set({ left: pos.left, top: pos.top });
+          o.setCoords();
+        }
+        c2.requestRenderAll();
+        if (result.createdTextFrameIds.length > 0) {
+          handleTextModelChangeRef.current({ stories: result.stories, textFrames: nextTf });
+        } else {
+          handleJSONChangeRef.current(c2.toObject(ser) as Record<string, unknown>);
+        }
+        requestAnimationFrame(() => {
+          void (async () => {
+            const cx = canvasApiRef.current?.getCanvas();
+            if (!cx) return;
+            await selectPastedFabricAndText(
+              cx,
+              result.addedFabricObjects,
+              result.createdTextFrameIds,
+            );
+          })();
+        });
+      };
+
+      const onMoving = (opt: { e?: { shiftKey?: boolean } }) => {
+        if (!shiftSnap || shiftDupDone || !opt.e?.shiftKey) return;
+        if (linkingFlowRef.current || toolRef.current !== "select") return;
+        void runShiftDup();
+      };
+
+      const onUp = () => {
+        shiftSnap = null;
+        shiftDupDone = false;
+      };
+
+      c.on("mouse:down", onDown);
+      c.on("object:moving", onMoving);
+      c.on("mouse:up", onUp);
+      cleanupCanvas = () => {
+        c.off("mouse:down", onDown);
+        c.off("object:moving", onMoving);
+        c.off("mouse:up", onUp);
+      };
+    };
+
+    tryAttach();
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      cleanupCanvas?.();
+    };
+  }, [selectPastedFabricAndText]);
+
+  useEffect(() => {
+    const rootSel = "[data-indesign-studio]";
+    const inStudio = (n: EventTarget | null) => {
+      const root = document.querySelector(rootSel);
+      if (!root) return false;
+      if (n instanceof Node && root.contains(n)) return true;
+      const ae = document.activeElement;
+      if (ae instanceof Node && root.contains(ae)) return true;
+      if (ae === document.body || ae === document.documentElement) return true;
+      return false;
+    };
+
+    const onArrow = (e: KeyboardEvent) => {
+      if (
+        e.code !== "ArrowLeft" &&
+        e.code !== "ArrowRight" &&
+        e.code !== "ArrowUp" &&
+        e.code !== "ArrowDown"
+      ) {
+        return;
+      }
+      if (!inStudio(e.target)) return;
+      const el = e.target as HTMLElement;
+      if (
+        el.tagName === "INPUT" ||
+        el.tagName === "TEXTAREA" ||
+        el.tagName === "SELECT" ||
+        el.isContentEditable
+      ) {
+        return;
+      }
+      let dx = 0;
+      let dy = 0;
+      if (e.code === "ArrowLeft") dx = -1;
+      else if (e.code === "ArrowRight") dx = 1;
+      else if (e.code === "ArrowUp") dy = -1;
+      else dy = 1;
+      e.preventDefault();
+      e.stopPropagation();
+      nudgeSelectedObjects(dx, dy);
+    };
+    window.addEventListener("keydown", onArrow, true);
+    return () => window.removeEventListener("keydown", onArrow, true);
+  }, [nudgeSelectedObjects]);
+
+  useEffect(() => {
+    refreshLayerList();
+  }, [activePageIndex, selected, rightPanelTab, refreshLayerList]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let off: (() => void) | undefined;
+    let raf = 0;
+    const attach = () => {
+      if (cancelled) return;
+      const c = canvasApi.getCanvas();
+      if (!c) {
+        raf = requestAnimationFrame(attach);
+        return;
+      }
+      const bump = () => setLayerListTick((n) => n + 1);
+      c.on("object:added", bump);
+      c.on("object:removed", bump);
+      c.on("object:modified", bump);
+      c.on("selection:created", bump);
+      c.on("selection:updated", bump);
+      c.on("selection:cleared", bump);
+      off = () => {
+        c.off("object:added", bump);
+        c.off("object:removed", bump);
+        c.off("object:modified", bump);
+        c.off("selection:created", bump);
+        c.off("selection:updated", bump);
+        c.off("selection:cleared", bump);
+      };
+    };
+    raf = requestAnimationFrame(attach);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      off?.();
+    };
+  }, [canvasApi, activePage?.id]);
 
   const runPdf = useCallback(
     async (mode: "fast" | "quality" | "vector") => {
@@ -836,212 +1679,6 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
       </header>
 
       <div className="relative flex min-h-0 flex-1">
-        <aside className="flex w-[13.5rem] shrink-0 flex-col gap-3 overflow-y-auto border-r border-white/[0.07] bg-[#101018]/95 p-3 backdrop-blur-sm sm:w-52">
-          <div className="rounded-xl border border-white/[0.07] bg-black/25 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-            <div className="flex items-center gap-2 text-zinc-400">
-              <Grid3x3 className="h-3.5 w-3.5 text-cyan-200/70" strokeWidth={2} />
-              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Cuadrícula</p>
-            </div>
-            <label className="mt-2 flex cursor-pointer items-center gap-2 text-[11px] text-zinc-300">
-              <input
-                type="checkbox"
-                className="accent-amber-500"
-                checked={showGrid}
-                onChange={(e) => setShowGrid(e.target.checked)}
-              />
-              Mostrar rejilla
-            </label>
-            <label className="mt-2 block text-[9px] font-medium text-zinc-500">Paso (px)</label>
-            <select
-              className="mt-1 w-full rounded-lg border border-white/12 bg-zinc-950/80 px-2 py-1.5 text-[11px] text-zinc-100 outline-none focus:ring-2 focus:ring-amber-500/25"
-              value={gridStep}
-              onChange={(e) => setGridStep(Number(e.target.value))}
-            >
-              {[8, 12, 16, 24, 32, 48].map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="rounded-xl border border-white/[0.07] bg-black/25 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Pliego activo</p>
-            <label className="mt-2 block text-[9px] font-medium text-zinc-500">Preset</label>
-            <select
-              className="mt-1 w-full rounded-lg border border-white/12 bg-zinc-950/80 px-2 py-1.5 text-[11px] text-zinc-100 outline-none focus:ring-2 focus:ring-amber-500/25"
-              value={activePage?.format ?? "a4v"}
-              onChange={(e) => {
-                const id = e.target.value as IndesignPageFormatId;
-                patchActivePage({
-                  format: id,
-                  customWidth: undefined,
-                  customHeight: undefined,
-                });
-              }}
-            >
-              {INDESIGN_PAGE_FORMATS.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.label}
-                </option>
-              ))}
-            </select>
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              <div>
-                <label className="block text-[9px] font-medium text-zinc-500">Ancho</label>
-                <ScrubNumberInput
-                  title="Arrastra en horizontal para cambiar. Mayús = más rápido."
-                  className="mt-0.5 w-full rounded-lg border border-white/12 bg-zinc-950/80 px-1.5 py-1 text-[11px] outline-none focus:ring-2 focus:ring-amber-500/25"
-                  value={pageDims.width}
-                  min={32}
-                  max={8192}
-                  step={1}
-                  roundFn={Math.round}
-                  onKeyboardCommit={(n) => {
-                    const v = Math.min(8192, Math.max(32, Number.isFinite(n) ? Math.round(n) : pageDims.width));
-                    patchActivePage({ customWidth: v, customHeight: pageDims.height });
-                  }}
-                  onScrubLive={(n) => {
-                    const v = Math.min(8192, Math.max(32, n));
-                    patchActivePageSilent({ customWidth: v, customHeight: pageDims.height });
-                  }}
-                  onScrubEnd={endPageDimScrubGesture}
-                />
-              </div>
-              <div>
-                <label className="block text-[9px] font-medium text-zinc-500">Alto</label>
-                <ScrubNumberInput
-                  title="Arrastra en horizontal para cambiar. Mayús = más rápido."
-                  className="mt-0.5 w-full rounded-lg border border-white/12 bg-zinc-950/80 px-1.5 py-1 text-[11px] outline-none focus:ring-2 focus:ring-amber-500/25"
-                  value={pageDims.height}
-                  min={32}
-                  max={8192}
-                  step={1}
-                  roundFn={Math.round}
-                  onKeyboardCommit={(n) => {
-                    const v = Math.min(8192, Math.max(32, Number.isFinite(n) ? Math.round(n) : pageDims.height));
-                    patchActivePage({ customWidth: pageDims.width, customHeight: v });
-                  }}
-                  onScrubLive={(n) => {
-                    const v = Math.min(8192, Math.max(32, n));
-                    patchActivePageSilent({ customWidth: pageDims.width, customHeight: v });
-                  }}
-                  onScrubEnd={endPageDimScrubGesture}
-                />
-              </div>
-            </div>
-            <button
-              type="button"
-              title="Intercambiar ancho y alto (horizontal ↔ vertical)"
-              onClick={() =>
-                patchActivePage({
-                  customWidth: pageDims.height,
-                  customHeight: pageDims.width,
-                })
-              }
-              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-white/12 bg-white/[0.04] py-1.5 text-[10px] font-semibold text-zinc-300 transition hover:bg-white/10"
-            >
-              <ArrowLeftRight className="h-3.5 w-3.5" />
-              Intercambiar orientación
-            </button>
-          </div>
-
-          <div className="flex items-center gap-2 text-zinc-400">
-            <Layers className="h-3.5 w-3.5 text-amber-200/70" strokeWidth={2} />
-            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Páginas</p>
-          </div>
-          {pages.map((p, i) => {
-            const pd = getPageDimensions(p);
-            const pf = formatById(p.format);
-            const maxThumb = 44;
-            const tw =
-              pd.width >= pd.height ? maxThumb : Math.round((maxThumb * pd.width) / pd.height);
-            const th =
-              pd.height >= pd.width ? maxThumb : Math.round((maxThumb * pd.height) / pd.width);
-            return (
-              <div
-                key={p.id}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    setActivePageIndex(i);
-                  }
-                }}
-                className={`group relative flex cursor-pointer flex-col gap-2 rounded-xl border p-2.5 transition ${
-                  i === activePageIndex
-                    ? "border-amber-400/40 bg-gradient-to-b from-amber-950/40 to-zinc-950/60 shadow-[0_0_0_1px_rgba(251,191,36,0.12)]"
-                    : "border-white/[0.08] bg-black/25 hover:border-white/18 hover:bg-black/35"
-                }`}
-                onClick={() => setActivePageIndex(i)}
-              >
-                <div className="flex h-[3.25rem] w-full items-center justify-center rounded-lg bg-zinc-950/80 ring-1 ring-inset ring-white/[0.06]">
-                  <div
-                    className="rounded-sm bg-white shadow-md shadow-black/40 ring-1 ring-black/10"
-                    style={{ width: tw, height: th }}
-                  />
-                </div>
-                <div className="min-w-0">
-                  <span className="block truncate font-mono text-[10px] font-semibold text-zinc-300">
-                    {i + 1}. {pf.label}
-                  </span>
-                  <span className="text-[9px] text-zinc-600">
-                    {pd.width}×{pd.height}
-                  </span>
-                </div>
-                {pages.length > 1 && (
-                  <div className="absolute right-1.5 top-1.5 flex flex-col gap-0.5 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100">
-                    <button
-                      type="button"
-                      title="Subir página"
-                      disabled={i === 0}
-                      className="rounded-md p-0.5 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 disabled:pointer-events-none disabled:opacity-25"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        movePage(i, i - 1);
-                      }}
-                    >
-                      <ChevronUp className="h-3 w-3" />
-                    </button>
-                    <button
-                      type="button"
-                      title="Bajar página"
-                      disabled={i === pages.length - 1}
-                      className="rounded-md p-0.5 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 disabled:pointer-events-none disabled:opacity-25"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        movePage(i, i + 1);
-                      }}
-                    >
-                      <ChevronDown className="h-3 w-3" />
-                    </button>
-                    <button
-                      type="button"
-                      title="Eliminar página"
-                      className="rounded-md p-0.5 text-zinc-500 hover:bg-rose-500/25 hover:text-rose-200"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deletePage(i);
-                      }}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          <button
-            type="button"
-            onClick={() => setAddPageOpen(true)}
-            className="flex items-center justify-center gap-1.5 rounded-xl border border-dashed border-white/18 bg-white/[0.02] py-2.5 text-[11px] font-semibold text-zinc-500 transition hover:border-amber-400/35 hover:bg-amber-500/5 hover:text-zinc-300"
-          >
-            <Plus className="h-4 w-4" strokeWidth={2} />
-            Añadir página
-          </button>
-        </aside>
-
         <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-[#1a1a22]">
           <div
             aria-hidden
@@ -1077,26 +1714,189 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
           )}
         </div>
 
-        <aside className="w-[17.5rem] shrink-0 overflow-y-auto border-l border-white/[0.07] bg-[#101018]/95 p-3.5 backdrop-blur-sm sm:w-72">
-          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Propiedades</p>
+        <aside className="flex min-h-0 w-[17.5rem] shrink-0 flex-col border-l border-white/[0.07] bg-[#101018]/95 p-3.5 backdrop-blur-sm sm:w-72">
+          <div
+            role="tablist"
+            aria-label="Panel lateral"
+            className="flex shrink-0 gap-1 rounded-xl border border-white/[0.07] bg-black/30 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={rightPanelTab === "properties"}
+              onClick={() => setRightPanelTab("properties")}
+              className={`min-h-[2.25rem] flex-1 rounded-lg px-2 py-1.5 text-[11px] font-bold transition ${
+                rightPanelTab === "properties"
+                  ? "bg-amber-500/25 text-amber-50 ring-1 ring-amber-400/35"
+                  : "text-zinc-500 hover:bg-white/[0.06] hover:text-zinc-300"
+              }`}
+            >
+              Propiedades
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={rightPanelTab === "pages"}
+              onClick={() => setRightPanelTab("pages")}
+              className={`min-h-[2.25rem] flex-1 rounded-lg px-2 py-1.5 text-[11px] font-bold transition ${
+                rightPanelTab === "pages"
+                  ? "bg-amber-500/25 text-amber-50 ring-1 ring-amber-400/35"
+                  : "text-zinc-500 hover:bg-white/[0.06] hover:text-zinc-300"
+              }`}
+            >
+              Páginas
+            </button>
+          </div>
+
+          <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden">
+            {rightPanelTab === "properties" ? (
+              <>
+                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-0.5 [-ms-overflow-style:none] [scrollbar-gutter:stable]">
           {!selected && (
             <div className="mt-6 rounded-xl border border-white/[0.06] bg-black/20 p-4 text-center">
               <p className="text-xs leading-relaxed text-zinc-500">
-                Selecciona texto o imagen en el lienzo para editar.
+                Selecciona texto, imagen o forma (rectángulo/elipse) en el lienzo para editar.
               </p>
             </div>
           )}
 
+          {selected &&
+            (() => {
+              const frModel =
+                selectedFrameId && selectedTextFrameHit
+                  ? textFrames.find((f) => f.id === selectedFrameId)
+                  : undefined;
+              const isText = Boolean(selectedTextFrameHit && frModel);
+              const tr = isText && frModel
+                ? {
+                    x: Math.round(frModel.x),
+                    y: Math.round(frModel.y),
+                    w: Math.max(1, Math.round(frModel.width)),
+                    h: Math.max(1, Math.round(frModel.height)),
+                    rot: 0,
+                    opacityPct: Math.round((frModel.opacity ?? 1) * 100),
+                    rotLocked: true as const,
+                  }
+                : { ...readBoundingTransform(selected as FabricObject), rotLocked: false as const };
+              const commitField = (
+                patch: Partial<typeof tr> & { rot?: number; opacityPct?: number },
+              ) => {
+                if (isText && frModel) {
+                  if (patch.x !== undefined) applyTextFrameGeomPatch({ x: patch.x });
+                  if (patch.y !== undefined) applyTextFrameGeomPatch({ y: patch.y });
+                  if (patch.w !== undefined) applyTextFrameGeomPatch({ width: patch.w });
+                  if (patch.h !== undefined) applyTextFrameGeomPatch({ height: patch.h });
+                  if (patch.opacityPct !== undefined)
+                    applyTextFrameGeomPatch({ opacity: clamp(patch.opacityPct, 0, 100) / 100 });
+                  return;
+                }
+                applyBoundingTransformCommit({
+                  x: patch.x ?? tr.x,
+                  y: patch.y ?? tr.y,
+                  w: patch.w ?? tr.w,
+                  h: patch.h ?? tr.h,
+                  rot: patch.rot ?? tr.rot,
+                  opacityPct: patch.opacityPct ?? tr.opacityPct,
+                });
+              };
+              return (
+                <div className="border-b border-white/[0.08] px-[14px] py-3 space-y-2">
+                  <div className={FH_LBL}>Transform</div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {(["x", "y"] as const).map((key) => (
+                      <div key={key} className="space-y-0.5">
+                        <label className={FH_LBL}>{key === "x" ? "X" : "Y"}</label>
+                        <ScrubNumberInput
+                          value={key === "x" ? tr.x : tr.y}
+                          onKeyboardCommit={(n) =>
+                            commitField(key === "x" ? { x: n } : { y: n })
+                          }
+                          onScrubLive={(n) => commitField(key === "x" ? { x: n } : { y: n })}
+                          onScrubEnd={() => {}}
+                          step={1}
+                          title="Arrastra horizontalmente · Mayús = ×10"
+                          className={FH_INP}
+                        />
+                      </div>
+                    ))}
+                    <div className="space-y-0.5">
+                      <label className={FH_LBL}>W</label>
+                      <ScrubNumberInput
+                        value={tr.w}
+                        onKeyboardCommit={(n) => commitField({ w: Math.max(1, n) })}
+                        onScrubLive={(n) => commitField({ w: Math.max(1, n) })}
+                        onScrubEnd={() => {}}
+                        step={1}
+                        title="Arrastra horizontalmente · Mayús = ×10"
+                        className={FH_INP}
+                      />
+                    </div>
+                    <div className="space-y-0.5">
+                      <label className={FH_LBL}>H</label>
+                      <ScrubNumberInput
+                        value={tr.h}
+                        onKeyboardCommit={(n) => commitField({ h: Math.max(1, n) })}
+                        onScrubLive={(n) => commitField({ h: Math.max(1, n) })}
+                        onScrubEnd={() => {}}
+                        step={1}
+                        title="Arrastra horizontalmente · Mayús = ×10"
+                        className={FH_INP}
+                      />
+                    </div>
+                    <div className="space-y-0.5">
+                      <label className={FH_LBL}>Rot</label>
+                      <ScrubNumberInput
+                        value={tr.rotLocked ? 0 : tr.rot}
+                        onKeyboardCommit={(n) => {
+                          if (!tr.rotLocked) commitField({ rot: n });
+                        }}
+                        onScrubLive={(n) => {
+                          if (!tr.rotLocked) commitField({ rot: n });
+                        }}
+                        onScrubEnd={() => {}}
+                        step={0.1}
+                        roundFn={(n) => Math.round(n * 1000) / 1000}
+                        disabled={tr.rotLocked}
+                        title={
+                          tr.rotLocked
+                            ? "Rotación no disponible para marcos de texto en este motor"
+                            : "Arrastra horizontalmente · Mayús = ×10"
+                        }
+                        className={`${FH_INP} ${tr.rotLocked ? "cursor-not-allowed opacity-45" : ""}`}
+                      />
+                    </div>
+                    <div className="space-y-0.5">
+                      <label className={FH_LBL}>Opacity</label>
+                      <ScrubNumberInput
+                        value={tr.opacityPct}
+                        onKeyboardCommit={(n) =>
+                          commitField({ opacityPct: clamp(Math.round(n), 0, 100) })
+                        }
+                        onScrubLive={(n) =>
+                          commitField({ opacityPct: clamp(Math.round(n), 0, 100) })
+                        }
+                        onScrubEnd={() => {}}
+                        step={1}
+                        roundFn={(n) => clamp(Math.round(n), 0, 100)}
+                        min={0}
+                        max={100}
+                        title="Opacidad % · Mayús = ×10"
+                        className={FH_INP}
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
           {selectedTextFrameHit && selectedTypo && selectedStory && (
-            <div className="mt-4 space-y-3 rounded-xl border border-white/[0.07] bg-black/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-              <p className="text-xs font-semibold text-amber-100/90">Texto (historia)</p>
+            <div className="space-y-0 border-b border-white/[0.08] px-[14px] py-3">
               <p className="text-[10px] leading-relaxed text-zinc-500">
-                El contenido vive en la historia; los marcos solo muestran el flujo. Desbordamiento: puerto
-                OUT (rojo +). Clic en OUT y luego en otro marco o en vacío.
+                Historia enlazada: puerto OUT (rojo +) para continuar el flujo.
               </p>
-              <label className="block text-[10px] font-medium text-zinc-500">Contenido</label>
+              <label className="mt-2 block text-[10px] font-medium text-zinc-500">Contenido</label>
               <textarea
-                className="min-h-[120px] w-full resize-y rounded-lg border border-white/12 bg-zinc-950/80 px-2.5 py-2 text-xs leading-relaxed text-zinc-100 outline-none focus:ring-2 focus:ring-amber-500/25"
+                className="mt-1 min-h-[100px] w-full resize-y rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2.5 py-2 text-xs leading-relaxed text-zinc-100 outline-none focus:ring-1 focus:ring-[#534AB7]/40"
                 value={serializeStoryContent(selectedStory.content)}
                 onChange={(e) => onStoryPlainChange(e.target.value)}
                 spellCheck={false}
@@ -1105,133 +1905,329 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
                 <button
                   type="button"
                   onClick={onUnlinkSelectedFrame}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-white/15 bg-white/[0.06] py-2 text-[11px] font-bold text-zinc-200 transition hover:bg-white/10"
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-[5px] border border-white/[0.08] bg-white/[0.06] py-2 text-[11px] font-bold text-zinc-200 transition hover:bg-white/10"
                 >
                   <Unlink className="h-3.5 w-3.5" />
                   Romper enlace entrante
                 </button>
               ) : null}
-              <p className="text-xs font-semibold text-amber-100/90">Tipografía</p>
-              <label className="block text-[10px] font-medium text-zinc-500">Familia</label>
-              <select
-                className="w-full rounded-lg border border-white/12 bg-zinc-950/80 px-2.5 py-2 text-xs text-zinc-100 outline-none ring-amber-500/0 transition focus:ring-2 focus:ring-amber-500/30"
-                value={(selectedTypo.fontFamily || "Inter").split(",")[0].replace(/['"]/g, "").trim()}
-                onChange={(e) =>
-                  applyTextTypography({ fontFamily: `${e.target.value}, sans-serif` })
-                }
-              >
-                {GOOGLE_FONT_FAMILIES.map((f) => (
-                  <option key={f} value={f}>
-                    {f}
-                  </option>
-                ))}
-              </select>
-              <label className="block text-[10px] font-medium text-zinc-500">Tamaño</label>
-              <ScrubNumberInput
-                title="Arrastra en horizontal para cambiar. Mayús = más rápido."
-                className="w-full rounded-lg border border-white/12 bg-zinc-950/80 px-2.5 py-1.5 text-xs outline-none focus:ring-2 focus:ring-amber-500/25"
-                value={Math.round(selectedTypo.fontSize || 16)}
-                min={6}
-                max={400}
-                step={1}
-                roundFn={Math.round}
-                onKeyboardCommit={(n) => {
-                  const v = Math.min(400, Math.max(6, Number.isFinite(n) ? n : 16));
-                  applyTextTypography({ fontSize: v });
-                }}
-                onScrubLive={(n) => {
-                  const v = Math.min(400, Math.max(6, n));
-                  applyTextTypographySilent({ fontSize: v });
-                }}
-                onScrubEnd={endTypographyScrubGesture}
-              />
-              <label className="block text-[10px] font-medium text-zinc-500">Interlineado</label>
-              <ScrubNumberInput
-                title="Arrastra en horizontal para cambiar. Mayús = más rápido."
-                step={0.05}
-                roundFn={(x) => Math.round(x * 100) / 100}
-                className="w-full rounded-lg border border-white/12 bg-zinc-950/80 px-2.5 py-1.5 text-xs outline-none focus:ring-2 focus:ring-amber-500/25"
-                value={selectedTypo.lineHeight ?? 1.25}
-                min={0.5}
-                max={5}
-                onKeyboardCommit={(n) => {
-                  const v = Math.min(5, Math.max(0.5, Number.isFinite(n) ? n : 1.25));
-                  applyTextTypography({ lineHeight: v });
-                }}
-                onScrubLive={(n) => {
-                  const v = Math.min(5, Math.max(0.5, n));
-                  applyTextTypographySilent({ lineHeight: v });
-                }}
-                onScrubEnd={endTypographyScrubGesture}
-              />
-              <label className="block text-[10px] font-medium text-zinc-500">Tracking</label>
-              <ScrubNumberInput
-                title="Arrastra en horizontal para cambiar. Mayús = más rápido."
-                step={0.005}
-                roundFn={(x) => Math.round(x * 1000) / 1000}
-                className="w-full rounded-lg border border-white/12 bg-zinc-950/80 px-2.5 py-1.5 text-xs outline-none focus:ring-2 focus:ring-amber-500/25"
-                value={selectedTypo.letterSpacing ?? 0}
-                min={-0.5}
-                max={2}
-                onKeyboardCommit={(n) => {
-                  const v = Math.min(2, Math.max(-0.5, Number.isFinite(n) ? n : 0));
-                  applyTextTypography({ letterSpacing: v });
-                }}
-                onScrubLive={(n) => {
-                  const v = Math.min(2, Math.max(-0.5, n));
-                  applyTextTypographySilent({ letterSpacing: v });
-                }}
-                onScrubEnd={endTypographyScrubGesture}
-              />
-              <div className="flex gap-1">
-                {(["left", "center", "right", "justify"] as const).map((al) => (
-                  <button
-                    key={al}
-                    type="button"
-                    className={`flex-1 rounded-lg px-1 py-1.5 text-[10px] font-bold uppercase transition ${
-                      selectedTypo.align === al
-                        ? "bg-amber-500/35 text-amber-50 ring-1 ring-amber-400/40"
-                        : "bg-black/35 text-zinc-500 hover:bg-black/50"
-                    }`}
-                    onClick={() => applyTextTypography({ align: al })}
-                  >
-                    {al[0]}
-                  </button>
-                ))}
-              </div>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  className={`rounded-lg px-2.5 py-1.5 text-xs font-bold transition ${selectedTypo.fontWeight === "bold" ? "bg-zinc-600 text-white" : "bg-black/35 text-zinc-400 hover:bg-black/50"}`}
-                  onClick={() =>
-                    applyTextTypography({
-                      fontWeight: selectedTypo.fontWeight === "bold" ? "normal" : "bold",
-                    })
-                  }
-                >
-                  Negrita
-                </button>
-                <button
-                  type="button"
-                  className={`rounded-lg px-2.5 py-1.5 text-xs font-bold italic transition ${selectedTypo.fontStyle === "italic" ? "bg-zinc-600 text-white" : "bg-black/35 text-zinc-400 hover:bg-black/50"}`}
-                  onClick={() =>
-                    applyTextTypography({
-                      fontStyle: selectedTypo.fontStyle === "italic" ? "normal" : "italic",
-                    })
-                  }
-                >
-                  Cursiva
-                </button>
-              </div>
-              <label className="block text-[10px] font-medium text-zinc-500">Color</label>
-              <input
-                type="color"
-                className="h-10 w-full cursor-pointer rounded-lg border border-white/12 bg-zinc-950/50"
-                value={typeof selectedTypo.color === "string" ? selectedTypo.color : "#111827"}
-                onChange={(e) => applyTextTypography({ color: e.target.value })}
-              />
             </div>
           )}
+
+          {selectedTextFrameHit && selectedTypo && selectedStory &&
+            (() => {
+              const tx = selectedTypo;
+              const primaryFamily = tx.fontFamily.split(",")[0].replace(/['"]/g, "").trim();
+              const feaMap = parseOpenTypeFeatureMap(tx.fontFeatureSettings);
+              const activeOtTags = OPEN_TYPE_PANEL_TAGS.filter((t) => feaMap.get(t) === 1);
+              const activosLine = activeOtTags.length > 0 ? activeOtTags.join(", ") : "—";
+              return (
+                <div className="space-y-3 border-b border-white/[0.08] px-[14px] py-3">
+                  <div className={FH_LBL}>Typography</div>
+                  <div className="flex gap-1.5">
+                    <select
+                      value={
+                        GOOGLE_FONTS_POPULAR.some((g) => g.family === primaryFamily)
+                          ? primaryFamily
+                          : ""
+                      }
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (!v) return;
+                        applyTextTypography({ fontFamily: `${v}, system-ui, sans-serif` });
+                      }}
+                      className="min-w-0 flex-1 rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1.5 text-[12px] text-zinc-100 outline-none focus:ring-1 focus:ring-[#534AB7]/40"
+                    >
+                      <option value="">— Font —</option>
+                      {GOOGLE_FONTS_POPULAR.map((g) => (
+                        <option key={g.family} value={g.family}>
+                          {g.family} ({g.category})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      title="Importar .ttf / .otf"
+                      onClick={() => customFontFileRef.current?.click()}
+                      className="shrink-0 rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1.5 font-mono text-[11px] text-zinc-300"
+                    >
+                      .TTF
+                    </button>
+                    <input
+                      ref={customFontFileRef}
+                      type="file"
+                      accept=".ttf,.otf,.woff,.woff2"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const f = e.target.files?.[0];
+                        if (!f) return;
+                        try {
+                          const buf = await f.arrayBuffer();
+                          const face = new FontFace(f.name.replace(/\.[^.]+$/, ""), buf);
+                          await face.load();
+                          document.fonts.add(face);
+                          registerUserFontBuffer(parsePrimaryFontFamily(face.family), typoWeightToNumber(tx), buf);
+                          applyTextTypography({
+                            fontFamily: `"${face.family}", system-ui, sans-serif`,
+                          });
+                        } catch {
+                          window.alert("No se pudo cargar la fuente.");
+                        }
+                        e.target.value = "";
+                      }}
+                    />
+                  </div>
+                  <input
+                    type="text"
+                    value={tx.fontFamily}
+                    onChange={(e) => applyTextTypography({ fontFamily: e.target.value })}
+                    spellCheck={false}
+                    className="w-full rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1 font-mono text-[12px] text-zinc-100 outline-none focus:ring-1 focus:ring-[#534AB7]/40"
+                    placeholder="Inter, system-ui, sans-serif"
+                  />
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <div className="space-y-0.5">
+                      <label className={FH_LBL}>Size</label>
+                      <ScrubNumberInput
+                        value={tx.fontSize}
+                        onKeyboardCommit={(n) =>
+                          applyTextTypography({ fontSize: clamp(Math.round(n), 4, 400) })
+                        }
+                        onScrubLive={(n) =>
+                          applyTextTypographySilent({ fontSize: clamp(Math.round(n), 4, 400) })
+                        }
+                        onScrubEnd={endTypographyScrubGesture}
+                        step={1}
+                        roundFn={(n) => clamp(Math.round(n), 4, 400)}
+                        min={4}
+                        max={400}
+                        title="Arrastra horizontalmente · Mayús = ×10"
+                        className={FH_INP}
+                      />
+                    </div>
+                    <div className="space-y-0.5">
+                      <label className={FH_LBL}>Weight</label>
+                      <ScrubNumberInput
+                        value={typoWeightToNumber(tx)}
+                        onKeyboardCommit={(n) =>
+                          applyTextTypography({
+                            fontWeight: String(clamp(Math.round(n), 100, 900)),
+                          })
+                        }
+                        onScrubLive={(n) =>
+                          applyTextTypographySilent({
+                            fontWeight: String(clamp(Math.round(n), 100, 900)),
+                          })
+                        }
+                        onScrubEnd={endTypographyScrubGesture}
+                        step={1}
+                        roundFn={(n) => clamp(Math.round(n), 100, 900)}
+                        min={100}
+                        max={900}
+                        title="Arrastra horizontalmente · Mayús = ×10"
+                        className={FH_INP}
+                      />
+                    </div>
+                    <div className="space-y-0.5">
+                      <label className={FH_LBL}>Leading</label>
+                      <ScrubNumberInput
+                        value={tx.lineHeight}
+                        onKeyboardCommit={(n) =>
+                          applyTextTypography({
+                            lineHeight: clamp(Math.round(n * 100) / 100, 0.5, 5),
+                          })
+                        }
+                        onScrubLive={(n) =>
+                          applyTextTypographySilent({
+                            lineHeight: clamp(Math.round(n * 100) / 100, 0.5, 5),
+                          })
+                        }
+                        onScrubEnd={endTypographyScrubGesture}
+                        step={0.05}
+                        roundFn={(n) => Math.round(clamp(n, 0.5, 5) * 100) / 100}
+                        min={0.5}
+                        max={5}
+                        title="Arrastra horizontalmente · Mayús = ×10"
+                        className={FH_INP}
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <div className="space-y-0.5">
+                      <label className={FH_LBL}>Tracking</label>
+                      <ScrubNumberInput
+                        value={tx.letterSpacing}
+                        onKeyboardCommit={(n) =>
+                          applyTextTypography({ letterSpacing: Math.round(n * 100) / 100 })
+                        }
+                        onScrubLive={(n) =>
+                          applyTextTypographySilent({ letterSpacing: Math.round(n * 100) / 100 })
+                        }
+                        onScrubEnd={endTypographyScrubGesture}
+                        step={0.05}
+                        roundFn={(n) => Math.round(n * 100) / 100}
+                        title="Arrastra horizontalmente · Mayús = ×10"
+                        className={FH_INP}
+                      />
+                    </div>
+                    <div className="space-y-0.5">
+                      <label className={FH_LBL}>Indent</label>
+                      <ScrubNumberInput
+                        value={tx.paragraphIndent ?? 0}
+                        onKeyboardCommit={(n) =>
+                          applyTextTypography({ paragraphIndent: clamp(Math.round(n), 0, 200) })
+                        }
+                        onScrubLive={(n) =>
+                          applyTextTypographySilent({ paragraphIndent: clamp(Math.round(n), 0, 200) })
+                        }
+                        onScrubEnd={endTypographyScrubGesture}
+                        step={1}
+                        roundFn={(n) => clamp(Math.round(n), 0, 200)}
+                        min={0}
+                        max={200}
+                        title="Arrastra horizontalmente · Mayús = ×10"
+                        className={FH_INP}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={FH_LBL}>Kerning</span>
+                    <select
+                      value={tx.fontKerning}
+                      onChange={(e) =>
+                        applyTextTypography({
+                          fontKerning: e.target.value as Typography["fontKerning"],
+                        })
+                      }
+                      className="min-w-[7rem] rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1 text-[12px] text-zinc-100 outline-none focus:ring-1 focus:ring-[#534AB7]/40"
+                    >
+                      <option value="auto">Auto</option>
+                      <option value="none">None</option>
+                    </select>
+                  </div>
+                  <div className="flex gap-1.5">
+                    {(["left", "center", "right", "justify"] as const).map((al) => (
+                      <button
+                        key={al}
+                        type="button"
+                        onClick={() => applyTextTypography({ align: al })}
+                        className={`flex-1 rounded-[5px] border py-1 text-[11px] font-bold uppercase transition-colors ${
+                          tx.align === al ? FH_PILL_ON : FH_PILL_OFF
+                        }`}
+                      >
+                        {al === "left" ? "LEF" : al === "center" ? "CEN" : al === "right" ? "RIG" : "JUS"}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      title="Small caps"
+                      onClick={() =>
+                        applyTextTypography({
+                          fontVariantCaps:
+                            tx.fontVariantCaps === "small-caps" ? "normal" : "small-caps",
+                        })
+                      }
+                      className={`flex-1 rounded-[5px] border py-1 text-[12px] font-semibold transition-colors ${
+                        tx.fontVariantCaps === "small-caps" ? FH_PILL_ON : FH_PILL_OFF
+                      }`}
+                    >
+                      Aa
+                    </button>
+                    <button
+                      type="button"
+                      title="Bold"
+                      onClick={() =>
+                        applyTextTypography({
+                          fontWeight: String(typoWeightToNumber(tx) >= 600 ? 400 : 700),
+                        })
+                      }
+                      className={`flex-1 rounded-[5px] border py-1 text-[12px] font-bold transition-colors ${
+                        typoWeightToNumber(tx) >= 600 ? FH_PILL_ON : FH_PILL_OFF
+                      }`}
+                    >
+                      B
+                    </button>
+                    <button
+                      type="button"
+                      title="Italic"
+                      onClick={() =>
+                        applyTextTypography({
+                          fontStyle: tx.fontStyle === "italic" ? "normal" : "italic",
+                        })
+                      }
+                      className={`flex-1 rounded-[5px] border py-1 text-[12px] italic transition-colors ${
+                        tx.fontStyle === "italic" ? FH_PILL_ON : FH_PILL_OFF
+                      }`}
+                    >
+                      I
+                    </button>
+                    <button
+                      type="button"
+                      title="Underline"
+                      onClick={() =>
+                        applyTextTypography({ textUnderline: !tx.textUnderline })
+                      }
+                      className={`flex-1 rounded-[5px] border py-1 text-[12px] transition-colors ${
+                        tx.textUnderline ? FH_PILL_ON : FH_PILL_OFF
+                      }`}
+                    >
+                      U
+                    </button>
+                    <button
+                      type="button"
+                      title="Strikethrough"
+                      onClick={() =>
+                        applyTextTypography({ textStrikethrough: !tx.textStrikethrough })
+                      }
+                      className={`flex-1 rounded-[5px] border py-1 text-[12px] transition-colors ${
+                        tx.textStrikethrough ? FH_PILL_ON : FH_PILL_OFF
+                      }`}
+                    >
+                      S
+                    </button>
+                  </div>
+                  <div className="space-y-2 pt-1">
+                    <div className={FH_LBL}>OpenType</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {OPEN_TYPE_PANEL_TAGS.map((tag) => {
+                        const on = feaMap.get(tag) === 1;
+                        return (
+                          <button
+                            key={tag}
+                            type="button"
+                            onClick={() => {
+                              const next = parseOpenTypeFeatureMap(tx.fontFeatureSettings);
+                              if (next.get(tag) === 1) next.delete(tag);
+                              else next.set(tag, 1);
+                              applyTextTypography({
+                                fontFeatureSettings: stringifyOpenTypeFeatureMap(next),
+                              });
+                            }}
+                            className={`rounded-[5px] border px-2 py-1 font-mono text-[11px] transition-colors ${
+                              on
+                                ? FH_PILL_ON
+                                : "border-white/[0.08] bg-white/[0.06] text-zinc-400 hover:text-zinc-200"
+                            }`}
+                          >
+                            {tag}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[10px] text-zinc-500">Activos: {activosLine}</p>
+                  </div>
+                  <label className="block text-[10px] font-medium text-zinc-500">Color</label>
+                  <input
+                    type="color"
+                    className="h-10 w-full cursor-pointer rounded-[5px] border border-white/[0.08] bg-transparent"
+                    value={typeof tx.color === "string" ? tx.color : "#111827"}
+                    onChange={(e) => applyTextTypography({ color: e.target.value })}
+                  />
+                </div>
+              );
+            })()}
 
           {selectedFrameImg && (
             <div className="mt-4 space-y-3 rounded-xl border border-white/[0.07] bg-black/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
@@ -1239,16 +2235,6 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
               <p className="text-[10px] leading-relaxed text-zinc-500">
                 Ajuste fill/fit: vuelve a soltar imagen en el marco o recrea el marco.
               </p>
-              <label className="block text-[10px] font-medium text-zinc-500">Opacidad</label>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                className="w-full accent-amber-500"
-                value={selectedFrameImg.opacity ?? 1}
-                onChange={(e) => applyImageProp({ opacity: parseFloat(e.target.value) })}
-              />
               <label className="mt-2 block cursor-pointer rounded-xl border border-dashed border-white/18 bg-white/[0.02] px-2 py-3.5 text-center text-[11px] font-medium text-zinc-400 transition hover:border-amber-400/35 hover:bg-amber-500/5 hover:text-zinc-200">
                 Reemplazar imagen
                 <input
@@ -1265,6 +2251,588 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
               </label>
             </div>
           )}
+
+          {selectedVectorShape &&
+            (() => {
+              const v = selectedVectorShape;
+              const noFill = fabricFillIsEmpty(v.get("fill"));
+              const noStroke = fabricStrokeIsNone(v);
+              const strokeW = Number(v.get("strokeWidth") ?? 0);
+              const cap = ((v.get("strokeLineCap") as string) || "butt") as "butt" | "round" | "square";
+              const join = ((v.get("strokeLineJoin") as string) || "miter") as "miter" | "round" | "bevel";
+              const dashStr = formatStrokeDashArray(v.get("strokeDashArray"));
+              const kindLabel = v.get("shapeKind") === "ellipse" ? "Elipse" : "Rectángulo";
+              const fillHex = fabricFillDisplayHex(v);
+              const strokeHex = fabricStrokeDisplayColor(v);
+              const pillOn = "border-amber-400/50 bg-amber-500/30 text-amber-50 ring-1 ring-amber-400/35";
+              const pillOff = "border-white/[0.08] bg-black/35 text-zinc-500 hover:bg-black/50 hover:text-zinc-300";
+              return (
+                <div className="mt-4 space-y-3 rounded-xl border border-white/[0.07] bg-black/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                  <p className="text-xs font-semibold text-amber-100/90">Forma vectorial ({kindLabel})</p>
+                  <p className="text-[10px] leading-relaxed text-zinc-500">
+                    Relleno, trazo, grosor y guiones (como en Freehand).
+                  </p>
+
+                  <div className="space-y-2 border-b border-white/[0.06] pb-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+                        Relleno
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          title="Sin relleno"
+                          aria-label="Sin relleno"
+                          aria-pressed={noFill}
+                          onClick={() => applyVectorShapePatch({ fill: "transparent" })}
+                          className={`relative h-[22px] w-[22px] shrink-0 overflow-hidden rounded-[5px] border bg-[#2a2d33] transition-colors ${
+                            noFill
+                              ? "border-amber-400/50 ring-1 ring-amber-400/35"
+                              : "border-white/[0.08] hover:bg-white/[0.06]"
+                          }`}
+                        >
+                          <svg
+                            width="22"
+                            height="22"
+                            viewBox="0 0 22 22"
+                            className="pointer-events-none absolute inset-0 text-red-500"
+                            aria-hidden
+                          >
+                            <line
+                              x1="4"
+                              y1="18"
+                              x2="18"
+                              y2="4"
+                              stroke="currentColor"
+                              strokeWidth="1.35"
+                              strokeLinecap="square"
+                            />
+                          </svg>
+                        </button>
+                        <input
+                          type="color"
+                          value={noFill ? "#000000" : fillHex}
+                          onChange={(e) => applyVectorShapePatch({ fill: e.target.value })}
+                          className="h-[22px] w-[22px] shrink-0 cursor-pointer rounded-[5px] border border-white/[0.08] bg-transparent"
+                          title="Color de relleno"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className={`space-y-2 ${noStroke ? "" : "space-y-2.5"}`}>
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+                        Trazo
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          title="Sin trazo"
+                          aria-label="Sin trazo"
+                          aria-pressed={noStroke}
+                          onClick={() => applyVectorShapePatch({ strokeWidth: 0 })}
+                          className={`relative h-[22px] w-[22px] shrink-0 overflow-hidden rounded-[5px] border bg-[#2a2d33] transition-colors ${
+                            noStroke
+                              ? "border-amber-400/50 ring-1 ring-amber-400/35"
+                              : "border-white/[0.08] hover:bg-white/[0.06]"
+                          }`}
+                        >
+                          <svg
+                            width="22"
+                            height="22"
+                            viewBox="0 0 22 22"
+                            className="pointer-events-none absolute inset-0 text-red-500"
+                            aria-hidden
+                          >
+                            <line
+                              x1="4"
+                              y1="18"
+                              x2="18"
+                              y2="4"
+                              stroke="currentColor"
+                              strokeWidth="1.35"
+                              strokeLinecap="square"
+                            />
+                          </svg>
+                        </button>
+                        <input
+                          type="color"
+                          value={noStroke ? "#000000" : strokeHex}
+                          onChange={(e) => {
+                            const c = e.target.value;
+                            applyVectorShapePatch({
+                              stroke: c,
+                              strokeWidth: Math.max(1, strokeW || 2),
+                            });
+                          }}
+                          className="h-[22px] w-[22px] shrink-0 cursor-pointer rounded-[5px] border border-white/[0.08] bg-transparent"
+                          title="Color del trazo"
+                        />
+                      </div>
+                    </div>
+
+                    {!noStroke ? (
+                      <>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="w-14 shrink-0 text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+                            Grosor
+                          </span>
+                          <ScrubNumberInput
+                            value={strokeW}
+                            onKeyboardCommit={(n) => {
+                              vectorStrokeScrubPrimedRef.current = false;
+                              const x = Math.min(50, Math.max(0, Number.isFinite(n) ? n : strokeW));
+                              applyVectorShapePatch({ strokeWidth: x });
+                            }}
+                            onScrubLive={(n) => {
+                              const x = Math.min(50, Math.max(0, n));
+                              applyVectorShapeStrokeWidthSilent(x);
+                            }}
+                            onScrubEnd={endVectorStrokeScrubGesture}
+                            step={0.5}
+                            roundFn={(n) => Math.round(Math.min(50, Math.max(0, n)) * 2) / 2}
+                            min={0}
+                            max={50}
+                            title="Arrastra en horizontal para cambiar. Mayús = más rápido."
+                            className="min-w-[3rem] flex-1 cursor-ew-resize rounded-lg border border-white/12 bg-zinc-950/80 px-2 py-1 font-mono text-[11px] text-zinc-100 outline-none focus:ring-2 focus:ring-amber-500/25"
+                          />
+                          <div className="flex items-center gap-1" title="Terminación del trazo">
+                            {(
+                              [
+                                { v: "butt" as const, Icon: Minus, label: "Extremo plano" },
+                                { v: "round" as const, Icon: Circle, label: "Extremo redondo" },
+                                { v: "square" as const, Icon: RectangleHorizontal, label: "Extremo cuadrado" },
+                              ] as const
+                            ).map(({ v, Icon, label }) => (
+                              <button
+                                key={v}
+                                type="button"
+                                title={label}
+                                onClick={() => applyVectorShapePatch({ strokeLineCap: v })}
+                                className={`rounded-lg border p-1.5 transition-colors ${cap === v ? pillOn : pillOff}`}
+                              >
+                                <Icon className="h-3.5 w-3.5" strokeWidth={2} />
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="w-14 shrink-0 text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+                            Esquinas
+                          </span>
+                          <div className="flex min-w-0 flex-1 flex-wrap justify-end gap-1" title="Unión de trazo">
+                            {(
+                              [
+                                { v: "miter" as const, Icon: Triangle, label: "Inglete" },
+                                { v: "round" as const, Icon: Circle, label: "Redondeada" },
+                                { v: "bevel" as const, Icon: Diamond, label: "Bisel" },
+                              ] as const
+                            ).map(({ v, Icon, label }) => (
+                              <button
+                                key={v}
+                                type="button"
+                                title={label}
+                                onClick={() => applyVectorShapePatch({ strokeLineJoin: v })}
+                                className={`rounded-lg border p-1.5 transition-colors ${join === v ? pillOn : pillOff}`}
+                              >
+                                <Icon className="h-3.5 w-3.5" strokeWidth={2} />
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="w-14 shrink-0 text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+                            Guión
+                          </span>
+                          <input
+                            type="text"
+                            value={dashStr}
+                            placeholder="ej. 8 4"
+                            onChange={(e) => {
+                              const raw = e.target.value.replace(/,/g, " ");
+                              const parsed = parseStrokeDashInput(raw);
+                              applyVectorShapePatch({
+                                strokeDashArray: parsed === undefined ? null : parsed,
+                              });
+                            }}
+                            className="min-w-0 flex-1 rounded-lg border border-white/12 bg-zinc-950/80 px-2 py-1 font-mono text-[11px] text-zinc-100 outline-none focus:ring-2 focus:ring-amber-500/25"
+                            title="Patrón de guión (p. ej. 8 4)"
+                          />
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })()}
+                </div>
+
+                <div className="shrink-0 border-t border-white/[0.07] bg-[#0c0c12]">
+                  <button
+                    type="button"
+                    onClick={() => setLayersPanelExpanded((v) => !v)}
+                    className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left transition hover:bg-white/[0.04]"
+                  >
+                    <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-500">
+                      Capas ({layerObjects.length})
+                    </span>
+                    {layersPanelExpanded ? (
+                      <ChevronDown className="h-3.5 w-3.5 shrink-0 text-zinc-500" strokeWidth={2} />
+                    ) : (
+                      <ChevronUp className="h-3.5 w-3.5 shrink-0 text-zinc-500" strokeWidth={2} />
+                    )}
+                  </button>
+                  {layersPanelExpanded ? (
+                    <div className="max-h-[min(40vh,280px)] overflow-y-auto border-t border-white/[0.05] px-1 pb-2 [-ms-overflow-style:none] [scrollbar-gutter:stable]">
+                      {layerObjects.length === 0 ? (
+                        <p className="px-2 py-3 text-center text-[11px] text-zinc-600">
+                          Sin objetos en esta hoja.
+                        </p>
+                      ) : (
+                        <ul
+                          className="space-y-0.5 pt-1"
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                          }}
+                        >
+                          {layerObjects.map((o, idx) => {
+                            const cvs = getFabricCanvas();
+                            const isRowSelected = fabricObjectIsInSelection(cvs, o);
+                            const visOff = o.visible === false;
+                            const locked =
+                              o.get("indesignLocked") === true || o.selectable === false;
+                            return (
+                              <li
+                                key={`${activePage?.id ?? "p"}-${idx}-${String(o.get("frameId") ?? o.get("indesignUid") ?? o.type)}`}
+                                onDragOver={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  e.dataTransfer.dropEffect = "move";
+                                  setLayerDragOverIdx(idx);
+                                }}
+                                onDragLeave={() =>
+                                  setLayerDragOverIdx((cur) => (cur === idx ? null : cur))
+                                }
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  const from = parseInt(e.dataTransfer.getData("text/plain"), 10);
+                                  if (!Number.isFinite(from) || from === idx) {
+                                    setLayerDragOverIdx(null);
+                                    return;
+                                  }
+                                  applyLayerReorder(from, idx);
+                                  setLayerDragOverIdx(null);
+                                }}
+                                className={
+                                  layerDragOverIdx === idx
+                                    ? "rounded-lg ring-1 ring-amber-400/45 ring-inset"
+                                    : undefined
+                                }
+                              >
+                                <div
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={() => selectCanvasObject(o)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" || e.key === " ") {
+                                      e.preventDefault();
+                                      selectCanvasObject(o);
+                                    }
+                                  }}
+                                  className={`flex cursor-pointer items-center gap-1 rounded-lg px-1.5 py-1.5 text-[11px] text-zinc-200 transition ${
+                                    isRowSelected
+                                      ? "bg-[#534AB7]/35 ring-1 ring-[#534AB7]/40"
+                                      : "hover:bg-white/[0.06]"
+                                  }`}
+                                >
+                                  <button
+                                    type="button"
+                                    title="Arrastrar para reordenar"
+                                    draggable
+                                    className="cursor-grab shrink-0 rounded p-0.5 text-zinc-600 hover:bg-white/10 hover:text-zinc-300 active:cursor-grabbing"
+                                    onClick={(e) => e.stopPropagation()}
+                                    onDragStart={(e) => {
+                                      e.dataTransfer.setData("text/plain", String(idx));
+                                      e.dataTransfer.effectAllowed = "move";
+                                    }}
+                                    onDragEnd={() => setLayerDragOverIdx(null)}
+                                  >
+                                    <GripVertical size={14} strokeWidth={2} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    title={visOff ? "Mostrar" : "Ocultar"}
+                                    className="shrink-0 rounded p-0.5 text-zinc-400 hover:bg-white/10 hover:text-zinc-100"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      toggleLayerObjectVisibility(o);
+                                    }}
+                                  >
+                                    {visOff ? (
+                                      <EyeOff size={14} strokeWidth={2} />
+                                    ) : (
+                                      <Eye size={14} strokeWidth={2} />
+                                    )}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    title={locked ? "Desbloquear" : "Bloquear"}
+                                    className="shrink-0 rounded p-0.5 text-zinc-400 hover:bg-white/10 hover:text-zinc-100"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      toggleLayerObjectLock(o);
+                                    }}
+                                  >
+                                    {locked ? (
+                                      <Lock size={14} strokeWidth={2} />
+                                    ) : (
+                                      <Unlock size={14} strokeWidth={2} />
+                                    )}
+                                  </button>
+                                  <span className="shrink-0">
+                                    <IndesignLayerRowIcon o={o} />
+                                  </span>
+                                  <span className="min-w-0 flex-1 truncate text-left">
+                                    {indesignLayerDisplayName(o)}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    title="Eliminar"
+                                    className="shrink-0 rounded p-0.5 text-zinc-500 hover:bg-red-500/20 hover:text-red-200"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      removeLayerObject(o);
+                                    }}
+                                  >
+                                    <Trash2 size={14} strokeWidth={2} />
+                                  </button>
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              </>
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-0.5 [-ms-overflow-style:none] [scrollbar-gutter:stable]">
+                <div className="rounded-xl border border-white/[0.07] bg-black/25 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                  <div className="flex items-center gap-2 text-zinc-400">
+                    <Grid3x3 className="h-3.5 w-3.5 text-cyan-200/70" strokeWidth={2} />
+                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Cuadrícula</p>
+                  </div>
+                  <label className="mt-2 flex cursor-pointer items-center gap-2 text-[11px] text-zinc-300">
+                    <input
+                      type="checkbox"
+                      className="accent-amber-500"
+                      checked={showGrid}
+                      onChange={(e) => setShowGrid(e.target.checked)}
+                    />
+                    Mostrar rejilla
+                  </label>
+                  <label className="mt-2 block text-[9px] font-medium text-zinc-500">Paso (px)</label>
+                  <select
+                    className="mt-1 w-full rounded-lg border border-white/12 bg-zinc-950/80 px-2 py-1.5 text-[11px] text-zinc-100 outline-none focus:ring-2 focus:ring-amber-500/25"
+                    value={gridStep}
+                    onChange={(e) => setGridStep(Number(e.target.value))}
+                  >
+                    {[8, 12, 16, 24, 32, 48].map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="rounded-xl border border-white/[0.07] bg-black/25 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Pliego activo</p>
+                  <label className="mt-2 block text-[9px] font-medium text-zinc-500">Preset</label>
+                  <select
+                    className="mt-1 w-full rounded-lg border border-white/12 bg-zinc-950/80 px-2 py-1.5 text-[11px] text-zinc-100 outline-none focus:ring-2 focus:ring-amber-500/25"
+                    value={activePage?.format ?? "a4v"}
+                    onChange={(e) => {
+                      const id = e.target.value as IndesignPageFormatId;
+                      patchActivePage({
+                        format: id,
+                        customWidth: undefined,
+                        customHeight: undefined,
+                      });
+                    }}
+                  >
+                    {INDESIGN_PAGE_FORMATS.map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[9px] font-medium text-zinc-500">Ancho</label>
+                      <ScrubNumberInput
+                        title="Arrastra en horizontal para cambiar. Mayús = más rápido."
+                        className="mt-0.5 w-full rounded-lg border border-white/12 bg-zinc-950/80 px-1.5 py-1 text-[11px] outline-none focus:ring-2 focus:ring-amber-500/25"
+                        value={pageDims.width}
+                        min={32}
+                        max={8192}
+                        step={1}
+                        roundFn={Math.round}
+                        onKeyboardCommit={(n) => {
+                          const v = Math.min(
+                            8192,
+                            Math.max(32, Number.isFinite(n) ? Math.round(n) : pageDims.width),
+                          );
+                          patchActivePage({ customWidth: v, customHeight: pageDims.height });
+                        }}
+                        onScrubLive={(n) => {
+                          const v = Math.min(8192, Math.max(32, n));
+                          patchActivePageSilent({ customWidth: v, customHeight: pageDims.height });
+                        }}
+                        onScrubEnd={endPageDimScrubGesture}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[9px] font-medium text-zinc-500">Alto</label>
+                      <ScrubNumberInput
+                        title="Arrastra en horizontal para cambiar. Mayús = más rápido."
+                        className="mt-0.5 w-full rounded-lg border border-white/12 bg-zinc-950/80 px-1.5 py-1 text-[11px] outline-none focus:ring-2 focus:ring-amber-500/25"
+                        value={pageDims.height}
+                        min={32}
+                        max={8192}
+                        step={1}
+                        roundFn={Math.round}
+                        onKeyboardCommit={(n) => {
+                          const v = Math.min(
+                            8192,
+                            Math.max(32, Number.isFinite(n) ? Math.round(n) : pageDims.height),
+                          );
+                          patchActivePage({ customWidth: pageDims.width, customHeight: v });
+                        }}
+                        onScrubLive={(n) => {
+                          const v = Math.min(8192, Math.max(32, n));
+                          patchActivePageSilent({ customWidth: pageDims.width, customHeight: v });
+                        }}
+                        onScrubEnd={endPageDimScrubGesture}
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    title="Intercambiar ancho y alto (horizontal ↔ vertical)"
+                    onClick={() =>
+                      patchActivePage({
+                        customWidth: pageDims.height,
+                        customHeight: pageDims.width,
+                      })
+                    }
+                    className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-white/12 bg-white/[0.04] py-1.5 text-[10px] font-semibold text-zinc-300 transition hover:bg-white/10"
+                  >
+                    <ArrowLeftRight className="h-3.5 w-3.5" />
+                    Intercambiar orientación
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2 text-zinc-400">
+                  <Layers className="h-3.5 w-3.5 text-amber-200/70" strokeWidth={2} />
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Páginas</p>
+                </div>
+                {pages.map((p, i) => {
+                  const pd = getPageDimensions(p);
+                  const pf = formatById(p.format);
+                  const maxThumb = 44;
+                  const tw =
+                    pd.width >= pd.height ? maxThumb : Math.round((maxThumb * pd.width) / pd.height);
+                  const th =
+                    pd.height >= pd.width ? maxThumb : Math.round((maxThumb * pd.height) / pd.width);
+                  return (
+                    <div
+                      key={p.id}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setActivePageIndex(i);
+                        }
+                      }}
+                      className={`group relative flex cursor-pointer flex-col gap-2 rounded-xl border p-2.5 transition ${
+                        i === activePageIndex
+                          ? "border-amber-400/40 bg-gradient-to-b from-amber-950/40 to-zinc-950/60 shadow-[0_0_0_1px_rgba(251,191,36,0.12)]"
+                          : "border-white/[0.08] bg-black/25 hover:border-white/18 hover:bg-black/35"
+                      }`}
+                      onClick={() => setActivePageIndex(i)}
+                    >
+                      <div className="flex h-[3.25rem] w-full items-center justify-center rounded-lg bg-zinc-950/80 ring-1 ring-inset ring-white/[0.06]">
+                        <div
+                          className="rounded-sm bg-white shadow-md shadow-black/40 ring-1 ring-black/10"
+                          style={{ width: tw, height: th }}
+                        />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="block truncate font-mono text-[10px] font-semibold text-zinc-300">
+                          {i + 1}. {pf.label}
+                        </span>
+                        <span className="text-[9px] text-zinc-600">
+                          {pd.width}×{pd.height}
+                        </span>
+                      </div>
+                      {pages.length > 1 && (
+                        <div className="absolute right-1.5 top-1.5 flex flex-col gap-0.5 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100">
+                          <button
+                            type="button"
+                            title="Subir página"
+                            disabled={i === 0}
+                            className="rounded-md p-0.5 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 disabled:pointer-events-none disabled:opacity-25"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              movePage(i, i - 1);
+                            }}
+                          >
+                            <ChevronUp className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            title="Bajar página"
+                            disabled={i === pages.length - 1}
+                            className="rounded-md p-0.5 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 disabled:pointer-events-none disabled:opacity-25"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              movePage(i, i + 1);
+                            }}
+                          >
+                            <ChevronDown className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            title="Eliminar página"
+                            className="rounded-md p-0.5 text-zinc-500 hover:bg-rose-500/25 hover:text-rose-200"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deletePage(i);
+                            }}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => setAddPageOpen(true)}
+                  className="flex items-center justify-center gap-1.5 rounded-xl border border-dashed border-white/18 bg-white/[0.02] py-2.5 text-[11px] font-semibold text-zinc-500 transition hover:border-amber-400/35 hover:bg-amber-500/5 hover:text-zinc-300"
+                >
+                  <Plus className="h-4 w-4" strokeWidth={2} />
+                  Añadir página
+                </button>
+              </div>
+            )}
+          </div>
         </aside>
       </div>
 

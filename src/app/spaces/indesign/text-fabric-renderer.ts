@@ -49,6 +49,8 @@ function typoToLineProps(story: Story) {
     fontStyle: t.fontStyle,
     lineHeight: t.lineHeight,
     charSpacing: t.letterSpacing * t.fontSize,
+    underline: t.textUnderline,
+    linethrough: t.textStrikethrough,
     originX: "left" as const,
     originY: "top" as const,
     selectable: false,
@@ -87,6 +89,7 @@ export function syncLayoutsToFabric(
         height: Math.max(24, fr.height),
         scaleX: 1,
         scaleY: 1,
+        opacity: fr.opacity ?? 1,
         fill: "rgba(0,0,0,0.001)",
         stroke: "rgba(100,116,139,0.35)",
         strokeWidth: 1,
@@ -118,6 +121,7 @@ export function syncLayoutsToFabric(
         height: Math.max(24, fr.height),
         scaleX: 1,
         scaleY: 1,
+        opacity: fr.opacity ?? 1,
       });
     }
 
@@ -153,6 +157,7 @@ export function syncLayoutsToFabric(
         fontSize: ld.fontSize,
         lineIndex: i,
         frameId: fr.id,
+        opacity: fr.opacity ?? 1,
       } as Record<string, unknown>);
     }
 

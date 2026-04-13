@@ -12,6 +12,14 @@ export type Typography = {
   color: string;
   fontWeight: string;
   fontStyle: string;
+  /** Sangría de primera línea por párrafo (px). */
+  paragraphIndent: number;
+  fontKerning: "auto" | "none";
+  fontVariantCaps: "normal" | "small-caps";
+  textUnderline: boolean;
+  textStrikethrough: boolean;
+  /** CSS `font-feature-settings` (p. ej. `"kern" 1, "liga" 1`). */
+  fontFeatureSettings: string;
 };
 
 export const DEFAULT_TYPOGRAPHY: Typography = {
@@ -23,6 +31,12 @@ export const DEFAULT_TYPOGRAPHY: Typography = {
   color: "#111827",
   fontWeight: "normal",
   fontStyle: "normal",
+  paragraphIndent: 0,
+  fontKerning: "auto",
+  fontVariantCaps: "normal",
+  textUnderline: false,
+  textStrikethrough: false,
+  fontFeatureSettings: '"kern" 1, "liga" 1, "calt" 1',
 };
 
 /** Span preparado para overrides futuros (negrita, color por tramo). */
@@ -57,6 +71,8 @@ export type TextFrame = {
   width: number;
   height: number;
   padding: number;
+  /** 0–1; se aplica al marco y a las líneas de texto en Fabric. */
+  opacity?: number;
 };
 
 /** Serialización estable para medición y rangos [start,end). */
