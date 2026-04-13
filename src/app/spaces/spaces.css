@@ -831,6 +831,13 @@ body.nb-studio-open [data-foldder-sidebar] {
   opacity: 0 !important;
 }
 
+/* Designer / otros studios fullscreen: el badge zoom+% del grafo (z alto) queda encima del lienzo */
+body.nb-studio-open [data-foldder-reactflow-zoom-badge] {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
 .dndnode {
   padding: 8px 4px;
   background: rgba(255, 255, 255, 0.08);

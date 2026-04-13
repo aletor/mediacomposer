@@ -4462,6 +4462,7 @@ const SpacesContent = () => {
             <AiRequestHud />
             <button
               type="button"
+              data-foldder-reactflow-zoom-badge
               className="pointer-events-auto flex select-none items-center gap-1 rounded-md border border-white/25 bg-black/55 px-2 py-1.5 font-mono text-[11px] font-medium tabular-nums text-white shadow-md backdrop-blur-md hover:bg-black/70"
               aria-expanded={apiUsagePanelOpen}
               aria-controls="foldder-api-usage-panel"

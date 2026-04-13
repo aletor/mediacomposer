@@ -3,6 +3,7 @@
 import React, {
   useState,
   useEffect,
+  useLayoutEffect,
   useCallback,
   useRef,
   useMemo,
@@ -51,23 +52,15 @@ import {
   ChevronDown,
   ChevronsUp,
   ChevronsDown,
-  LayoutTemplate,
   FileType2,
 } from "lucide-react";
 import { ScrubNumberInput } from "./ScrubNumberInput";
 import { FreehandExportModal, type ProfessionalExportOptions } from "./freehand/FreehandExportModal";
 import {
   type Artboard,
-  type ArtboardDisplayUnit,
-  ARTBOARD_PRESETS,
-  applyArtboardResize,
   artboardToRect,
   createArtboard,
-  displayUnitToPx,
-  hitArtboardResizeHandle,
   pickPrimaryArtboard,
-  pointInArtboard,
-  pxToDisplayUnit,
   unionRects,
 } from "./freehand/artboard";
 import {
@@ -106,6 +99,12 @@ import { extractDocumentColorStats, replaceHexEverywhere } from "./freehand/extr
 import { FreehandColorPalette, loadSavedPaletteFromStorage, persistSavedPalette } from "./freehand/FreehandColorPalette";
 import type { SvgImportShape } from "./freehand/svg-import";
 import { offsetAndScaleShapes, parseSvgToShapes } from "./freehand/svg-import";
+import {
+  DESIGNER_RULER_THICKNESS,
+  DesignerRulerCorner,
+  DesignerRulerHorizontal,
+  DesignerRulerVertical,
+} from "./DesignerCanvasRulers";
 
 const OPEN_TYPE_PANEL_TAGS = ["kern", "liga", "calt", "smcp", "onum", "frac", "sups", "subs"] as const;
 
@@ -123,6 +122,65 @@ function stringifyOpenTypeFeatureMap(map: Map<string, number>): string {
   return [...map.entries()].map(([k, v]) => `"${k}" ${v}`).join(", ");
 }
 
+/** Iconos para la botonera de modos de ajuste del marco de imagen (panel Designer). */
+function ImageFrameFittingGlyph({ mode, className }: { mode: string; className?: string }) {
+  const cn = className ?? "h-[18px] w-[18px]";
+  const stroke = "currentColor";
+  switch (mode) {
+    case "fit-proportional":
+      /* Contener: imagen completa con bandas */
+      return (
+        <svg viewBox="0 0 24 24" className={cn} aria-hidden>
+          <rect x="2.5" y="2.5" width="19" height="19" rx="1.5" fill="none" stroke={stroke} strokeWidth="1.25" opacity={0.4} />
+          <rect x="6" y="7.5" width="12" height="9" rx="0.75" fill={stroke} opacity={0.92} />
+        </svg>
+      );
+    case "fill-proportional":
+      /* Cubrir: recorte, imagen más grande que el marco */
+      return (
+        <svg viewBox="0 0 24 24" className={cn} style={{ overflow: "hidden" }} aria-hidden>
+          <rect x="2.5" y="2.5" width="19" height="19" rx="1.5" fill="none" stroke={stroke} strokeWidth="1.25" opacity={0.4} />
+          <rect x="-1" y="5" width="26" height="14" rx="1" fill={stroke} opacity={0.92} />
+        </svg>
+      );
+    case "fit-stretch":
+      /* Estirar a la caja (proporción del marco) */
+      return (
+        <svg viewBox="0 0 24 24" className={cn} aria-hidden>
+          <rect x="2.5" y="2.5" width="19" height="19" rx="1.5" fill="none" stroke={stroke} strokeWidth="1.25" opacity={0.4} />
+          <rect x="3.5" y="3.5" width="17" height="17" rx="1" fill={stroke} opacity={0.92} />
+        </svg>
+      );
+    case "center-content":
+      /* Centrar sin escalar */
+      return (
+        <svg viewBox="0 0 24 24" className={cn} aria-hidden>
+          <rect x="2.5" y="2.5" width="19" height="19" rx="1.5" fill="none" stroke={stroke} strokeWidth="1.25" opacity={0.4} />
+          <rect x="8.5" y="9.5" width="7" height="5" rx="0.5" fill={stroke} opacity={0.92} />
+        </svg>
+      );
+    case "fill-stretch":
+      /* Rellenar sin proporción — forma distorsionada */
+      return (
+        <svg viewBox="0 0 24 24" className={cn} aria-hidden>
+          <rect x="2.5" y="2.5" width="19" height="19" rx="1.5" fill="none" stroke={stroke} strokeWidth="1.25" opacity={0.4} />
+          <path d="M4 4.5 L20 3.5 L19.5 20.5 L3.5 19.5 Z" fill={stroke} opacity={0.92} />
+        </svg>
+      );
+    case "frame-to-content":
+      /* Marco encoge al contenido */
+      return (
+        <svg viewBox="0 0 24 24" className={cn} aria-hidden>
+          <rect x="2" y="2" width="20" height="20" rx="1.5" fill="none" stroke={stroke} strokeWidth="1" strokeDasharray="2.5 2" opacity={0.28} />
+          <rect x="7" y="8.5" width="10" height="7" rx="0.75" fill={stroke} opacity={0.92} />
+          <rect x="6.5" y="8" width="11" height="8" rx="1" fill="none" stroke={stroke} strokeWidth="1.1" opacity={0.55} />
+        </svg>
+      );
+    default:
+      return <ImageIconLucide className={cn} aria-hidden />;
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  TYPES
 // ═══════════════════════════════════════════════════════════════════════════
@@ -136,7 +194,6 @@ type Tool =
   | "text"
   | "textFrame"
   | "imageFrame"
-  | "artboard"
   | "eyedropper"
   | "handTool"
   | "zoomTool";
@@ -279,16 +336,21 @@ interface FreehandObjectBase {
   _designerRichSpans?: Array<{ text: string; style?: { fontWeight?: string; fontStyle?: string; textUnderline?: boolean; textStrikethrough?: boolean; fontSize?: number; color?: string; fontFamily?: string; letterSpacing?: number } }>;
 }
 
-interface RectObject extends FreehandObjectBase { type: "rect"; rx: number }
-interface EllipseObject extends FreehandObjectBase { type: "ellipse" }
-interface PathObject extends FreehandObjectBase {
+export interface RectObject extends FreehandObjectBase { type: "rect"; rx: number }
+export interface EllipseObject extends FreehandObjectBase { type: "ellipse" }
+export interface PathObject extends FreehandObjectBase {
   type: "path";
   points: BezierPoint[];
   closed: boolean;
+  /** Índices donde empieza cada subtrazo cerrado (p. ej. marco + agujero). Si falta, un solo anillo = `points`. */
+  contourStarts?: number[];
   /** Contornos múltiples (p. ej. conversión desde tipografía). Si existe, tiene prioridad en `d` SVG. */
   svgPathD?: string;
   /** Import SVG: escala + traslación del lote aplicados al `d` en espacio parse (no reescribir `d`). */
   svgPathMatrix?: { a: number; b: number; c: number; d: number; e: number; f: number };
+  /** `svgPathD` en coords locales 0…intrinsic; en pantalla: translate(x,y) scale(w/iw, h/ih). */
+  svgPathIntrinsicW?: number;
+  svgPathIntrinsicH?: number;
 }
 interface ImageObject extends FreehandObjectBase {
   type: "image";
@@ -358,10 +420,13 @@ interface BooleanGroupObject extends FreehandObjectBase {
   cachedResult?: string;
 }
 
+/** Máscara para Pegar dentro: vector cerrado o imagen (p. ej. boolean rasterizado con transparencia). */
+export type ClipMaskShape = RectObject | EllipseObject | PathObject | ImageObject;
+
 /** Non-destructive clip: vector mask + nested content (supports nesting). */
 export interface ClippingContainerObject extends FreehandObjectBase {
   type: "clippingContainer";
-  mask: RectObject | EllipseObject | PathObject;
+  mask: ClipMaskShape;
   content: FreehandObject[];
 }
 
@@ -378,16 +443,15 @@ export type FreehandObject =
 interface FreehandStudioProps {
   nodeId: string;
   initialObjects: FreehandObject[];
-  /** Mesas de trabajo (lienzos exportables). */
+  /** Pliego único (tamaño de página / área de exportación); no hay UI de “artboards”. */
   initialArtboards?: Artboard[];
   /** Guías de alineación (persistidas en el nodo). */
   initialLayoutGuides?: LayoutGuide[];
   onClose: () => void;
   onExport: (dataUrl: string) => void;
   onUpdateObjects: (objects: FreehandObject[]) => void;
-  onUpdateArtboards?: (artboards: Artboard[]) => void;
   onUpdateLayoutGuides?: (guides: LayoutGuide[]) => void;
-  /** Designer mode: enables text frame, image frame tools and page-style artboards. */
+  /** Designer mode: text frame, image frame tools; pliego viene del documento de páginas. */
   designerMode?: boolean;
   /** Called when a text frame is created/modified in designer mode. */
   onDesignerTextFrameCreate?: (frameObj: FreehandObject) => void;
@@ -420,8 +484,10 @@ interface FreehandStudioProps {
   };
   /** Designer: shared clipboard across page switches (same ref for all FreehandStudio mounts). */
   designerClipboardRef?: React.MutableRefObject<FreehandObject[] | null>;
-  /** Designer: narrow page rail (~60px) rendered to the right of the properties panel. */
+  /** Designer: narrow page rail (~110px) rendered to the right of the properties panel. */
   designerPagesRail?: React.ReactNode;
+  /** Designer: bump to request fit-to-viewport after the active page canvas is shown (e.g. user picked a page). */
+  designerFitToViewNonce?: number;
   /** Designer: multipage vector PDF export (shown in Export modal). */
   designerMultipageVectorPdfExport?: {
     pageCount: number;
@@ -800,22 +866,29 @@ function distToSegmentBezier(pos: Point, p0: Point, cp1: Point, cp2: Point, p3: 
   return minD;
 }
 
-function distToPathSegments(pos: Point, path: PathObject): { dist: number; segIdx: number; t: number } {
-  let best = { dist: Infinity, segIdx: -1, t: 0 };
-  const pts = path.points;
-  const segCount = path.closed ? pts.length : pts.length - 1;
-  for (let i = 0; i < segCount; i++) {
-    const j = (i + 1) % pts.length;
-    const p0 = pts[i].anchor;
-    const cp1 = pts[i].handleOut;
-    const cp2 = pts[j].handleIn;
-    const p3 = pts[j].anchor;
-    const samples = 24;
-    for (let s = 0; s <= samples; s++) {
-      const t = s / samples;
-      const pt = cubicBezierAt(t, p0, cp1, cp2, p3);
-      const d = dist(pos, pt);
-      if (d < best.dist) best = { dist: d, segIdx: i, t };
+function distToPathSegments(
+  pos: Point,
+  path: PathObject,
+): { dist: number; segIdx: number; t: number; ringIdx: number } {
+  let best = { dist: Infinity, segIdx: -1, t: 0, ringIdx: 0 };
+  const rings = getPathRings(path);
+  for (let ri = 0; ri < rings.length; ri++) {
+    const pts = rings[ri]!;
+    if (!pts || pts.length === 0) continue;
+    const segCount = pts.length;
+    for (let i = 0; i < segCount; i++) {
+      const j = (i + 1) % pts.length;
+      const p0 = pts[i]!.anchor;
+      const cp1 = pts[i]!.handleOut;
+      const cp2 = pts[j]!.handleIn;
+      const p3 = pts[j]!.anchor;
+      const samples = 24;
+      for (let s = 0; s <= samples; s++) {
+        const t = s / samples;
+        const pt = cubicBezierAt(t, p0, cp1, cp2, p3);
+        const d = dist(pos, pt);
+        if (d < best.dist) best = { dist: d, segIdx: i, t, ringIdx: ri };
+      }
     }
   }
   return best;
@@ -854,7 +927,7 @@ function hitTestObject(
         }
       }
       // Import SVG / texto a contornos: solo `svgPathD`, sin puntos Bézier → distToPathSegments no aplica.
-      if (pathObj.svgPathD && pathObj.points.length < 2) {
+      if (pathObj.svgPathD && (!pathObj.points || pathObj.points.length < 2)) {
         const pad = Math.max(threshold * 2, (pathObj.strokeWidth || 0) / 2 + threshold);
         return pointInRotatedRect(pos.x, pos.y, {
           ...obj,
@@ -875,17 +948,39 @@ function hitTestObject(
       const c = obj as ClippingContainerObject;
       const lp = worldPointToLocal(c, pos);
       const m = c.mask;
-      if (m.type === "ellipse") {
-        const pseudo = { ...m, rotation: 0 } as EllipseObject;
-        return pointInEllipse(lp.x, lp.y, pseudo);
+      const maskHit = (() => {
+        if (m.type === "ellipse") {
+          const pseudo = { ...m, rotation: 0 } as EllipseObject;
+          return pointInEllipse(lp.x, lp.y, pseudo);
+        }
+        if (m.type === "rect") {
+          const pseudo = { ...m, rotation: 0 } as RectObject;
+          return pointInRotatedRect(lp.x, lp.y, pseudo);
+        }
+        if (m.type === "image") {
+          const im = m as ImageObject;
+          return pointInRotatedRect(lp.x, lp.y, { ...im, rotation: 0 } as FreehandObject);
+        }
+        const pathObj = m as PathObject;
+        if (pathObj.svgPathD && (!pathObj.points || pathObj.points.length < 2)) {
+          const pad = Math.max(threshold * 2, (pathObj.strokeWidth || 0) / 2 + threshold);
+          return pointInRotatedRect(lp.x, lp.y, {
+            ...pathObj,
+            x: pathObj.x - pad,
+            y: pathObj.y - pad,
+            width: pathObj.width + 2 * pad,
+            height: pathObj.height + 2 * pad,
+            rotation: 0,
+          } as FreehandObject);
+        }
+        if (pathObj.closed && pointInRotatedRect(lp.x, lp.y, { ...pathObj, rotation: 0 })) return true;
+        return distToPathSegments(lp, pathObj).dist < threshold;
+      })();
+      if (maskHit) return true;
+      for (const ch of c.content) {
+        if (hitTestObject(lp, ch, threshold, allObjects)) return true;
       }
-      if (m.type === "rect") {
-        const pseudo = { ...m, rotation: 0 } as RectObject;
-        return pointInRotatedRect(lp.x, lp.y, pseudo);
-      }
-      const pathObj = m as PathObject;
-      if (pathObj.closed && pointInRotatedRect(lp.x, lp.y, { ...pathObj, rotation: 0 })) return true;
-      return distToPathSegments(lp, pathObj).dist < threshold;
+      return false;
     }
     default: return pointInRotatedRect(pos.x, pos.y, obj);
   }
@@ -1064,7 +1159,7 @@ function getVisualAABB(o: FreehandObject, allObjects?: FreehandObject[]): Rect {
       return getVisualAABB(g, allObjects);
     }
     case "clippingContainer":
-      return aabbFromPoints(rectWorldCorners(o));
+      return clippingContainerMaskWorldBoundsAabb(o as ClippingContainerObject);
     case "text": {
       const t = o as TextObject;
       const v = textVisualRectLike(t);
@@ -1091,7 +1186,18 @@ function isClosedPathForMask(p: PathObject): boolean {
 function isValidPasteInsideMask(o: FreehandObject): boolean {
   if (!o.visible || o.locked) return false;
   if (o.type === "rect" || o.type === "ellipse") return true;
-  if (o.type === "path") return isClosedPathForMask(o as PathObject);
+  if (o.type === "path") {
+    const p = o as PathObject;
+    if (p.svgPathD && p.svgPathD.trim().length > 0) {
+      const d = p.svgPathD.trim();
+      return /z\s*$/i.test(d) || p.closed === true;
+    }
+    return isClosedPathForMask(p);
+  }
+  if (o.type === "image") {
+    const im = o as ImageObject;
+    return Boolean(im.src && im.src.trim().length > 0);
+  }
   return false;
 }
 
@@ -1104,20 +1210,44 @@ function translateBezierPoints(pts: BezierPoint[], dx: number, dy: number): Bezi
   }));
 }
 
-function translateMaskShape(m: RectObject | EllipseObject | PathObject, dx: number, dy: number): RectObject | EllipseObject | PathObject {
-  if (m.type === "rect" || m.type === "ellipse") return { ...m, x: m.x + dx, y: m.y + dy };
-  return { ...m, points: translateBezierPoints(m.points, dx, dy) };
+function translateMaskShape(m: ClipMaskShape, dx: number, dy: number): ClipMaskShape {
+  if (m.type === "image" || m.type === "rect" || m.type === "ellipse") return { ...m, x: m.x + dx, y: m.y + dy };
+  if (m.type === "path") {
+    const p = m as PathObject;
+    if (p.svgPathD && (!p.points || p.points.length < 2)) return { ...p, x: p.x + dx, y: p.y + dy };
+  }
+  return { ...m, points: translateBezierPoints((m as PathObject).points, dx, dy) };
 }
 
 /** Mask + content live in container local space (origin top-left of unrotated box). */
-function offsetShapeWorldToLocal(m: RectObject | EllipseObject | PathObject, ox: number, oy: number): RectObject | EllipseObject | PathObject {
+function offsetShapeWorldToLocal(m: ClipMaskShape, ox: number, oy: number): ClipMaskShape {
+  if (m.type === "image") {
+    const im = m as ImageObject;
+    return { ...im, x: im.x - ox, y: im.y - oy };
+  }
   if (m.type === "rect" || m.type === "ellipse") return { ...m, x: m.x - ox, y: m.y - oy };
-  return { ...m, points: translateBezierPoints(m.points, -ox, -oy) };
+  if (m.type === "path") {
+    const p = m as PathObject;
+    if (p.svgPathD && (!p.points || p.points.length < 2)) {
+      return { ...p, x: p.x - ox, y: p.y - oy };
+    }
+  }
+  return { ...m, points: translateBezierPoints((m as PathObject).points, -ox, -oy) };
 }
 
-function offsetShapeLocalToWorld(m: RectObject | EllipseObject | PathObject, ox: number, oy: number): RectObject | EllipseObject | PathObject {
+function offsetShapeLocalToWorld(m: ClipMaskShape, ox: number, oy: number): ClipMaskShape {
+  if (m.type === "image") {
+    const im = m as ImageObject;
+    return { ...im, x: im.x + ox, y: im.y + oy };
+  }
   if (m.type === "rect" || m.type === "ellipse") return { ...m, x: m.x + ox, y: m.y + oy };
-  return { ...m, points: translateBezierPoints(m.points, ox, oy) };
+  if (m.type === "path") {
+    const p = m as PathObject;
+    if (p.svgPathD && (!p.points || p.points.length < 2)) {
+      return { ...p, x: p.x + ox, y: p.y + oy };
+    }
+  }
+  return { ...m, points: translateBezierPoints((m as PathObject).points, ox, oy) };
 }
 
 function offsetObjectWorldToLocal(o: FreehandObject, ox: number, oy: number): FreehandObject {
@@ -1158,6 +1288,47 @@ function worldPointToLocal(c: ClippingContainerObject, wp: Point): Point {
   return rotatePointAround(rel, { x: cx, y: cy }, -c.rotation);
 }
 
+/** Rectángulo de la máscara en coordenadas locales del clip (área recortada visible). */
+function clippingContainerMaskLocalBounds(c: ClippingContainerObject): Rect {
+  return getObjBounds(c.mask as FreehandObject);
+}
+
+/** AABB en mundo del envolvente de la máscara — el centro sirve de pivote natural al escalar. */
+function clippingContainerMaskWorldBoundsAabb(c: ClippingContainerObject): Rect {
+  const b = clippingContainerMaskLocalBounds(c);
+  const corners = [
+    { x: b.x, y: b.y },
+    { x: b.x + b.w, y: b.y },
+    { x: b.x + b.w, y: b.y + b.h },
+    { x: b.x, y: b.y + b.h },
+  ];
+  return aabbFromPoints(corners.map((p) => localPointToWorld(c, p)));
+}
+
+/** Cuatro esquinas en mundo del rectángulo de máscara (para marco de selección / OBB). */
+function clippingContainerMaskWorldCorners(c: ClippingContainerObject): Point[] {
+  const b = clippingContainerMaskLocalBounds(c);
+  return [
+    localPointToWorld(c, { x: b.x, y: b.y }),
+    localPointToWorld(c, { x: b.x + b.w, y: b.y }),
+    localPointToWorld(c, { x: b.x + b.w, y: b.y + b.h }),
+    localPointToWorld(c, { x: b.x, y: b.y + b.h }),
+  ];
+}
+
+/** Máscara en espacio local del clip → anclas en mundo (handles de selección directa / hit-test). */
+function clipMaskPathAnchorsToWorld(c: ClippingContainerObject, p: PathObject): PathObject {
+  const map = (pt: Point) => localPointToWorld(c, pt);
+  const pts = p.points.map((bp) => ({
+    ...bp,
+    anchor: map(bp.anchor),
+    handleIn: map(bp.handleIn),
+    handleOut: map(bp.handleOut),
+  }));
+  const pb = getPathBoundsFromPoints(pts);
+  return { ...p, points: pts, x: pb.x, y: pb.y, width: pb.w, height: pb.h };
+}
+
 function translateFreehandObject(o: FreehandObject, dx: number, dy: number): FreehandObject {
   if (o.type === "clippingContainer") {
     const c = o as ClippingContainerObject;
@@ -1168,8 +1339,11 @@ function translateFreehandObject(o: FreehandObject, dx: number, dy: number): Fre
   }
   if (o.type === "path") {
     const p = o as PathObject;
-    if (p.svgPathD && p.points.length < 2 && p.svgPathMatrix) {
-      const m = p.svgPathMatrix;
+    if (p.svgPathD && (!p.points || p.points.length < 2)) {
+      if (p.svgPathIntrinsicW != null && p.svgPathIntrinsicH != null) {
+        return { ...p, x: p.x + dx, y: p.y + dy };
+      }
+      const m = p.svgPathMatrix ?? { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
       return {
         ...p,
         x: p.x + dx,
@@ -1188,7 +1362,7 @@ function translateFreehandObject(o: FreehandObject, dx: number, dy: number): Fre
 }
 
 /** Outer box of a clipping container = mask bounds only. Content may extend outside; it is clipped visually. */
-function clipContainerOuterBoundsFromMask(mask: RectObject | EllipseObject | PathObject): Rect {
+function clipContainerOuterBoundsFromMask(mask: ClipMaskShape): Rect {
   return getObjBounds(mask as FreehandObject);
 }
 
@@ -1221,7 +1395,7 @@ function deepCloneFreehandObject(o: FreehandObject, newId: () => string): Freeha
     return {
       ...c,
       id,
-      mask: deepCloneFreehandObject(c.mask, newId) as RectObject | EllipseObject | PathObject,
+      mask: deepCloneFreehandObject(c.mask, newId) as ClipMaskShape,
       content: c.content.map((ch) => deepCloneFreehandObject(ch, newId)),
     };
   }
@@ -1254,10 +1428,15 @@ function flattenObjectsForGradientDefs(list: FreehandObject[]): FreehandObject[]
   return out;
 }
 
-function mapMaskShapeWithWorldMap(
-  m: RectObject | EllipseObject | PathObject,
-  mapWorld: (p: Point) => Point,
-): RectObject | EllipseObject | PathObject {
+function mapMaskShapeWithWorldMap(m: ClipMaskShape, mapWorld: (p: Point) => Point): ClipMaskShape {
+  if (m.type === "image") {
+    const im = m as ImageObject;
+    const c1 = mapWorld({ x: im.x, y: im.y });
+    const c2 = mapWorld({ x: im.x + im.width, y: im.y + im.height });
+    const x = Math.min(c1.x, c2.x), y = Math.min(c1.y, c2.y);
+    const w = Math.max(Math.abs(c2.x - c1.x), 1), h = Math.max(Math.abs(c2.y - c1.y), 1);
+    return { ...im, x, y, width: w, height: h };
+  }
   if (m.type === "rect" || m.type === "ellipse") {
     const c1 = mapWorld({ x: m.x, y: m.y });
     const c2 = mapWorld({ x: m.x + m.width, y: m.y + m.height });
@@ -1266,6 +1445,13 @@ function mapMaskShapeWithWorldMap(
     return { ...m, x, y, width: w, height: h };
   }
   const p = m as PathObject;
+  if (p.svgPathD && (!p.points || p.points.length < 2)) {
+    const c1 = mapWorld({ x: p.x, y: p.y });
+    const c2 = mapWorld({ x: p.x + p.width, y: p.y + p.height });
+    const x = Math.min(c1.x, c2.x), y = Math.min(c1.y, c2.y);
+    const w = Math.max(Math.abs(c2.x - c1.x), 1), h = Math.max(Math.abs(c2.y - c1.y), 1);
+    return { ...p, x, y, width: w, height: h };
+  }
   const pts = p.points.map((pt) => ({
     ...pt,
     anchor: mapWorld(pt.anchor),
@@ -1282,8 +1468,10 @@ function mapObjectPointsWithWorld(
 ): FreehandObject {
   if (o.type === "clippingContainer") {
     const c = o as ClippingContainerObject;
-    const newMask = mapMaskShapeWithWorldMap(c.mask, mapWorld);
-    const newContent = c.content.map((ch) => mapObjectPointsWithWorld(ch, mapWorld));
+    /** Máscara/contenido están en local del clip; `mapWorld` opera en mundo (p. ej. OBB al redimensionar). */
+    const chain = (lp: Point) => mapWorld(localPointToWorld(c, lp));
+    const newMask = mapMaskShapeWithWorldMap(c.mask, chain);
+    const newContent = c.content.map((ch) => mapObjectPointsWithWorld(ch, chain));
     const ub = clipContainerOuterBoundsFromMask(newMask);
     return {
       ...c,
@@ -1355,9 +1543,26 @@ function rotatePathAroundSelectionPivot(init: PathObject, pivot: Point, angleDel
 
 function applyRotateAroundSelectionPivot(init: FreehandObject, pivot: Point, angleDeltaDeg: number): FreehandObject {
   if (init.type === "path") {
-    return rotatePathAroundSelectionPivot(init as PathObject, pivot, angleDeltaDeg);
+    const p = init as PathObject;
+    if (p.svgPathD && (!p.points || p.points.length < 2)) {
+      return rotateRectLikeAroundPivot(init, pivot, angleDeltaDeg);
+    }
+    return rotatePathAroundSelectionPivot(p, pivot, angleDeltaDeg);
   }
-  if (init.type === "clippingContainer" || init.type === "booleanGroup") {
+  /** Clip: máscara + contenido giran como un solo cuerpo rígido (solo `rotation` del contenedor). */
+  if (init.type === "clippingContainer") {
+    const c = init as ClippingContainerObject;
+    const cx = c.x + c.width / 2;
+    const cy = c.y + c.height / 2;
+    const newCenter = rotatePointAround({ x: cx, y: cy }, pivot, angleDeltaDeg);
+    return {
+      ...c,
+      x: newCenter.x - c.width / 2,
+      y: newCenter.y - c.height / 2,
+      rotation: c.rotation + angleDeltaDeg,
+    };
+  }
+  if (init.type === "booleanGroup") {
     const mapWorld = (p: Point) => rotatePointAround(p, pivot, angleDeltaDeg);
     return mapObjectPointsWithWorld(init, mapWorld) as FreehandObject;
   }
@@ -1392,22 +1597,15 @@ function releaseClippingContainerToObjects(c: ClippingContainerObject): Freehand
   return [maskW as FreehandObject, ...contentW];
 }
 
-function renderMaskShapeClipInner(m: RectObject | EllipseObject | PathObject): React.ReactNode {
-  if (m.type === "rect") {
-    const r = m as RectObject;
-    return <rect x={r.x} y={r.y} width={r.width} height={r.height} rx={r.rx} />;
-  }
-  if (m.type === "ellipse") {
-    return <ellipse cx={m.x + m.width / 2} cy={m.y + m.height / 2} rx={m.width / 2} ry={m.height / 2} />;
-  }
-  const p = m as PathObject;
-  return <path d={bezierToSvgD(p.points, p.closed)} />;
-}
-
 /** All world-space corners contributing to selection bounds. */
 function objectWorldCorners(o: FreehandObject, allObjects?: FreehandObject[]): Point[] {
   if (o.type === "path") {
-    const pb = getPathBoundsFromPoints((o as PathObject).points);
+    const po = o as PathObject;
+    // Import / forma definitiva: solo `svgPathD` y `points` vacíos — el AABB real está en x,y,width,height (no en points).
+    const pb =
+      po.svgPathD && (!po.points || po.points.length < 2)
+        ? { x: o.x, y: o.y, w: o.width, h: o.height }
+        : getPathBoundsFromPoints(po.points);
     const cx = o.x + o.width / 2, cy = o.y + o.height / 2;
     if (!o.rotation) {
       return [
@@ -1437,6 +1635,9 @@ function objectWorldCorners(o: FreehandObject, allObjects?: FreehandObject[]): P
       ];
     }
     return objectWorldCorners(g, allObjects);
+  }
+  if (o.type === "clippingContainer") {
+    return clippingContainerMaskWorldCorners(o as ClippingContainerObject);
   }
   return rectWorldCorners(o);
 }
@@ -1634,7 +1835,81 @@ function computeSnap(
   return { dx: snapDx, dy: snapDy, guides };
 }
 
+/** Snap de bordes al redimensionar (rect alineado a ejes) contra guías de diseño. */
+function snapAxisAlignedResizeToGuides(
+  rect: { x: number; y: number; w: number; h: number },
+  handle: string,
+  verticalGuides: number[],
+  horizontalGuides: number[],
+  zoom: number,
+): { rect: { x: number; y: number; w: number; h: number }; guides: SnapVisual[] } {
+  const thr = SNAP_SCREEN_PX / zoom;
+  let { x, y, w, h } = rect;
+  const guides: SnapVisual[] = [];
+
+  const nearest = (val: number, targets: number[]): number | undefined => {
+    let best = thr + 1;
+    let hit: number | undefined;
+    for (const t of targets) {
+      const d = Math.abs(val - t);
+      if (d < best) {
+        best = d;
+        hit = t;
+      }
+    }
+    return best <= thr ? hit : undefined;
+  };
+
+  if (handle.includes("e")) {
+    const sx = nearest(x + w, verticalGuides);
+    if (sx != null) {
+      w = Math.max(10, sx - x);
+      guides.push({ type: "line", axis: "x", pos: sx });
+    }
+  }
+  if (handle.includes("w")) {
+    const sx = nearest(x, verticalGuides);
+    if (sx != null) {
+      const right = x + w;
+      x = sx;
+      w = Math.max(10, right - x);
+      guides.push({ type: "line", axis: "x", pos: sx });
+    }
+  }
+  if (handle.includes("s")) {
+    const sy = nearest(y + h, horizontalGuides);
+    if (sy != null) {
+      h = Math.max(10, sy - y);
+      guides.push({ type: "line", axis: "y", pos: sy });
+    }
+  }
+  if (handle.includes("n")) {
+    const sy = nearest(y, horizontalGuides);
+    if (sy != null) {
+      const bottom = y + h;
+      y = sy;
+      h = Math.max(10, bottom - y);
+      guides.push({ type: "line", axis: "y", pos: sy });
+    }
+  }
+
+  return { rect: { x, y, w, h }, guides };
+}
+
 // ── SVG Path ────────────────────────────────────────────────────────────
+
+/** Particiones de `points` en subtrazos cerrados (p. ej. marco + agujero). Sin `contourStarts`, un solo anillo. */
+function getPathRings(p: PathObject): BezierPoint[][] {
+  const cs = p.contourStarts;
+  if (!cs || cs.length <= 1) return [p.points];
+  const rings: BezierPoint[][] = [];
+  for (let r = 0; r < cs.length; r++) {
+    const a = cs[r]!;
+    const b = r + 1 < cs.length ? cs[r + 1]! : p.points.length;
+    rings.push(p.points.slice(a, b));
+  }
+  return rings;
+}
 
 function bezierToSvgD(points: BezierPoint[], closed: boolean): string {
   if (points.length === 0) return "";
@@ -1651,8 +1926,102 @@ function bezierToSvgD(points: BezierPoint[], closed: boolean): string {
 }
 
 function pathObjToD(obj: PathObject): string {
-  if (obj.svgPathD && obj.svgPathD.length > 0) return obj.svgPathD;
-  return bezierToSvgD(obj.points, obj.closed);
+  if (obj.svgPathD && String(obj.svgPathD).trim().length > 0 && (!obj.points || obj.points.length < 2)) {
+    return obj.svgPathD;
+  }
+  const rings = getPathRings(obj);
+  if (rings.length === 1) return bezierToSvgD(rings[0]!, obj.closed);
+  return rings.map((r) => bezierToSvgD(r, true)).join(" ");
+}
+
+/** evenodd solo con varios contornos / subpaths (agujeros); en trazos simples nonzero evita regiones raras en clipPath. */
+function clipMaskFillRuleForPath(p: PathObject): "evenodd" | "nonzero" {
+  const cs = p.contourStarts;
+  if (cs && cs.length > 1) return "evenodd";
+  if (p.svgPathD && String(p.svgPathD).trim().length > 0 && (!p.points || p.points.length < 2)) {
+    const d = String(p.svgPathD);
+    const mCount = (d.match(/\b[mM]/g) ?? []).length;
+    return mCount > 1 ? "evenodd" : "nonzero";
+  }
+  return getPathRings(p).length > 1 ? "evenodd" : "nonzero";
+}
+
+/** Misma jerarquía que `renderObj` → `path`: intrínseco, svgPathMatrix o trazo; si no, el clip no coincide con lo dibujado. */
+function renderPathClipMaskGeometry(p: PathObject): React.ReactNode {
+  const d = pathObjToD(p);
+  const fr = clipMaskFillRuleForPath(p);
+  const pathClipProps = { fill: "#000" as const, fillRule: fr };
+  const transform = buildObjTransform(p);
+  const hasIntrinsic =
+    p.svgPathIntrinsicW != null &&
+    p.svgPathIntrinsicH != null &&
+    p.svgPathD &&
+    (!p.points || p.points.length < 2);
+  if (hasIntrinsic) {
+    const iw = p.svgPathIntrinsicW!;
+    const ih = p.svgPathIntrinsicH!;
+    const sx = p.width / Math.max(iw, 1e-9);
+    const sy = p.height / Math.max(ih, 1e-9);
+    const inner = (
+      <g transform={`translate(${p.x} ${p.y}) scale(${sx} ${sy})`}>
+        <path d={d} {...pathClipProps} />
+      </g>
+    );
+    return transform ? <g transform={transform}>{inner}</g> : inner;
+  }
+  const imp = p.svgPathMatrix;
+  const innerM = imp
+    ? `matrix(${imp.a},${imp.b},${imp.c},${imp.d},${imp.e},${imp.f})`
+    : undefined;
+  if (innerM) {
+    const inner = (
+      <g transform={innerM}>
+        <path d={d} {...pathClipProps} />
+      </g>
+    );
+    return transform ? <g transform={transform}>{inner}</g> : inner;
+  }
+  return <path d={d} {...pathClipProps} transform={transform} />;
+}
+
+function renderMaskShapeClipInner(m: ClipMaskShape): React.ReactNode {
+  if (m.type === "image") {
+    const im = m as ImageObject;
+    const transform = buildObjTransform(im);
+    return (
+      <image
+        href={im.src}
+        x={im.x}
+        y={im.y}
+        width={im.width}
+        height={im.height}
+        preserveAspectRatio="xMidYMid meet"
+        transform={transform}
+      />
+    );
+  }
+  if (m.type === "rect") {
+    const r = m as RectObject;
+    const transform = buildObjTransform(r);
+    return (
+      <rect x={r.x} y={r.y} width={r.width} height={r.height} rx={r.rx} fill="#000" transform={transform} />
+    );
+  }
+  if (m.type === "ellipse") {
+    const e = m as EllipseObject;
+    const transform = buildObjTransform(e);
+    return (
+      <ellipse
+        cx={e.x + e.width / 2}
+        cy={e.y + e.height / 2}
+        rx={e.width / 2}
+        ry={e.height / 2}
+        fill="#000"
+        transform={transform}
+      />
+    );
+  }
+  return renderPathClipMaskGeometry(m as PathObject);
 }
 
 function splitBezierSegment(pts: BezierPoint[], segIdx: number, t: number): BezierPoint[] {
@@ -1748,11 +2117,29 @@ function renderObj(obj: FreehandObject, allObjects: FreehandObject[]): React.Rea
     case "path": {
       const p = obj as PathObject;
       const fp = p.closed && fillHasPaint(fill) ? fillAttr : "none";
+      const d = pathObjToD(p);
+      const hasIntrinsic =
+        p.svgPathIntrinsicW != null &&
+        p.svgPathIntrinsicH != null &&
+        p.svgPathD &&
+        (!p.points || p.points.length < 2);
+      if (hasIntrinsic) {
+        const iw = p.svgPathIntrinsicW!;
+        const ih = p.svgPathIntrinsicH!;
+        const sx = obj.width / Math.max(iw, 1e-9);
+        const sy = obj.height / Math.max(ih, 1e-9);
+        return (
+          <g key={obj.id} transform={transform}>
+            <g transform={`translate(${obj.x} ${obj.y}) scale(${sx} ${sy})`}>
+              <path d={d} fill={fp} {...strokeProps} />
+            </g>
+          </g>
+        );
+      }
       const imp = p.svgPathMatrix;
       const innerM = imp
         ? `matrix(${imp.a},${imp.b},${imp.c},${imp.d},${imp.e},${imp.f})`
         : undefined;
-      const d = pathObjToD(p);
       if (innerM) {
         return (
           <g key={obj.id} transform={transform}>
@@ -1912,11 +2299,10 @@ function renderObj(obj: FreehandObject, allObjects: FreehandObject[]): React.Rea
       return (
         <g key={cc.id} opacity={cc.opacity}>
           <g transform={innerT}>
-            <defs>
-              <clipPath id={cid} clipPathUnits="userSpaceOnUse">
-                {renderMaskShapeClipInner(cc.mask)}
-              </clipPath>
-            </defs>
+            {/* clipPath fuera de <defs>: dentro de <defs> bajo un <g transform> algunos motores aplican mal el sistema de coordenadas al recorte. */}
+            <clipPath id={cid} clipPathUnits="userSpaceOnUse">
+              {renderMaskShapeClipInner(cc.mask)}
+            </clipPath>
             <g clipPath={`url(#${cid})`}>{cc.content.map((ch) => renderObj(ch, allObjects))}</g>
           </g>
         </g>
@@ -2145,7 +2531,23 @@ function objToSvgStringStatic(obj: FreehandObject, w: number, h: number, ox: num
       const p = obj as PathObject;
       const fp = p.closed && fillHasPaint(fill) ? escapeXmlAttr(fillAttr) : "none";
       const dStr = escapeXmlAttr(pathObjToD(p));
-      parts.push(`<path d="${dStr}" fill="${fp}" stroke="${obj.stroke}" stroke-width="${obj.strokeWidth}"${capJoin}${dashAttr} ${transform}/>`);
+      if (
+        p.svgPathIntrinsicW != null &&
+        p.svgPathIntrinsicH != null &&
+        p.svgPathD &&
+        (!p.points || p.points.length < 2)
+      ) {
+        const iw = p.svgPathIntrinsicW;
+        const ih = p.svgPathIntrinsicH;
+        const sx = obj.width / Math.max(iw, 1e-9);
+        const sy = obj.height / Math.max(ih, 1e-9);
+        const inner = `translate(${obj.x} ${obj.y}) scale(${sx} ${sy})`;
+        parts.push(
+          `<g${transform}><g transform="${escapeXmlAttr(inner)}"><path d="${dStr}" fill="${fp}" stroke="${obj.stroke}" stroke-width="${obj.strokeWidth}"${capJoin}${dashAttr}/></g></g>`,
+        );
+      } else {
+        parts.push(`<path d="${dStr}" fill="${fp}" stroke="${obj.stroke}" stroke-width="${obj.strokeWidth}"${capJoin}${dashAttr} ${transform}/>`);
+      }
       break;
     }
     case "text": {
@@ -2234,21 +2636,29 @@ function buildExportBounds(objects: FreehandObject[]): Rect {
   return { x: x1 - pad, y: y1 - pad, w: x2 - x1 + pad * 2, h: y2 - y1 + pad * 2 };
 }
 
-function resolveSceneExportBounds(
-  objects: FreehandObject[],
-  artboards: Artboard[],
-  selectedArtboardId: string | null,
-): Rect {
-  const ab = pickPrimaryArtboard(artboards, selectedArtboardId);
+function resolveSceneExportBounds(objects: FreehandObject[], artboards: Artboard[]): Rect {
+  const ab = pickPrimaryArtboard(artboards, null);
   if (ab) return artboardToRect(ab);
   return buildExportBounds(objects);
 }
 
 function resolveFitViewBounds(objects: FreehandObject[], artboards: Artboard[]): Rect {
+  const visible = objects.filter((o) => o.visible && !o.isClipMask);
+  const abRects = artboards.map(artboardToRect);
+
+  // Sin contenido, no usar el placeholder 1920×1080 de buildExportBounds: al unirlo con un
+  // pliego vertical domina el ancho y el encuadre deja la página como una franja pequeña.
+  if (visible.length === 0) {
+    if (abRects.length > 0) {
+      const u = unionRects(abRects);
+      if (u) return u;
+    }
+    return { x: 0, y: 0, w: 1920, h: 1080 };
+  }
+
   const ob = buildExportBounds(objects);
   if (artboards.length === 0) return ob;
-  const parts = [ob, ...artboards.map(artboardToRect)];
-  return unionRects(parts) ?? ob;
+  return unionRects([ob, ...abRects]) ?? ob;
 }
 
 /** Evita canvas “tainted” al exportar: las <image> con http(s) deben ir como data URLs antes de rasterizar. */
@@ -2689,7 +3099,6 @@ export default function FreehandStudio({
   onClose,
   onExport,
   onUpdateObjects,
-  onUpdateArtboards,
   onUpdateLayoutGuides,
   designerMode,
   onDesignerTextFrameCreate,
@@ -2707,6 +3116,7 @@ export default function FreehandStudio({
   designerClipboardRef,
   designerPagesRail,
   designerMultipageVectorPdfExport,
+  designerFitToViewNonce = 0,
 }: FreehandStudioProps) {
 
   // ── Core state ─────────────────────────────────────────────────────
@@ -2715,11 +3125,14 @@ export default function FreehandStudio({
       ? (initialObjects.map((o) => ({ ...o, fill: migrateFill((o as FreehandObject).fill as unknown) })) as FreehandObject[])
       : [],
   );
-  const [artboards, setArtboards] = useState<Artboard[]>(() =>
-    (initialArtboards ?? []).map((a) => createArtboard(a)),
-  );
-  const [selectedArtboardId, setSelectedArtboardId] = useState<string | null>(null);
-  const [hoverArtboardId, setHoverArtboardId] = useState<string | null>(null);
+  /** Un solo pliego por instancia; tamaño lo define el padre (Designer: página activa). */
+  const artboards = useMemo((): Artboard[] => {
+    const raw = initialArtboards ?? [];
+    if (raw.length === 0) {
+      return [createArtboard({ name: "Page 1", x: 0, y: 0, width: 595, height: 842, background: "#ffffff" })];
+    }
+    return raw.map((a) => createArtboard(a));
+  }, [initialArtboards]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [activeTool, setActiveTool] = useState<Tool>("select");
   const [viewport, setViewport] = useState({ x: 0, y: 0, zoom: 1 });
@@ -2733,7 +3146,7 @@ export default function FreehandStudio({
 
   // Drag state
   const [dragState, setDragState] = useState<{
-    type: "move" | "resize" | "pan" | "create" | "createText" | "createTextFrame" | "createImageFrame" | "directSelect" | "marquee" | "penHandle" | "rotate" | "gradient" | "artboardMove" | "artboardResize" | "guideMove" | "imageContentPan" | "imageContentResize";
+    type: "move" | "resize" | "pan" | "create" | "createText" | "createTextFrame" | "createImageFrame" | "directSelect" | "marquee" | "penHandle" | "rotate" | "gradient" | "guideMove" | "guidePull" | "imageContentPan" | "imageContentResize";
     startX: number;
     startY: number;
     startCanvas?: Point;
@@ -2748,12 +3161,14 @@ export default function FreehandStudio({
     /** Deep copy of selected objects at resize start — transforms must not compound per frame. */
     resizeSnapshot?: Map<string, FreehandObject>;
     allBounds?: Map<string, Rect>;
-    createType?: "rect" | "ellipse" | "artboard";
+    createType?: "rect" | "ellipse";
     createOrigin?: Point;
     gradientHandle?: "linA" | "linB" | "radC" | "radR" | "stop";
     gradientPrimaryId?: string;
     gradientStopIndex?: number;
     dsObjId?: string;
+    /** Si el path editado es la máscara de un `clippingContainer`, el id del contenedor (puntos en local). */
+    dsClipContainerId?: string;
     dsPtIdx?: number;
     dsHtType?: "anchor" | "handleIn" | "handleOut";
     dsStartPt?: Point;
@@ -2765,10 +3180,6 @@ export default function FreehandStudio({
     rotateInitialRotations?: Map<string, number>;
     /** Copia profunda al inicio del gesto; la rotación se calcula desde aquí (pivote = centro de selección). */
     rotateInitialSnapshots?: Map<string, FreehandObject>;
-    artboardId?: string;
-    artboardSnapshot?: Artboard;
-    artboardStart?: Point;
-    abHandle?: string;
     /** Alt+arrastre: al soltar, memorizar el delta para ⌘D (paso repetido). */
     duplicateMove?: boolean;
     /** Inicio de `e,f` en paths importados (matrix) para arrastre sin acumular mal. */
@@ -2776,12 +3187,35 @@ export default function FreehandStudio({
     guideId?: string;
     guideOrientation?: "vertical" | "horizontal";
     guideStartPos?: number;
+    /** Arrastre desde regla (Designer): posición borrador en mundo antes de soltar. */
+    draftPos?: number;
     /** Designer: arrastrar bitmap dentro del marco. */
     imageFrameId?: string;
     startOffsetX?: number;
     startOffsetY?: number;
     imageCorner?: "nw" | "ne" | "sw" | "se";
   } | null>(null);
+
+  const dragStateRef = useRef(dragState);
+  dragStateRef.current = dragState;
+  const viewportRef = useRef(viewport);
+  viewportRef.current = viewport;
+
+  /** Gesto de guía activo (refs síncronos; no depender de que React haya hecho commit de dragState). */
+  type GuideGestureRefState =
+    | { kind: "pull"; orientation: "vertical" | "horizontal" }
+    | {
+        kind: "move";
+        guideId: string;
+        orientation: "vertical" | "horizontal";
+        startWorld: number;
+        startClientX: number;
+        startClientY: number;
+      };
+  const guideGestureRef = useRef<GuideGestureRefState | null>(null);
+  /** Borrador / soltar: posición en mundo para guía nueva desde regla. */
+  const guidePullDraftRef = useRef<{ orientation: "vertical" | "horizontal"; draftPos: number } | null>(null);
+  const guideWindowListenersRef = useRef<{ move: (e: PointerEvent) => void; up: (e: PointerEvent) => void } | null>(null);
 
   /** Designer: edición en lienzo del contenido (límites visibles, pan/escala). */
   const [imageFrameContentEditId, setImageFrameContentEditId] = useState<string | null>(null);
@@ -2812,6 +3246,8 @@ export default function FreehandStudio({
   const [layersPanelExpanded, setLayersPanelExpanded] = useState(false);
   /** Quick fill/stroke popover: which channel is being edited from canvas. */
   const [quickEditMode, setQuickEditMode] = useState<"fill" | "stroke" | null>(null);
+  /** Lienzo a pantalla completa: solo caja de transformación en el SVG; P alterna. */
+  const [canvasZenMode, setCanvasZenMode] = useState(false);
 
   // Live boolean preview during isolation editing
   const [livePreview, setLivePreview] = useState<{ dataUrl: string; bounds: Rect } | null>(null);
@@ -2880,6 +3316,26 @@ export default function FreehandStudio({
 
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  /** Último tamaño del contenedor del lienzo (recentrar vista al redimensionar / modo P). */
+  const lastCanvasContainerSizeRef = useRef({ w: 0, h: 0 });
+  /** Hit-test para soltar guías sobre las reglas (Designer). */
+  const designerRulerHorizRef = useRef<HTMLDivElement | null>(null);
+  const designerRulerVertRef = useRef<HTMLDivElement | null>(null);
+  const designerRulerCornerRef = useRef<HTMLDivElement | null>(null);
+  /** Tamaño del viewport del lienzo (para reglas en px, solo designer). */
+  const [designerCanvasViewportSize, setDesignerCanvasViewportSize] = useState({ w: 0, h: 0 });
+  useLayoutEffect(() => {
+    if (!designerMode) return;
+    const el = containerRef.current;
+    if (!el) return;
+    const sync = () => {
+      setDesignerCanvasViewportSize({ w: el.clientWidth, h: el.clientHeight });
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [designerMode]);
   /** Designer: sección «Marco de imagen» en el panel derecho (scroll en doble clic). */
   const designerImageFramePropsRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -2894,8 +3350,6 @@ export default function FreehandStudio({
   objectsRef.current = objects;
   const artboardsRef = useRef(artboards);
   artboardsRef.current = artboards;
-  const selectedArtboardIdRef = useRef(selectedArtboardId);
-  selectedArtboardIdRef.current = selectedArtboardId;
   const layoutGuidesRef = useRef<LayoutGuide[]>(layoutGuides);
   layoutGuidesRef.current = layoutGuides;
 
@@ -2924,6 +3378,41 @@ export default function FreehandStudio({
 
   const pushHistoryRef = useRef(pushHistory);
   pushHistoryRef.current = pushHistory;
+
+  const directSelectBakeKey = useMemo(() => Array.from(selectedIds).sort().join(","), [selectedIds]);
+
+  /** Trazo solo-`svgPathD`, rectángulo o elipse → puntos Bézier al usar Selección directa (A). */
+  useLayoutEffect(() => {
+    if (activeTool !== "directSelect") return;
+    const sel = selectedIdsRef.current;
+    void Promise.all([import("./freehand/svg-path-bake-paper"), import("./freehand/primitive-shape-bake-paper")]).then(
+      ([{ bakeSvgPathObjectToBezier }, { bakeRectToPath, bakeEllipseToPath }]) => {
+        setObjects((prev) => {
+          const next = prev.map((o) => {
+            if (!sel.has(o.id)) return o;
+            if (o.type === "path") {
+              const po = o as PathObject;
+              if (!po.svgPathD || (po.points && po.points.length >= 2)) return o;
+              const baked = bakeSvgPathObjectToBezier(po as unknown as import("./freehand/svg-path-bake-paper").SvgPathBakeInput);
+              return (baked as PathObject | null) ?? o;
+            }
+            if (o.type === "rect") {
+              const r = o as RectObject;
+              if (r.isImageFrame) return o;
+              return bakeRectToPath(r) ?? o;
+            }
+            if (o.type === "ellipse") {
+              return bakeEllipseToPath(o as EllipseObject) ?? o;
+            }
+            return o;
+          });
+          if (next.every((o, i) => o === prev[i])) return prev;
+          pushHistoryRef.current(next, sel);
+          return next;
+        });
+      },
+    );
+  }, [activeTool, directSelectBakeKey]);
 
   useEffect(() => {
     if (!designerHistoryBridge || designerHistoryInitRef.current) return;
@@ -3006,9 +3495,8 @@ export default function FreehandStudio({
         if (!svg) return "";
         const objs = objectsRef.current;
         const abs = artboardsRef.current;
-        const sid = selectedArtboardIdRef.current;
-        const bounds = resolveSceneExportBounds(objs, abs, sid);
-        const ab = pickPrimaryArtboard(abs, sid);
+        const bounds = resolveSceneExportBounds(objs, abs);
+        const ab = pickPrimaryArtboard(abs, null);
         const bg: "transparent" | string = ab?.background ?? "transparent";
         let strRaw = buildStandaloneSvgFromCanvasDom(svg, {
           exportIds: null,
@@ -3071,7 +3559,7 @@ export default function FreehandStudio({
           let mask = parentC.mask;
           let contentLayers = fullObjects;
           if (frame.editMode === "mask") {
-            const m = fullObjects[0] as RectObject | EllipseObject | PathObject | undefined;
+            const m = fullObjects[0] as ClipMaskShape | undefined;
             if (m) mask = m;
             contentLayers = frame.storedContent ?? [];
           }
@@ -3102,24 +3590,10 @@ export default function FreehandStudio({
     return () => clearTimeout(syncRef.current);
   }, [objects, onUpdateObjects]);
 
-  const artboardSyncRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => {
-    if (!onUpdateArtboards) return;
-    clearTimeout(artboardSyncRef.current);
-    artboardSyncRef.current = setTimeout(() => {
-      onUpdateArtboards(artboards);
-    }, 500);
-    return () => clearTimeout(artboardSyncRef.current);
-  }, [artboards, onUpdateArtboards]);
-
-  const layoutGuideSyncRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  /** Sincronizar guías al documento padre sin debounce (pocas actualizaciones; evita perder guías al cambiar de página). */
   useEffect(() => {
     if (!onUpdateLayoutGuides) return;
-    clearTimeout(layoutGuideSyncRef.current);
-    layoutGuideSyncRef.current = setTimeout(() => {
-      onUpdateLayoutGuides(layoutGuides);
-    }, 500);
-    return () => clearTimeout(layoutGuideSyncRef.current);
+    onUpdateLayoutGuides(layoutGuides);
   }, [layoutGuides, onUpdateLayoutGuides]);
 
   // ── Live boolean preview during isolation ───────────────────────
@@ -3157,6 +3631,142 @@ export default function FreehandStudio({
     if (!r) return { x: sx, y: sy };
     return { x: (sx - r.left - viewport.x) / viewport.zoom, y: (sy - r.top - viewport.y) / viewport.zoom };
   }, [viewport]);
+
+  const screenToCanvasRef = useRef(screenToCanvas);
+  screenToCanvasRef.current = screenToCanvas;
+
+  const isClientInDesignerRulerZones = useCallback((clientX: number, clientY: number) => {
+    if (!designerMode) return false;
+    const inR = (el: HTMLDivElement | null) => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
+    };
+    return inR(designerRulerHorizRef.current) || inR(designerRulerVertRef.current) || inR(designerRulerCornerRef.current);
+  }, [designerMode]);
+
+  const teardownGuideWindowListeners = useCallback(() => {
+    const L = guideWindowListenersRef.current;
+    if (!L) return;
+    window.removeEventListener("pointermove", L.move, true);
+    window.removeEventListener("pointerup", L.up, true);
+    window.removeEventListener("pointercancel", L.up, true);
+    guideWindowListenersRef.current = null;
+  }, []);
+
+  const applyGuidePointer = useCallback((clientX: number, clientY: number) => {
+    const gg = guideGestureRef.current;
+    if (!gg) return;
+    const p = screenToCanvasRef.current(clientX, clientY);
+    if (gg.kind === "pull") {
+      const next = gg.orientation === "vertical" ? p.x : p.y;
+      guidePullDraftRef.current = { orientation: gg.orientation, draftPos: next };
+      setDragState((prev) => {
+        if (prev?.type === "guidePull") return { ...prev, draftPos: next };
+        return {
+          type: "guidePull",
+          startX: clientX,
+          startY: clientY,
+          guideOrientation: gg.orientation,
+          draftPos: next,
+        };
+      });
+      return;
+    }
+    const z = viewportRef.current.zoom;
+    const ddx = (clientX - gg.startClientX) / z;
+    const ddy = (clientY - gg.startClientY) / z;
+    const id = gg.guideId;
+    const start = gg.startWorld;
+    const orient = gg.orientation;
+    setLayoutGuides((prev) =>
+      prev.map((g) => {
+        if (g.id !== id) return g;
+        if (orient === "vertical") return { ...g, position: start + ddx };
+        return { ...g, position: start + ddy };
+      }),
+    );
+  }, []);
+
+  const finishGuideGesture = useCallback(
+    (clientX: number, clientY: number) => {
+      setSnapGuides([]);
+      const gg = guideGestureRef.current;
+      const draftSnapshot = guidePullDraftRef.current;
+
+      if (!gg) {
+        teardownGuideWindowListeners();
+        const ds = dragStateRef.current;
+        if (ds?.type === "guidePull" || ds?.type === "guideMove") {
+          guidePullDraftRef.current = null;
+          setDragState(null);
+        }
+        return;
+      }
+
+      guideGestureRef.current = null;
+      guidePullDraftRef.current = null;
+      teardownGuideWindowListeners();
+
+      if (gg.kind === "pull") {
+        if (designerMode && isClientInDesignerRulerZones(clientX, clientY)) {
+          /* soltar sobre reglas: descartar */
+        } else if (draftSnapshot !== null) {
+          setLayoutGuides((p) => [...p, createLayoutGuide(draftSnapshot.orientation, draftSnapshot.draftPos)]);
+          setShowLayoutGuides(true);
+        }
+        setDragState(null);
+        return;
+      }
+
+      if (gg.kind === "move" && designerMode && isClientInDesignerRulerZones(clientX, clientY)) {
+        setLayoutGuides((prev) => prev.filter((x) => x.id !== gg.guideId));
+      }
+      setDragState(null);
+    },
+    [designerMode, isClientInDesignerRulerZones, teardownGuideWindowListeners],
+  );
+
+  const setupGuideWindowListeners = useCallback(() => {
+    teardownGuideWindowListeners();
+    const onMove = (e: PointerEvent) => {
+      e.preventDefault();
+      applyGuidePointer(e.clientX, e.clientY);
+    };
+    const onUp = (e: PointerEvent) => {
+      finishGuideGesture(e.clientX, e.clientY);
+    };
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onUp, true);
+    guideWindowListenersRef.current = { move: onMove, up: onUp };
+  }, [teardownGuideWindowListeners, applyGuidePointer, finishGuideGesture]);
+
+  useEffect(
+    () => () => {
+      teardownGuideWindowListeners();
+    },
+    [teardownGuideWindowListeners],
+  );
+
+  const handleDesignerGuidePullStart = useCallback(
+    (orientation: "vertical" | "horizontal", e: React.PointerEvent) => {
+      if (e.button !== 0) return;
+      guideGestureRef.current = { kind: "pull", orientation };
+      const p = screenToCanvas(e.clientX, e.clientY);
+      const draftPos = orientation === "vertical" ? p.x : p.y;
+      guidePullDraftRef.current = { orientation, draftPos };
+      setDragState({
+        type: "guidePull",
+        startX: e.clientX,
+        startY: e.clientY,
+        guideOrientation: orientation,
+        draftPos,
+      });
+      setupGuideWindowListeners();
+    },
+    [screenToCanvas, setupGuideWindowListeners],
+  );
 
   // ── Derived ───────────────────────────────────────────────────────
 
@@ -3246,10 +3856,20 @@ export default function FreehandStudio({
   const selectedAnchorVertexHint = useMemo(() => {
     if (selectedPoints.size === 0) return null;
     const modes = new Set<VertexMode>();
+    const pathForPointsId = (oid: string): PathObject | undefined => {
+      const root = objects.find((x) => x.id === oid);
+      if (root?.type === "path") return root as PathObject;
+      for (const x of objects) {
+        if (x.type !== "clippingContainer") continue;
+        const c = x as ClippingContainerObject;
+        if (c.mask.type === "path" && (c.mask as PathObject).id === oid) return c.mask as PathObject;
+      }
+      return undefined;
+    };
     selectedPoints.forEach((idxs, oid) => {
-      const o = objects.find((x) => x.id === oid);
-      if (!o || o.type !== "path") return;
-      idxs.forEach((pi) => modes.add(getVertexMode((o as PathObject).points[pi])));
+      const po = pathForPointsId(oid);
+      if (!po) return;
+      idxs.forEach((pi) => modes.add(getVertexMode(po.points[pi])));
     });
     if (modes.size === 0) return null;
     const unified = modes.size === 1 ? [...modes][0]! : null;
@@ -3294,6 +3914,90 @@ export default function FreehandStudio({
       y: margin - b.y * z + (rh - margin * 2 - b.h * z) / 2,
     });
   }, [objects, artboards]);
+
+  const fitAllCanvasRef = useRef(fitAllCanvas);
+  fitAllCanvasRef.current = fitAllCanvas;
+
+  useEffect(() => {
+    if (!designerMode) return;
+    if (designerFitToViewNonce === 0) return;
+    const id = requestAnimationFrame(() => {
+      fitAllCanvasRef.current();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [designerMode, designerFitToViewNonce]);
+
+  const scheduleRecenterViewportAfterLayoutChange = useCallback((beforeW: number, beforeH: number) => {
+    if (beforeW < 4 || beforeH < 4) return;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = containerRef.current;
+        if (!el) return;
+        const w = el.clientWidth, h = el.clientHeight;
+        if (w === beforeW && h === beforeH) return;
+        setViewport((v) => {
+          const worldCx = (beforeW / 2 - v.x) / v.zoom;
+          const worldCy = (beforeH / 2 - v.y) / v.zoom;
+          return { ...v, x: w / 2 - worldCx * v.zoom, y: h / 2 - worldCy * v.zoom };
+        });
+        lastCanvasContainerSizeRef.current = { w, h };
+      });
+    });
+  }, []);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const applyResize = () => {
+      const w = el.clientWidth, h = el.clientHeight;
+      if (w < 4 || h < 4) return;
+      const prev = lastCanvasContainerSizeRef.current;
+      if (prev.w >= 4 && (prev.w !== w || prev.h !== h)) {
+        setViewport((v) => {
+          const worldCx = (prev.w / 2 - v.x) / v.zoom;
+          const worldCy = (prev.h / 2 - v.y) / v.zoom;
+          return { ...v, x: w / 2 - worldCx * v.zoom, y: h / 2 - worldCy * v.zoom };
+        });
+      }
+      lastCanvasContainerSizeRef.current = { w, h };
+    };
+    applyResize();
+    const ro = new ResizeObserver(applyResize);
+    ro.observe(el);
+    window.addEventListener("resize", applyResize);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", applyResize);
+    };
+  }, []);
+
+  /** Entrar en modo P: el área del lienzo crece; centrar el pliego/contenido en pantalla (no solo el píxel que estaba en el centro). */
+  useLayoutEffect(() => {
+    if (!canvasZenMode) return;
+    let cancelled = false;
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+        const el = containerRef.current;
+        if (!el) return;
+        const rw = el.clientWidth, rh = el.clientHeight;
+        if (rw < 4 || rh < 4) return;
+        const b = resolveFitViewBounds(objectsRef.current, artboardsRef.current);
+        if (b.w < 2 || b.h < 2) return;
+        const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+        setViewport((v) => ({
+          ...v,
+          x: rw / 2 - cx * v.zoom,
+          y: rh / 2 - cy * v.zoom,
+        }));
+        lastCanvasContainerSizeRef.current = { w: rw, h: rh };
+      });
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(id);
+    };
+  }, [canvasZenMode]);
 
   // ── Image import from file / drop / paste ─────────────────────────
 
@@ -3344,7 +4048,7 @@ export default function FreehandStudio({
           window.setTimeout(() => setToast(null), 3200);
           return;
         }
-        const ab = pickPrimaryArtboard(artboardsRef.current, selectedArtboardIdRef.current);
+        const ab = pickPrimaryArtboard(artboardsRef.current, null);
         const fitInside = ab ? artboardToRect(ab) : null;
         let center: Point;
         if (at) center = at;
@@ -3561,18 +4265,16 @@ export default function FreehandStudio({
     const objs = objectsRef.current.filter((o) => sel.has(o.id));
     if (objs.length === 0) return;
     const cloned = objs.map((o) => deepCloneFreehandObject(o, uid));
+    objectClipboardRef.current = cloned;
     if (designerMode && designerClipboardRef) {
       designerClipboardRef.current = cloned;
-    } else {
-      objectClipboardRef.current = cloned;
     }
   }, [designerMode, designerClipboardRef]);
 
   const pasteClipboardObjects = useCallback(() => {
+    const designerClip = designerClipboardRef?.current;
     const clip =
-      designerMode && designerClipboardRef?.current != null
-        ? designerClipboardRef.current
-        : objectClipboardRef.current;
+      designerMode && designerClip && designerClip.length > 0 ? designerClip : objectClipboardRef.current;
     if (!clip || clip.length === 0) return;
     const dupes = clip.map((o) => {
       const c = deepCloneFreehandObject(o, uid);
@@ -3676,13 +4378,6 @@ export default function FreehandStudio({
     setSelectedIds(new Set(newPaths.map((p) => p.id)));
     setTextEditingId(null);
   }, [pushHistory]);
-
-  const updateSelectedArtboard = useCallback((patch: Partial<Artboard>) => {
-    if (!selectedArtboardId) return;
-    setArtboards((prev) =>
-      prev.map((a) => (a.id === selectedArtboardId ? { ...a, ...patch } : a)),
-    );
-  }, [selectedArtboardId]);
 
   const resetZoomCanvas = useCallback(() => {
     setViewport((v) => ({ ...v, zoom: 1 }));
@@ -3836,14 +4531,16 @@ export default function FreehandStudio({
   // ── Paste Inside (non-destructive clipping container) ───────────
 
   const pasteInside = useCallback(() => {
-    const clip = objectClipboardRef.current;
+    const designerClip = designerClipboardRef?.current;
+    const clip =
+      designerMode && designerClip && designerClip.length > 0 ? designerClip : objectClipboardRef.current;
     if (!clip || clip.length === 0) return;
     const sel = selectedIdsRef.current;
     if (sel.size !== 1) return;
     const objs = objectsRef.current;
     const maskSrc = objs.find((o) => o.id === Array.from(sel)[0]);
     if (!maskSrc || !isValidPasteInsideMask(maskSrc)) return;
-    const maskClone = deepCloneFreehandObject(maskSrc, uid) as RectObject | EllipseObject | PathObject;
+    const maskClone = deepCloneFreehandObject(maskSrc, uid) as ClipMaskShape;
     const contentWorld = clip.map((o) => deepCloneFreehandObject(o, uid));
     const ub = clipContainerOuterBoundsFromMask(maskClone);
     const newId = uid();
@@ -3869,7 +4566,7 @@ export default function FreehandStudio({
       return next;
     });
     setSelectedIds(new Set([newId]));
-  }, [pushHistory]);
+  }, [pushHistory, designerMode, designerClipboardRef]);
 
   const releaseClippingStructure = useCallback(() => {
     const sel = selectedIdsRef.current;
@@ -3943,28 +4640,110 @@ export default function FreehandStudio({
     });
   }, [pushHistory]);
 
-  const expandBoolean = useCallback(async () => {
+  /**
+   * Aplica el boolean de forma destructiva: un solo trazo vectorial (Paper.js).
+   * Sirve como máscara para «Pegar dentro» (path cerrado con `svgPathD`).
+   */
+  const flattenBooleanToDefinitivePath = useCallback(async () => {
     const sel = selectedIdsRef.current;
     const objs = objectsRef.current;
     const group = objs.find((o) => sel.has(o.id) && o.type === "booleanGroup") as BooleanGroupObject | undefined;
     if (!group) return;
 
-    const resultObj: ImageObject = {
-      ...defaultObj({ name: group.name + " (expanded)" }),
-      type: "image",
-      x: group.x, y: group.y,
-      width: group.width, height: group.height,
-      fill: solidFill("none"), stroke: "none", strokeWidth: 0,
-      src: group.cachedResult || "",
-    } as ImageObject;
+    const supported = group.children.filter(
+      (o) => o.visible && (o.type === "rect" || o.type === "ellipse" || o.type === "path"),
+    );
+    if (supported.length === 0) {
+      setToast("Solo se pueden convertir a trazo los hijos que sean rectángulo, elipse o trazado (sin texto ni imágenes).");
+      window.setTimeout(() => setToast(null), 4200);
+      return;
+    }
+
+    /** El preview booleano escala con `group.width/height`; los hijos no siempre se actualizan al redimensionar. */
+    const cb = getGroupBounds(supported);
+    const gx = group.x, gy = group.y, gw = group.width, gh = group.height;
+    const scaleX = gw / Math.max(cb.w, 1e-9);
+    const scaleY = gh / Math.max(cb.h, 1e-9);
+    const mapChildToGroupVisual = (p: Point): Point => ({
+      x: gx + (p.x - cb.x) * scaleX,
+      y: gy + (p.y - cb.y) * scaleY,
+    });
+    const scaledSupported = supported.map((ch) => mapObjectPointsWithWorld(ch, mapChildToGroupVisual) as FreehandObject);
+
+    const bounds = getGroupBounds(scaledSupported);
+    const pad = 4;
+    const w = Math.ceil(bounds.w + pad * 2);
+    const h = Math.ceil(bounds.h + pad * 2);
+    const ox = bounds.x - pad;
+    const oy = bounds.y - pad;
+
+    const defBlocks: string[] = [];
+    const bodies: string[] = [];
+    for (const ch of scaledSupported) {
+      const full = objToSvgStringStatic(ch, w, h, ox, oy);
+      const dm = full.match(/<defs>([\s\S]*?)<\/defs>/i);
+      if (dm) defBlocks.push(dm[1]);
+      const inner = full
+        .replace(/^[\s\S]*?<svg[^>]*>/i, "")
+        .replace(/<\/svg>\s*$/i, "")
+        .replace(/<defs>[\s\S]*?<\/defs>\s*/gi, "");
+      bodies.push(inner);
+    }
+    const combinedSvg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${w}" height="${h}" viewBox="${ox} ${oy} ${w} ${h}">${defBlocks.length ? `<defs>${defBlocks.join("")}</defs>` : ""}${bodies.join("")}</svg>`;
+
+    const { paperFlattenBooleanFromCombinedSvg } = await import("./freehand/boolean-flatten-paper");
+    const flat = await paperFlattenBooleanFromCombinedSvg(group.operation, combinedSvg);
+    if (!flat) {
+      setToast("No se pudo calcular el trazo definitivo. Prueba con formas más simples.");
+      window.setTimeout(() => setToast(null), 3800);
+      return;
+    }
+
+    // Paper.js devuelve bounds del trazo en espacio del viewBox importado (origen ~0); el SVG usa viewBox ox,oy → sumar al lienzo.
+    const placeX = ox + flat.x;
+    const placeY = oy + flat.y;
+
+    let newPath: PathObject = {
+      ...defaultObj({
+        id: group.id,
+        type: "path",
+        name: `${group.name} (trazo)`,
+        x: placeX,
+        y: placeY,
+        width: flat.width,
+        height: flat.height,
+        fill: migrateFill(scaledSupported[0]!.fill),
+        stroke: "none",
+        strokeWidth: 0,
+        opacity: group.opacity,
+        rotation: group.rotation ?? 0,
+        flipX: group.flipX,
+        flipY: group.flipY,
+        visible: group.visible,
+        locked: group.locked,
+      }),
+      points: [],
+      closed: true,
+      svgPathD: flat.pathData,
+      svgPathIntrinsicW: flat.width,
+      svgPathIntrinsicH: flat.height,
+    } as PathObject;
+
+    /** Mismo horneado que al pulsar A: puntos Bézier + agujeros; sin esto «Pegar dentro» y la máscara fallan hasta cambiar de herramienta. */
+    try {
+      const { bakeSvgPathObjectToBezier } = await import("./freehand/svg-path-bake-paper");
+      const baked = bakeSvgPathObjectToBezier(newPath as unknown as import("./freehand/svg-path-bake-paper").SvgPathBakeInput);
+      if (baked) newPath = baked as unknown as PathObject;
+    } catch {
+      /* mantener solo svgPathD */
+    }
 
     setObjects((prev) => {
-      const next = prev.map((o) => o.id === group.id ? resultObj : o);
-      const ns = new Set([resultObj.id]);
-      pushHistory(next, ns);
+      const next = prev.map((o) => (o.id === group.id ? newPath : o));
+      pushHistory(next, new Set([newPath.id]));
       return next;
     });
-    setSelectedIds(new Set([resultObj.id]));
+    setSelectedIds(new Set([newPath.id]));
   }, [pushHistory]);
 
   const enterIsolation = useCallback((groupId: string) => {
@@ -4049,7 +4828,7 @@ export default function FreehandStudio({
       setObjects([{ ...parentC.mask } as FreehandObject]);
       setSelectedIds(new Set([parentC.mask.id]));
     } else {
-      const m = objectsRef.current[0] as RectObject | EllipseObject | PathObject | undefined;
+      const m = objectsRef.current[0] as ClipMaskShape | undefined;
       if (!m) return;
       top.editMode = "content";
       top.parentObjects = top.parentObjects.map((o) =>
@@ -4069,10 +4848,10 @@ export default function FreehandStudio({
       const current = objectsRef.current;
       const parentC = frame.parentObjects.find((o) => o.id === frame.containerId) as ClippingContainerObject | undefined;
       if (!parentC) return;
-      let mask: RectObject | EllipseObject | PathObject = parentC.mask;
+      let mask: ClipMaskShape = parentC.mask;
       let content: FreehandObject[];
       if (frame.editMode === "mask") {
-        const m = current[0] as RectObject | EllipseObject | PathObject | undefined;
+        const m = current[0] as ClipMaskShape | undefined;
         if (m) mask = m;
         content = (frame.storedContent ?? []).map((c) => ({ ...c }));
       } else {
@@ -4196,34 +4975,102 @@ export default function FreehandStudio({
     if (selectedPoints.size === 0) return;
     const sel = selectedIdsRef.current;
     setObjects((prev) => {
-      const next = prev.map((o) => {
-        if (o.type !== "path") return o;
-        const ptIdxs = selectedPoints.get(o.id);
-        if (!ptIdxs || ptIdxs.size === 0) return o;
-        const p = o as PathObject;
-        const newPts = p.points.filter((_, i) => !ptIdxs.has(i));
-        if (newPts.length < 1) return null;
-        return { ...p, points: newPts };
-      }).filter(Boolean) as FreehandObject[];
+      const next = prev
+        .map((o) => {
+          if (o.type === "clippingContainer") {
+            const c = o as ClippingContainerObject;
+            if (c.mask.type !== "path") return o;
+            const p = c.mask as PathObject;
+            const ptIdxs = selectedPoints.get(p.id);
+            if (!ptIdxs || ptIdxs.size === 0) return o;
+            const newPts = p.points.filter((_, i) => !ptIdxs.has(i));
+            if (newPts.length < 1) return null;
+            const pb = getPathBoundsFromPoints(newPts);
+            return {
+              ...c,
+              mask: { ...p, points: newPts, x: pb.x, y: pb.y, width: pb.w, height: pb.h },
+            };
+          }
+          if (o.type !== "path") return o;
+          const ptIdxs = selectedPoints.get(o.id);
+          if (!ptIdxs || ptIdxs.size === 0) return o;
+          const p = o as PathObject;
+          const newPts = p.points.filter((_, i) => !ptIdxs.has(i));
+          if (newPts.length < 1) return null;
+          return { ...p, points: newPts };
+        })
+        .filter(Boolean) as FreehandObject[];
       pushHistory(next, sel);
       return next;
     });
     setSelectedPoints(new Map());
   }, [selectedPoints, pushHistory]);
 
-  const addPointOnSegment = useCallback((objId: string, segIdx: number, t: number) => {
-    const sel = selectedIdsRef.current;
-    setObjects((prev) => {
-      const next = prev.map((o) => {
-        if (o.id !== objId || o.type !== "path") return o;
-        const p = o as PathObject;
-        const newPts = splitBezierSegment(p.points, segIdx, t);
-        return { ...p, points: newPts };
+  const addPointOnSegment = useCallback(
+    (objId: string, ringIdx: number, segIdx: number, t: number, clipContainerId?: string) => {
+      const sel = selectedIdsRef.current;
+      setObjects((prev) => {
+        const next = prev.map((o) => {
+          if (clipContainerId) {
+            if (o.id !== clipContainerId || o.type !== "clippingContainer") return o;
+            const c = o as ClippingContainerObject;
+            if (c.mask.type !== "path" || c.mask.id !== objId) return o;
+            const p = c.mask as PathObject;
+            const rings = getPathRings(p);
+            const ring = rings[ringIdx];
+            if (!ring) return o;
+            const newRing = splitBezierSegment(ring, segIdx, t);
+            const nextRings = rings.slice();
+            nextRings[ringIdx] = newRing;
+            const points: BezierPoint[] = [];
+            const contourStarts: number[] = [];
+            for (const r of nextRings) {
+              contourStarts.push(points.length);
+              points.push(...r);
+            }
+            const pb = getPathBoundsFromPoints(points);
+            const nextMask = {
+              ...p,
+              points,
+              contourStarts: contourStarts.length > 1 ? contourStarts : undefined,
+              x: pb.x,
+              y: pb.y,
+              width: pb.w,
+              height: pb.h,
+            };
+            return { ...c, mask: nextMask };
+          }
+          if (o.id !== objId || o.type !== "path") return o;
+          const p = o as PathObject;
+          const rings = getPathRings(p);
+          const ring = rings[ringIdx];
+          if (!ring) return o;
+          const newRing = splitBezierSegment(ring, segIdx, t);
+          const nextRings = rings.slice();
+          nextRings[ringIdx] = newRing;
+          const points: BezierPoint[] = [];
+          const contourStarts: number[] = [];
+          for (const r of nextRings) {
+            contourStarts.push(points.length);
+            points.push(...r);
+          }
+          const pb = getPathBoundsFromPoints(points);
+          return {
+            ...p,
+            points,
+            contourStarts: contourStarts.length > 1 ? contourStarts : undefined,
+            x: pb.x,
+            y: pb.y,
+            width: pb.w,
+            height: pb.h,
+          };
+        });
+        pushHistory(next, sel);
+        return next;
       });
-      pushHistory(next, sel);
-      return next;
-    });
-  }, [pushHistory]);
+    },
+    [pushHistory],
+  );
 
   const addMidAnchorToSelectedPath = useCallback(() => {
     const sel = selectedIdsRef.current;
@@ -4244,7 +5091,7 @@ export default function FreehandStudio({
         bestI = i;
       }
     }
-    addPointOnSegment(o.id, bestI, 0.5);
+    addPointOnSegment(o.id, 0, bestI, 0.5);
   }, [addPointOnSegment]);
 
   const togglePathClosed = useCallback((objId: string) => {
@@ -4263,6 +5110,20 @@ export default function FreehandStudio({
     const sel = selectedIdsRef.current;
     setObjects((prev) => {
       const next = prev.map((o) => {
+        if (o.type === "clippingContainer") {
+          const c = o as ClippingContainerObject;
+          if (c.mask.type !== "path" || c.mask.id !== objId) return o;
+          const p = c.mask as PathObject;
+          const pts = p.points.map((pt, i) => {
+            if (i !== ptIdx) return pt;
+            const cur = getVertexMode(pt);
+            const order: VertexMode[] = ["smooth", "cusp", "corner"];
+            const nextMode = order[(order.indexOf(cur) + 1) % order.length];
+            return normalizeBezierPointForVertexMode(pt, nextMode);
+          });
+          const pb = getPathBoundsFromPoints(pts);
+          return { ...c, mask: { ...p, points: pts, x: pb.x, y: pb.y, width: pb.w, height: pb.h } };
+        }
         if (o.id !== objId || o.type !== "path") return o;
         const p = o as PathObject;
         const pts = p.points.map((pt, i) => {
@@ -4285,6 +5146,19 @@ export default function FreehandStudio({
     const sp = selectedPointsRef.current;
     setObjects((prev) => {
       const next = prev.map((o) => {
+        if (o.type === "clippingContainer" && sel.has(o.id)) {
+          const c = o as ClippingContainerObject;
+          if (c.mask.type !== "path") return o;
+          const p = c.mask as PathObject;
+          const idxs = sp.get(p.id);
+          if (!idxs || idxs.size === 0) return o;
+          const pts = p.points.map((pt, i) => {
+            if (!idxs.has(i)) return pt;
+            return normalizeBezierPointForVertexMode(pt, mode);
+          });
+          const pb = getPathBoundsFromPoints(pts);
+          return { ...c, mask: { ...p, points: pts, x: pb.x, y: pb.y, width: pb.w, height: pb.h } };
+        }
         if (o.type !== "path" || !sel.has(o.id)) return o;
         const idxs = sp.get(o.id);
         if (!idxs || idxs.size === 0) return o;
@@ -4306,8 +5180,8 @@ export default function FreehandStudio({
   const doExportSvg = useCallback(() => {
     const svg = svgRef.current;
     if (!svg) return;
-    const bounds = resolveSceneExportBounds(objects, artboards, selectedArtboardId);
-    const ab = pickPrimaryArtboard(artboards, selectedArtboardId);
+    const bounds = resolveSceneExportBounds(objects, artboards);
+    const ab = pickPrimaryArtboard(artboards, null);
     const bg: "transparent" | string = ab?.background ?? "transparent";
     const str = buildStandaloneSvgFromCanvasDom(svg, {
       exportIds: null,
@@ -4316,13 +5190,13 @@ export default function FreehandStudio({
       background: bg,
     });
     downloadBlob(new Blob([str], { type: "image/svg+xml;charset=utf-8" }), "freehand.svg");
-  }, [objects, artboards, selectedArtboardId]);
+  }, [objects, artboards]);
 
   const doExportPng = useCallback(async () => {
     const svg = svgRef.current;
     if (!svg) return;
-    const bounds = resolveSceneExportBounds(objects, artboards, selectedArtboardId);
-    const ab = pickPrimaryArtboard(artboards, selectedArtboardId);
+    const bounds = resolveSceneExportBounds(objects, artboards);
+    const ab = pickPrimaryArtboard(artboards, null);
     const bg: "transparent" | string = ab?.background ?? "transparent";
     const strRaw = buildStandaloneSvgFromCanvasDom(svg, {
       exportIds: null,
@@ -4333,13 +5207,13 @@ export default function FreehandStudio({
     const str = substituteNativeTextForRasterExport(strRaw, objects);
     const canvas = await svgStringToCanvasSafe(str, bounds.w, bounds.h);
     canvas.toBlob((blob) => { if (blob) downloadBlob(blob, "freehand.png"); }, "image/png");
-  }, [objects, artboards, selectedArtboardId]);
+  }, [objects, artboards]);
 
   const doExportJpg = useCallback(async () => {
     const svg = svgRef.current;
     if (!svg) return;
-    const bounds = resolveSceneExportBounds(objects, artboards, selectedArtboardId);
-    const ab = pickPrimaryArtboard(artboards, selectedArtboardId);
+    const bounds = resolveSceneExportBounds(objects, artboards);
+    const ab = pickPrimaryArtboard(artboards, null);
     const bg: "transparent" | string = ab?.background ?? "transparent";
     const strRaw = buildStandaloneSvgFromCanvasDom(svg, {
       exportIds: null,
@@ -4351,13 +5225,13 @@ export default function FreehandStudio({
     const jpgBg = bg === "transparent" ? "#ffffff" : bg;
     const canvas = await svgStringToCanvasSafe(str, bounds.w, bounds.h, jpgBg);
     canvas.toBlob((blob) => { if (blob) downloadBlob(blob, "freehand.jpg"); }, "image/jpeg", 0.92);
-  }, [objects, artboards, selectedArtboardId]);
+  }, [objects, artboards]);
 
   const doExportNode = useCallback(async () => {
     const svg = svgRef.current;
     if (!svg) return;
-    const bounds = resolveSceneExportBounds(objects, artboards, selectedArtboardId);
-    const ab = pickPrimaryArtboard(artboards, selectedArtboardId);
+    const bounds = resolveSceneExportBounds(objects, artboards);
+    const ab = pickPrimaryArtboard(artboards, null);
     const bg: "transparent" | string = ab?.background ?? "transparent";
     const strRaw = buildStandaloneSvgFromCanvasDom(svg, {
       exportIds: null,
@@ -4368,7 +5242,7 @@ export default function FreehandStudio({
     const str = substituteNativeTextForRasterExport(strRaw, objects);
     const canvas = await svgStringToCanvasSafe(str, bounds.w, bounds.h);
     onExport(canvasToPngDataUrlSafe(canvas));
-  }, [objects, artboards, selectedArtboardId, onExport]);
+  }, [objects, artboards, onExport]);
 
   const closeInFlight = useRef(false);
   const handleCloseStudio = useCallback(async () => {
@@ -4628,8 +5502,7 @@ export default function FreehandStudio({
 
         if (scope === "full") {
           const abs = artboardsRef.current;
-          const sid = selectedArtboardIdRef.current;
-          const ab = pickPrimaryArtboard(abs, sid);
+          const ab = pickPrimaryArtboard(abs, null);
           const visible = objs.filter((o) => o.visible);
           const b = ab ? artboardToRect(ab) : getGroupBounds(visible);
           if (b.w < 1 || b.h < 1) return;
@@ -4692,10 +5565,23 @@ export default function FreehandStudio({
         e.preventDefault(); setActiveTool("select"); return;
       }
       if (e.key === "a" && !e.metaKey && !e.ctrlKey) { e.preventDefault(); setActiveTool("directSelect"); return; }
-      if (e.key === "p" || e.key === "P") {
+      // P = modo lienzo limpio (sin UI salvo transform en canvas); ⇧P = lápiz
+      if ((e.key === "p" || e.key === "P") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.shiftKey) {
+          e.preventDefault();
+          setActiveTool("pen");
+          if (!e.repeat) shapeShortcutKeyDownAtRef.current.KeyP = Date.now();
+          return;
+        }
         e.preventDefault();
-        setActiveTool("pen");
-        if (!e.repeat) shapeShortcutKeyDownAtRef.current.KeyP = Date.now();
+        setCanvasZenMode((z) => {
+          if (z) {
+            const shell = containerRef.current;
+            scheduleRecenterViewportAfterLayoutChange(shell?.clientWidth ?? 0, shell?.clientHeight ?? 0);
+          }
+          return !z;
+        });
+        setCtxMenu(null);
         return;
       }
       if (e.key === "r" || e.key === "R") {
@@ -4741,11 +5627,6 @@ export default function FreehandStudio({
       if ((e.key === "Delete" || e.key === "Backspace")) {
         e.preventDefault();
         if (activeTool === "directSelect" && selectedPoints.size > 0) { deleteSelectedPoints(); return; }
-        if (activeTool === "artboard" && selectedArtboardId) {
-          setArtboards((p) => p.filter((a) => a.id !== selectedArtboardId));
-          setSelectedArtboardId(null);
-          return;
-        }
         deleteSelected();
         return;
       }
@@ -4780,6 +5661,24 @@ export default function FreehandStudio({
           e.preventDefault();
           setObjects((prev) => {
             const next = prev.map((o) => {
+              if (o.type === "clippingContainer" && sel.has(o.id)) {
+                const c = o as ClippingContainerObject;
+                if (c.mask.type !== "path") return o;
+                const p = c.mask as PathObject;
+                const idxs = sp.get(p.id);
+                if (!idxs || idxs.size === 0) return o;
+                const newPts = p.points.map((pt, pi) => {
+                  if (!idxs.has(pi)) return pt;
+                  return {
+                    ...pt,
+                    anchor: { x: pt.anchor.x + mdx, y: pt.anchor.y + mdy },
+                    handleIn: { x: pt.handleIn.x + mdx, y: pt.handleIn.y + mdy },
+                    handleOut: { x: pt.handleOut.x + mdx, y: pt.handleOut.y + mdy },
+                  };
+                });
+                const pb = getPathBoundsFromPoints(newPts);
+                return { ...c, mask: { ...p, points: newPts, x: pb.x, y: pb.y, width: pb.w, height: pb.h } };
+              }
               if (o.type !== "path") return o;
               const idxs = sp.get(o.id);
               if (!idxs || idxs.size === 0) return o;
@@ -4815,6 +5714,14 @@ export default function FreehandStudio({
 
       if (e.key === "Escape") {
         e.preventDefault();
+        if (canvasZenMode) {
+          const shell = containerRef.current;
+          const bw = shell?.clientWidth ?? 0;
+          const bh = shell?.clientHeight ?? 0;
+          setCanvasZenMode(false);
+          scheduleRecenterViewportAfterLayoutChange(bw, bh);
+          return;
+        }
         if (designerMode && imageFrameContentEditId) {
           setImageFrameContentEditId(null);
           return;
@@ -4825,7 +5732,6 @@ export default function FreehandStudio({
         else {
           setSelectedIds(new Set());
           setSelectedPoints(new Map());
-          setSelectedArtboardId(null);
         }
       }
     };
@@ -4867,7 +5773,7 @@ export default function FreehandStudio({
       undo, redo, pushHistory, deleteSelected, duplicateSelected, groupSelected,
       ungroupSelected, bringForward, sendBackward, finishPenPath, deleteSelectedPoints, exitIsolation,
       copySelectedObjects, cutSelectedObjects, pasteClipboardObjects, pasteInside, quickExportSelectionPng, convertTextToOutlines,
-      designerMode, imageFrameContentEditId]);
+      designerMode, imageFrameContentEditId, canvasZenMode, scheduleRecenterViewportAfterLayoutChange]);
 
   // ── Mouse handlers ────────────────────────────────────────────────
 
@@ -4958,6 +5864,14 @@ export default function FreehandStudio({
               setLayoutGuides((prev) => prev.filter((x) => x.id !== g.id));
               return;
             }
+            guideGestureRef.current = {
+              kind: "move",
+              guideId: g.id,
+              orientation: g.orientation,
+              startWorld: g.position,
+              startClientX: e.clientX,
+              startClientY: e.clientY,
+            };
             setDragState({
               type: "guideMove",
               startX: e.clientX,
@@ -4966,6 +5880,7 @@ export default function FreehandStudio({
               guideOrientation: g.orientation,
               guideStartPos: g.position,
             });
+            setupGuideWindowListeners();
             return;
           }
         } else if (Math.abs(pos.y - g.position) < hitW) {
@@ -4973,6 +5888,14 @@ export default function FreehandStudio({
             setLayoutGuides((prev) => prev.filter((x) => x.id !== g.id));
             return;
           }
+          guideGestureRef.current = {
+            kind: "move",
+            guideId: g.id,
+            orientation: g.orientation,
+            startWorld: g.position,
+            startClientX: e.clientX,
+            startClientY: e.clientY,
+          };
           setDragState({
             type: "guideMove",
             startX: e.clientX,
@@ -4981,6 +5904,7 @@ export default function FreehandStudio({
             guideOrientation: g.orientation,
             guideStartPos: g.position,
           });
+          setupGuideWindowListeners();
           return;
         }
       }
@@ -5028,55 +5952,6 @@ export default function FreehandStudio({
       return;
     }
 
-    // ── Artboard tool (mesas de trabajo / export frame) ───────────
-    if (activeTool === "artboard") {
-      for (let i = artboards.length - 1; i >= 0; i--) {
-        const ab = artboards[i];
-        if (selectedArtboardId === ab.id) {
-          const h = hitArtboardResizeHandle(pos.x, pos.y, ab, viewport.zoom);
-          if (h) {
-            setDragState({
-              type: "artboardResize",
-              startX: e.clientX,
-              startY: e.clientY,
-              artboardId: ab.id,
-              artboardSnapshot: { ...ab },
-              abHandle: h,
-            });
-            return;
-          }
-        }
-      }
-      for (let i = artboards.length - 1; i >= 0; i--) {
-        const ab = artboards[i];
-        if (pointInArtboard(pos.x, pos.y, ab)) {
-          setSelectedArtboardId(ab.id);
-          setSelectedIds(new Set());
-          setSelectedPoints(new Map());
-          setDragState({
-            type: "artboardMove",
-            startX: e.clientX,
-            startY: e.clientY,
-            artboardId: ab.id,
-            artboardStart: { x: ab.x, y: ab.y },
-          });
-          return;
-        }
-      }
-      setSelectedArtboardId(null);
-      setSelectedIds(new Set());
-      setSelectedPoints(new Map());
-      setDragState({
-        type: "create",
-        startX: e.clientX,
-        startY: e.clientY,
-        createType: "artboard",
-        createOrigin: pos,
-        currentCanvas: pos,
-      });
-      return;
-    }
-
     // ── Direct select ─────────────────────────────────────────────
     if (activeTool === "directSelect") {
       const threshold = 8 / viewport.zoom;
@@ -5085,33 +5960,94 @@ export default function FreehandStudio({
         const obj = objects[i];
         if (obj.locked || !obj.visible || obj.type !== "path") continue;
         const p = obj as PathObject;
-        for (let pi = 0; pi < p.points.length; pi++) {
-          const pt = p.points[pi];
-          for (const ht of ["anchor", "handleIn", "handleOut"] as const) {
-            if (dist(pos, pt[ht]) < threshold) {
-              // Select this point
-              if (e.shiftKey || e.nativeEvent.getModifierState?.("Shift")) {
-                setSelectedPoints((prev) => {
-                  const m = new Map(prev);
-                  const s = new Set(m.get(obj.id) || []);
-                  if (ht === "anchor") { if (s.has(pi)) s.delete(pi); else s.add(pi); }
-                  else s.add(pi);
-                  m.set(obj.id, s);
-                  return m;
+        const rings = getPathRings(p);
+        let gBase = 0;
+        for (const ring of rings) {
+          for (let pi = 0; pi < ring.length; pi++) {
+            const pt = ring[pi]!;
+            const gIdx = gBase + pi;
+            for (const ht of ["anchor", "handleIn", "handleOut"] as const) {
+              if (dist(pos, pt[ht]) < threshold) {
+                if (e.shiftKey || e.nativeEvent.getModifierState?.("Shift")) {
+                  setSelectedPoints((prev) => {
+                    const m = new Map(prev);
+                    const s = new Set(m.get(obj.id) || []);
+                    if (ht === "anchor") { if (s.has(gIdx)) s.delete(gIdx); else s.add(gIdx); }
+                    else s.add(gIdx);
+                    m.set(obj.id, s);
+                    return m;
+                  });
+                } else {
+                  const m = new Map<string, Set<number>>();
+                  m.set(obj.id, new Set([gIdx]));
+                  setSelectedPoints(m);
+                }
+                setSelectedIds(new Set([obj.id]));
+                setDragState({
+                  type: "directSelect", startX: e.clientX, startY: e.clientY,
+                  dsObjId: obj.id, dsPtIdx: gIdx, dsHtType: ht, dsStartPt: { ...pt[ht] },
                 });
-              } else {
-                const m = new Map<string, Set<number>>();
-                m.set(obj.id, new Set([pi]));
-                setSelectedPoints(m);
+                return;
               }
-              setSelectedIds(new Set([obj.id]));
-              setDragState({
-                type: "directSelect", startX: e.clientX, startY: e.clientY,
-                dsObjId: obj.id, dsPtIdx: pi, dsHtType: ht, dsStartPt: { ...pt[ht] },
-              });
-              return;
             }
           }
+          gBase += ring.length;
+        }
+      }
+
+      // Máscara path de clippingContainer (puntos en local del contenedor)
+      for (let i = objects.length - 1; i >= 0; i--) {
+        const obj = objects[i];
+        if (obj.locked || !obj.visible || obj.type !== "clippingContainer") continue;
+        const cc = obj as ClippingContainerObject;
+        if (cc.mask.type !== "path") continue;
+        const raw = cc.mask as PathObject;
+        if (!raw.points || raw.points.length < 2) continue;
+        const pWorld = clipMaskPathAnchorsToWorld(cc, raw);
+        const ringsW = getPathRings(pWorld);
+        const ringsL = getPathRings(raw);
+        let gBase = 0;
+        for (let ri = 0; ri < ringsW.length; ri++) {
+          const ringW = ringsW[ri]!;
+          const ringL = ringsL[ri]!;
+          for (let pi = 0; pi < ringW.length; pi++) {
+            const ptW = ringW[pi]!;
+            const ptL = ringL[pi]!;
+            const gIdx = gBase + pi;
+            for (const ht of ["anchor", "handleIn", "handleOut"] as const) {
+              if (dist(pos, ptW[ht]) < threshold) {
+                if (e.shiftKey || e.nativeEvent.getModifierState?.("Shift")) {
+                  setSelectedPoints((prev) => {
+                    const m = new Map(prev);
+                    const s = new Set(m.get(raw.id) || []);
+                    if (ht === "anchor") {
+                      if (s.has(gIdx)) s.delete(gIdx);
+                      else s.add(gIdx);
+                    } else s.add(gIdx);
+                    m.set(raw.id, s);
+                    return m;
+                  });
+                } else {
+                  const m = new Map<string, Set<number>>();
+                  m.set(raw.id, new Set([gIdx]));
+                  setSelectedPoints(m);
+                }
+                setSelectedIds(new Set([cc.id]));
+                setDragState({
+                  type: "directSelect",
+                  startX: e.clientX,
+                  startY: e.clientY,
+                  dsObjId: raw.id,
+                  dsClipContainerId: cc.id,
+                  dsPtIdx: gIdx,
+                  dsHtType: ht,
+                  dsStartPt: { ...ptL[ht] },
+                });
+                return;
+              }
+            }
+          }
+          gBase += ringW.length;
         }
       }
 
@@ -5122,8 +6058,24 @@ export default function FreehandStudio({
         const p = obj as PathObject;
         const seg = distToPathSegments(pos, p);
         if (seg.dist < threshold) {
-          addPointOnSegment(obj.id, seg.segIdx, seg.t);
+          addPointOnSegment(obj.id, seg.ringIdx, seg.segIdx, seg.t);
           setSelectedIds(new Set([obj.id]));
+          return;
+        }
+      }
+
+      for (let i = objects.length - 1; i >= 0; i--) {
+        const obj = objects[i];
+        if (obj.locked || !obj.visible || obj.type !== "clippingContainer") continue;
+        const cc = obj as ClippingContainerObject;
+        if (cc.mask.type !== "path") continue;
+        const raw = cc.mask as PathObject;
+        if (!raw.points || raw.points.length < 2) continue;
+        const lp = worldPointToLocal(cc, pos);
+        const seg = distToPathSegments(lp, raw);
+        if (seg.dist < threshold) {
+          addPointOnSegment(raw.id, seg.ringIdx, seg.segIdx, seg.t, cc.id);
+          setSelectedIds(new Set([cc.id]));
           return;
         }
       }
@@ -5376,7 +6328,6 @@ export default function FreehandStudio({
           setObjects(next);
           const cloneSel = new Set(clones.map((c) => c.id));
           setSelectedIds(cloneSel);
-          setSelectedArtboardId(null);
           const positions = new Map<string, Point>();
           const pathPointsMap = new Map<string, BezierPoint[]>();
           const pathSvgMatrixStart = new Map<string, { e: number; f: number }>();
@@ -5386,6 +6337,11 @@ export default function FreehandStudio({
               const cp = c as PathObject;
               pathPointsMap.set(c.id, cp.points.map(pt => ({ ...pt, anchor: { ...pt.anchor }, handleIn: { ...pt.handleIn }, handleOut: { ...pt.handleOut } })));
               if (cp.svgPathMatrix) pathSvgMatrixStart.set(c.id, { e: cp.svgPathMatrix.e, f: cp.svgPathMatrix.f });
+              else if (
+                cp.svgPathD &&
+                (!cp.points || cp.points.length < 2) &&
+                (cp.svgPathIntrinsicW == null || cp.svgPathIntrinsicH == null)
+              ) pathSvgMatrixStart.set(c.id, { e: 0, f: 0 });
             }
           }
           setDragState({
@@ -5409,7 +6365,6 @@ export default function FreehandStudio({
           : resolveSelection(obj.id, false);
       setSelectedIds(newSel);
       setPrimarySelectedId(obj.id);
-      setSelectedArtboardId(null);
       const positions = new Map<string, Point>();
       const pathPointsMap = new Map<string, BezierPoint[]>();
       const pathSvgMatrixStart = new Map<string, { e: number; f: number }>();
@@ -5421,6 +6376,11 @@ export default function FreehandStudio({
             const po = o as PathObject;
             pathPointsMap.set(sid, po.points.map(pt => ({ ...pt, anchor: { ...pt.anchor }, handleIn: { ...pt.handleIn }, handleOut: { ...pt.handleOut } })));
             if (po.svgPathMatrix) pathSvgMatrixStart.set(sid, { e: po.svgPathMatrix.e, f: po.svgPathMatrix.f });
+            else if (
+              po.svgPathD &&
+              (!po.points || po.points.length < 2) &&
+              (po.svgPathIntrinsicW == null || po.svgPathIntrinsicH == null)
+            ) pathSvgMatrixStart.set(sid, { e: 0, f: 0 });
           }
         }
       }
@@ -5438,30 +6398,15 @@ export default function FreehandStudio({
     // Empty click → start marquee
     if (!extendSel) {
       setSelectedIds(new Set());
-      setSelectedArtboardId(null);
       if (designerMode) setImageFrameContentEditId(null);
     }
     setDragState({ type: "marquee", startX: e.clientX, startY: e.clientY, marqueeOrigin: pos, currentCanvas: pos, shiftKey: extendSel });
-  }, [activeTool, viewport, spaceHeld, objects, artboards, selectedIds, selectedArtboardId, selectedObjects, groupBounds, selectionFrame,
+  }, [activeTool, viewport, spaceHeld, objects, artboards, selectedIds, selectedObjects, groupBounds, selectionFrame,
       screenToCanvas, isPenDrawing, penPoints, finishPenPath, resolveSelection, addPointOnSegment, pushHistory,
-      layoutGuides, showLayoutGuides, designerMode, imageFrameContentEditId]);
+      layoutGuides, showLayoutGuides, designerMode, imageFrameContentEditId, setupGuideWindowListeners]);
 
   const handleMouseMove = useCallback((e: ReactMouseEvent) => {
     if (!dragState) {
-      if (activeTool === "artboard") {
-        const pos = screenToCanvas(e.clientX, e.clientY);
-        let found: string | null = null;
-        for (let i = artboards.length - 1; i >= 0; i--) {
-          const ab = artboards[i];
-          if (pointInArtboard(pos.x, pos.y, ab)) {
-            found = ab.id;
-            break;
-          }
-        }
-        setHoverArtboardId((prev) => (prev === found ? prev : found));
-      } else {
-        setHoverArtboardId(null);
-      }
       if (activeTool === "select" || activeTool === "directSelect") {
         const pos = screenToCanvas(e.clientX, e.clientY);
         const threshold = 8 / viewport.zoom;
@@ -5481,6 +6426,10 @@ export default function FreehandStudio({
     }
     const dx = e.clientX - dragState.startX;
     const dy = e.clientY - dragState.startY;
+
+    if (dragState.type === "guidePull" || dragState.type === "guideMove") {
+      return;
+    }
 
     if (dragState.type === "pan") {
       setViewport((v) => ({ ...v, x: (dragState.svpX ?? 0) + dx, y: (dragState.svpY ?? 0) + dy }));
@@ -5593,44 +6542,6 @@ export default function FreehandStudio({
               offsetY: nextOy,
             },
           };
-        }),
-      );
-      return;
-    }
-
-    if (dragState.type === "artboardMove" && dragState.artboardId && dragState.artboardStart) {
-      const scale = 1 / viewport.zoom;
-      const ddx = (e.clientX - dragState.startX) * scale;
-      const ddy = (e.clientY - dragState.startY) * scale;
-      const ox = dragState.artboardStart.x;
-      const oy = dragState.artboardStart.y;
-      const id = dragState.artboardId;
-      setArtboards((prev) =>
-        prev.map((a) => (a.id === id ? { ...a, x: ox + ddx, y: oy + ddy } : a)),
-      );
-      return;
-    }
-
-    if (dragState.type === "artboardResize" && dragState.artboardSnapshot && dragState.abHandle && dragState.artboardId) {
-      const pos = screenToCanvas(e.clientX, e.clientY);
-      const next = applyArtboardResize(dragState.abHandle, dragState.artboardSnapshot, pos);
-      const id = dragState.artboardId;
-      setArtboards((prev) => prev.map((a) => (a.id === id ? next : a)));
-      return;
-    }
-
-    if (dragState.type === "guideMove" && dragState.guideId && dragState.guideOrientation && dragState.guideStartPos != null) {
-      const scale = 1 / viewport.zoom;
-      const ddx = (e.clientX - dragState.startX) * scale;
-      const ddy = (e.clientY - dragState.startY) * scale;
-      const id = dragState.guideId;
-      const start = dragState.guideStartPos;
-      const orient = dragState.guideOrientation;
-      setLayoutGuides((prev) =>
-        prev.map((g) => {
-          if (g.id !== id) return g;
-          if (orient === "vertical") return { ...g, position: start + ddx };
-          return { ...g, position: start + ddy };
         }),
       );
       return;
@@ -5788,12 +6699,18 @@ export default function FreehandStudio({
         if (o.type === "path") {
           const po = o as PathObject;
           const m0 = dragState.pathSvgMatrixStart?.get(o.id);
-          if (m0 && po.svgPathMatrix) {
+          if (
+            m0 != null &&
+            po.svgPathD &&
+            (!po.points || po.points.length < 2) &&
+            (po.svgPathIntrinsicW == null || po.svgPathIntrinsicH == null)
+          ) {
+            const base = po.svgPathMatrix ?? { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
             return {
               ...o,
               x: sp.x + mdx,
               y: sp.y + mdy,
-              svgPathMatrix: { ...po.svgPathMatrix, e: m0.e + mdx, f: m0.f + mdy },
+              svgPathMatrix: { ...base, e: m0.e + mdx, f: m0.f + mdy },
             };
           }
         }
@@ -5858,7 +6775,15 @@ export default function FreehandStudio({
           return localToWorldOBB({ x: L.x * sx, y: L.y * sy }, ncx, ncy, f0.angleDeg);
         };
         if (src.type === "path") {
-          const pts = (src as PathObject).points.map((pt) => ({
+          const pp = src as PathObject;
+          if (pp.svgPathD && (!pp.points || pp.points.length < 2)) {
+            const newW = Math.max(4, src.width * sx);
+            const newH = Math.max(4, src.height * sy);
+            const pivot = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
+            const newC = mapWorld(pivot);
+            return { ...o, x: newC.x - newW / 2, y: newC.y - newH / 2, width: newW, height: newH };
+          }
+          const pts = pp.points.map((pt) => ({
             ...pt,
             anchor: mapWorld(pt.anchor),
             handleIn: mapWorld(pt.handleIn),
@@ -5933,6 +6858,19 @@ export default function FreehandStudio({
         }
       }
 
+      if (snapEnabled && !isShiftHeld(e)) {
+        const vg = layoutGuidesRef.current.filter((g) => g.orientation === "vertical").map((g) => g.position);
+        const hg = layoutGuidesRef.current.filter((g) => g.orientation === "horizontal").map((g) => g.position);
+        const sn = snapAxisAlignedResizeToGuides({ x: nx, y: ny, w: nw, h: nh }, h, vg, hg, viewport.zoom);
+        nx = sn.rect.x;
+        ny = sn.rect.y;
+        nw = sn.rect.w;
+        nh = sn.rect.h;
+        setSnapGuides(sn.guides);
+      } else {
+        setSnapGuides([]);
+      }
+
       const sx = nw / b.w, sy = nh / b.h;
       setObjects((prev) => prev.map((o) => {
         const ob = dragState.allBounds!.get(o.id);
@@ -5941,7 +6879,11 @@ export default function FreehandStudio({
         const newX = nx + (ob.x - b.x) * sx;
         const newY = ny + (ob.y - b.y) * sy;
         if (src.type === "path") {
-          const pts = (src as PathObject).points.map(pt => ({
+          const pp = src as PathObject;
+          if (pp.svgPathD && (!pp.points || pp.points.length < 2)) {
+            return { ...o, x: newX, y: newY, width: ob.w * sx, height: ob.h * sy };
+          }
+          const pts = pp.points.map(pt => ({
             ...pt,
             anchor: { x: nx + (pt.anchor.x - b.x) * sx, y: ny + (pt.anchor.y - b.y) * sy },
             handleIn: { x: nx + (pt.handleIn.x - b.x) * sx, y: ny + (pt.handleIn.y - b.y) * sy },
@@ -6014,26 +6956,57 @@ export default function FreehandStudio({
         const s = snapDeltaTo45(ndx, ndy);
         ndx = s.x; ndy = s.y;
       }
-      const newPos: Point = { x: start.x + ndx, y: start.y + ndy };
-      setObjects((prev) => prev.map((o) => {
-        if (o.id !== dragState.dsObjId || o.type !== "path") return o;
-        const pts = (o as PathObject).points.map((pt, pi) => {
-          if (pi !== dragState.dsPtIdx) return pt;
-          const ht = dragState.dsHtType!;
-          if (ht === "anchor") {
-            const adx = newPos.x - pt.anchor.x, ady = newPos.y - pt.anchor.y;
-            return { ...pt, anchor: newPos, handleIn: { x: pt.handleIn.x + adx, y: pt.handleIn.y + ady }, handleOut: { x: pt.handleOut.x + adx, y: pt.handleOut.y + ady } };
+      const clipId = dragState.dsClipContainerId;
+      const applyPt = (pt: BezierPoint, pi: number, o: PathObject): BezierPoint => {
+        if (pi !== dragState.dsPtIdx) return pt;
+        const ht = dragState.dsHtType!;
+        let newPos: Point;
+        if (clipId) {
+          const c = objectsRef.current.find((x) => x.id === clipId && x.type === "clippingContainer") as
+            | ClippingContainerObject
+            | undefined;
+          if (!c) return pt;
+          const sw = localPointToWorld(c, start);
+          const ew = { x: sw.x + ndx, y: sw.y + ndy };
+          newPos = worldPointToLocal(c, ew);
+        } else {
+          newPos = { x: start.x + ndx, y: start.y + ndy };
+        }
+        if (ht === "anchor") {
+          const adx = newPos.x - pt.anchor.x, ady = newPos.y - pt.anchor.y;
+          return { ...pt, anchor: newPos, handleIn: { x: pt.handleIn.x + adx, y: pt.handleIn.y + ady }, handleOut: { x: pt.handleOut.x + adx, y: pt.handleOut.y + ady } };
+        }
+        return applyVertexHandleDrag(pt, ht, newPos);
+      };
+      setObjects((prev) =>
+        prev.map((o) => {
+          if (clipId) {
+            if (o.id !== clipId || o.type !== "clippingContainer") return o;
+            const cc = o as ClippingContainerObject;
+            const m = cc.mask;
+            if (m.type !== "path" || m.id !== dragState.dsObjId) return o;
+            const po = m as PathObject;
+            const pts = po.points.map((pt, pi) => applyPt(pt, pi, po));
+            const pb = getPathBoundsFromPoints(pts);
+            return { ...cc, mask: { ...po, points: pts, x: pb.x, y: pb.y, width: pb.w, height: pb.h } };
           }
-          return applyVertexHandleDrag(pt, ht, newPos);
-        });
-        const pb = getPathBoundsFromPoints(pts);
-        return { ...o, points: pts, x: pb.x, y: pb.y, width: pb.w, height: pb.h };
-      }));
+          if (o.id !== dragState.dsObjId || o.type !== "path") return o;
+          const po = o as PathObject;
+          const pts = po.points.map((pt, pi) => applyPt(pt, pi, po));
+          const pb = getPathBoundsFromPoints(pts);
+          return { ...o, points: pts, x: pb.x, y: pb.y, width: pb.w, height: pb.h };
+        }),
+      );
       return;
     }
   }, [dragState, viewport, objects, artboards, selectedIds, snapEnabled, screenToCanvas, penPoints.length, activeTool]);
 
   const handleMouseUp = useCallback((e: ReactMouseEvent) => {
+    const dsUp = dragStateRef.current;
+    if (guideGestureRef.current || dsUp?.type === "guidePull" || dsUp?.type === "guideMove") {
+      finishGuideGesture(e.clientX, e.clientY);
+      return;
+    }
     if (!dragState) return;
     setSnapGuides([]);
 
@@ -6052,19 +7025,40 @@ export default function FreehandStudio({
 
         if (activeTool === "directSelect") {
           const newPts = new Map<string, Set<number>>();
+          const selIds = new Set<string>();
           for (const obj of objects) {
-            if (obj.type !== "path" || obj.locked || !obj.visible) continue;
-            const p = obj as PathObject;
-            const idxs = new Set<number>();
-            p.points.forEach((pt, i) => {
-              if (pt.anchor.x >= mx && pt.anchor.x <= mx + mw && pt.anchor.y >= my && pt.anchor.y <= my + mh) {
-                idxs.add(i);
+            if (obj.locked || !obj.visible) continue;
+            if (obj.type === "path") {
+              const p = obj as PathObject;
+              const idxs = new Set<number>();
+              p.points.forEach((pt, i) => {
+                if (pt.anchor.x >= mx && pt.anchor.x <= mx + mw && pt.anchor.y >= my && pt.anchor.y <= my + mh) {
+                  idxs.add(i);
+                }
+              });
+              if (idxs.size > 0) {
+                newPts.set(obj.id, idxs);
+                selIds.add(obj.id);
               }
-            });
-            if (idxs.size > 0) newPts.set(obj.id, idxs);
+              continue;
+            }
+            if (obj.type === "clippingContainer") {
+              const c = obj as ClippingContainerObject;
+              if (c.mask.type !== "path") continue;
+              const raw = c.mask as PathObject;
+              const idxs = new Set<number>();
+              raw.points.forEach((pt, i) => {
+                const w = localPointToWorld(c, pt.anchor);
+                if (w.x >= mx && w.x <= mx + mw && w.y >= my && w.y <= my + mh) idxs.add(i);
+              });
+              if (idxs.size > 0) {
+                newPts.set(raw.id, idxs);
+                selIds.add(c.id);
+              }
+            }
           }
           setSelectedPoints(newPts);
-          setSelectedIds(new Set(newPts.keys()));
+          setSelectedIds(selIds);
         } else {
           const marqueeSel = new Set<string>();
           const vecIsoGid = vectorIsolationGroupId(isolationStackRef.current);
@@ -6247,39 +7241,22 @@ export default function FreehandStudio({
       const raw = screenToCanvas(e.clientX, e.clientY);
       const ct = dragState.createType;
       const c =
-        ct === "artboard"
-          ? raw
-          : (ct === "rect" || ct === "ellipse") && isShiftHeld(e)
-            ? oppositeCornerForSquareDrag(o, raw)
-            : raw;
-      if (dragState.createType === "artboard") {
-        const x = Math.min(o.x, c.x), y = Math.min(o.y, c.y);
-        const w = Math.max(Math.abs(c.x - o.x), 40), h = Math.max(Math.abs(c.y - o.y), 40);
-        const nextA = createArtboard({
-          x,
-          y,
-          width: w,
-          height: h,
-          name: designerMode ? `Page ${artboards.length + 1}` : `Artboard ${artboards.length + 1}`,
-        });
-        setArtboards((p) => [...p, nextA]);
-        setSelectedArtboardId(nextA.id);
-        setActiveTool("artboard");
-      } else {
-        const x = Math.min(o.x, c.x), y = Math.min(o.y, c.y);
-        const w = Math.max(Math.abs(c.x - o.x), 4), h = Math.max(Math.abs(c.y - o.y), 4);
+        (ct === "rect" || ct === "ellipse") && isShiftHeld(e)
+          ? oppositeCornerForSquareDrag(o, raw)
+          : raw;
+      const x = Math.min(o.x, c.x), y = Math.min(o.y, c.y);
+      const w = Math.max(Math.abs(c.x - o.x), 4), h = Math.max(Math.abs(c.y - o.y), 4);
 
-        const newObj: FreehandObject = dragState.createType === "ellipse"
-          ? { ...defaultObj({ name: `Ellipse ${objects.length + 1}` }), type: "ellipse", x, y, width: w, height: h, fill: solidFill(fillColor), stroke: strokeColor, strokeWidth, strokeLinecap, strokeLinejoin, strokeDasharray } as EllipseObject
-          : { ...defaultObj({ name: `Rect ${objects.length + 1}` }), type: "rect", x, y, width: w, height: h, fill: solidFill(fillColor), stroke: strokeColor, strokeWidth, strokeLinecap, strokeLinejoin, strokeDasharray, rx: 0 } as RectObject;
+      const newObj: FreehandObject = dragState.createType === "ellipse"
+        ? { ...defaultObj({ name: `Ellipse ${objects.length + 1}` }), type: "ellipse", x, y, width: w, height: h, fill: solidFill(fillColor), stroke: strokeColor, strokeWidth, strokeLinecap, strokeLinejoin, strokeDasharray } as EllipseObject
+        : { ...defaultObj({ name: `Rect ${objects.length + 1}` }), type: "rect", x, y, width: w, height: h, fill: solidFill(fillColor), stroke: strokeColor, strokeWidth, strokeLinecap, strokeLinejoin, strokeDasharray, rx: 0 } as RectObject;
 
-        const next = [...objects, newObj];
-        setObjects(next);
-        const ns = new Set([newObj.id]);
-        setSelectedIds(ns);
-        pushHistory(next, ns);
-        setActiveTool("select");
-      }
+      const next = [...objects, newObj];
+      setObjects(next);
+      const ns = new Set([newObj.id]);
+      setSelectedIds(ns);
+      pushHistory(next, ns);
+      setActiveTool("select");
     }
 
     if (
@@ -6311,7 +7288,23 @@ export default function FreehandStudio({
     }
 
     setDragState(null);
-  }, [dragState, objects, artboards, selectedIds, fillColor, strokeColor, strokeWidth, strokeLinecap, strokeLinejoin, strokeDasharray, activeTool, pushHistory, screenToCanvas, viewport.zoom]);
+  }, [
+    dragState,
+    objects,
+    artboards,
+    selectedIds,
+    fillColor,
+    strokeColor,
+    strokeWidth,
+    strokeLinecap,
+    strokeLinejoin,
+    strokeDasharray,
+    activeTool,
+    pushHistory,
+    screenToCanvas,
+    viewport.zoom,
+    finishGuideGesture,
+  ]);
 
   const handleWheel = useCallback((e: ReactWheelEvent) => {
     e.preventDefault();
@@ -6421,7 +7414,7 @@ export default function FreehandStudio({
         { label: "Rectangle", shortcut: "R", action: () => setActiveTool("rect") },
         { label: "Ellipse", shortcut: "E", action: () => setActiveTool("ellipse") },
         { label: "Select all", shortcut: "⌘A", action: () => setSelectedIds(new Set(objects.map((o) => o.id))) },
-        { label: "Export artboard…", action: () => { setExportModalScope("full"); setShowExportModal(true); }, separator: true },
+        { label: "Export página…", action: () => { setExportModalScope("full"); setShowExportModal(true); }, separator: true },
         { label: "Reset zoom", action: resetZoomCanvas, separator: true },
         { label: "Fit all", action: fitAllCanvas },
         { label: showGrid ? "Hide grid" : "Show grid", action: () => setShowGrid((g) => !g) },
@@ -6541,7 +7534,7 @@ export default function FreehandStudio({
     if (single?.type === "booleanGroup") {
       return [
         { label: "Edit boolean group", action: () => enterIsolation(single.id) },
-        { label: "Expand boolean", action: () => void expandBoolean(), separator: true },
+        { label: "Forma definitiva (trazo)", action: () => void flattenBooleanToDefinitivePath(), separator: true },
         { label: "Duplicate", action: duplicateSelected },
         { label: "Export selection", action: () => { setExportModalScope("selection"); setShowExportModal(true); }, separator: true },
         { label: "Lock / Unlock", action: () => updateSelectedProp("locked", !single.locked) },
@@ -6572,7 +7565,9 @@ export default function FreehandStudio({
       ];
     }
 
-    const clipBuf = objectClipboardRef.current;
+    const designerClip = designerClipboardRef?.current;
+    const clipBuf =
+      designerMode && designerClip && designerClip.length > 0 ? designerClip : objectClipboardRef.current;
     const canPasteInsideMenu = !!(single && clipBuf && clipBuf.length > 0 && isValidPasteInsideMask(single));
 
     return [
@@ -6607,7 +7602,7 @@ export default function FreehandStudio({
         separator: true,
       },
       { label: "Edit boolean group", action: () => { const bg = selectedObjects.find((o) => o.type === "booleanGroup"); if (bg) enterIsolation(bg.id); }, disabled: !hasBoolGroup, separator: true },
-      { label: "Expand boolean", action: () => void expandBoolean(), disabled: !hasBoolGroup },
+      { label: "Forma definitiva (trazo)", action: () => void flattenBooleanToDefinitivePath(), disabled: !hasBoolGroup },
       { label: "Open / close path", action: () => { if (hasPath) togglePathClosed(selectedObjects.find((o) => o.type === "path")!.id); }, disabled: !hasPath, separator: true },
       { label: "Cycle anchor type", action: () => { selectedPoints.forEach((idxs, objId) => { idxs.forEach((idx) => cycleVertexMode(objId, idx)); }); }, disabled: selectedPoints.size === 0 },
     ];
@@ -6616,7 +7611,7 @@ export default function FreehandStudio({
       setShowExportModal, setExportModalScope,
       duplicateSelected, deleteSelected, bringForward, sendBackward, bringToFront, sendToBack,
       updateSelectedProp, groupSelected, ungroupSelected, createClipMask, releaseClipMask, togglePathClosed,
-      cycleVertexMode, booleanOp, enterIsolation, expandBoolean, exitIsolation, alignObjects, fitAllCanvas,
+      cycleVertexMode, booleanOp, enterIsolation, flattenBooleanToDefinitivePath, exitIsolation, alignObjects, fitAllCanvas,
       resetZoomCanvas, pasteClipboardObjects, pasteInside, cutSelectedObjects, copySelectedObjects, renameSelected,
       convertTextToOutlines, releaseClippingStructure, enterClippingIsolation, switchClippingIsolationMode, enterVectorGroupIsolation,
       layoutGuides.length, showLayoutGuides]);
@@ -6643,7 +7638,7 @@ export default function FreehandStudio({
     }
     if (dragState?.type === "rotate") return "grab";
     if (dragState?.type === "move") return "move";
-    if (activeTool === "pen" || activeTool === "rect" || activeTool === "ellipse" || activeTool === "text" || activeTool === "textFrame" || activeTool === "imageFrame" || activeTool === "artboard") return "crosshair";
+    if (activeTool === "pen" || activeTool === "rect" || activeTool === "ellipse" || activeTool === "text" || activeTool === "textFrame" || activeTool === "imageFrame") return "crosshair";
     return "default";
   }, [activeTool, spaceHeld, dragState]);
 
@@ -6669,7 +7664,6 @@ export default function FreehandStudio({
     if (!dragState || dragState.type !== "create" || !dragState.createOrigin || !dragState.currentCanvas) return null;
     const o = dragState.createOrigin, c = dragState.currentCanvas;
     const base = { x: Math.min(o.x, c.x), y: Math.min(o.y, c.y), w: Math.abs(c.x - o.x), h: Math.abs(c.y - o.y) };
-    if (dragState.createType === "artboard") return { ...base, shape: "artboard" as const };
     return { ...base, type: dragState.createType };
   }, [dragState]);
 
@@ -6745,6 +7739,7 @@ export default function FreehandStudio({
         }}
       />
 
+      {!canvasZenMode && (
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-white/[0.08] bg-[#12151a] px-4">
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13px] font-semibold tracking-tight text-white">Freehand</div>
@@ -6830,16 +7825,18 @@ export default function FreehandStudio({
           Export
         </button>
       </header>
+      )}
 
-      <div className="flex min-h-0 flex-1 flex-row">
+      <div className={`flex min-h-0 min-w-0 flex-1 flex-row${canvasZenMode ? " w-full" : ""}`}>
+      {!canvasZenMode && (
       <div className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-white/[0.08] bg-[#12151a] py-3">
-        <ToolBtn active={activeTool === "select"} onClick={() => { setActiveTool("select"); setSelectedPoints(new Map()); setSelectedArtboardId(null); }} title="Selection (V)">
+        <ToolBtn active={activeTool === "select"} onClick={() => { setActiveTool("select"); setSelectedPoints(new Map()); }} title="Selection (V)">
           <MousePointer2 size={20} strokeWidth={1.5} />
         </ToolBtn>
         <ToolBtn active={activeTool === "directSelect"} onClick={() => setActiveTool("directSelect")} title="Direct Selection (A)">
           <MousePointer2 size={20} strokeWidth={1.5} className="opacity-60" />
         </ToolBtn>
-        <ToolBtn active={activeTool === "pen"} onClick={() => setActiveTool("pen")} title="Pen (P)">
+        <ToolBtn active={activeTool === "pen"} onClick={() => setActiveTool("pen")} title="Pen (⇧P)">
           <PenTool size={20} strokeWidth={1.5} />
         </ToolBtn>
         <ToolBtn active={activeTool === "rect"} onClick={() => setActiveTool("rect")} title="Rectangle (R)">
@@ -6859,6 +7856,9 @@ export default function FreehandStudio({
                 <path d="M6 7.5h8M6 10h8M6 12.5h4" />
               </svg>
             </ToolBtn>
+            <ToolBtn onClick={() => fileInputRef.current?.click()} title="Importar imagen">
+              <ImageIconLucide size={20} strokeWidth={1.5} />
+            </ToolBtn>
             <ToolBtn active={activeTool === "imageFrame"} onClick={() => setActiveTool("imageFrame")} title="Image Frame — marco de imagen">
               <svg width={20} height={20} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
                 <rect x="2" y="3" width="16" height="14" rx="1.5" />
@@ -6866,20 +7866,43 @@ export default function FreehandStudio({
                 <line x1="18" y1="3" x2="2" y2="17" opacity={0.5} />
               </svg>
             </ToolBtn>
+            <ToolBtn onClick={() => svgInputRef.current?.click()} title="Importar SVG">
+              <svg width={20} height={20} viewBox="0 0 20 20" fill="none" aria-hidden className="text-current">
+                <path
+                  d="M4 3.5h12a1.5 1.5 0 0 1 1.5 1.5v10a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 15V5A1.5 1.5 0 0 1 4 3.5Z"
+                  stroke="currentColor"
+                  strokeWidth={1.5}
+                  strokeLinejoin="round"
+                />
+                <text
+                  x="10"
+                  y="13.2"
+                  textAnchor="middle"
+                  fill="currentColor"
+                  fontSize="5.2"
+                  fontWeight={700}
+                  fontFamily='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace'
+                  letterSpacing="-0.04em"
+                >
+                  SVG
+                </text>
+              </svg>
+            </ToolBtn>
           </>
         )}
-        <ToolBtn active={activeTool === "artboard"} onClick={() => { setActiveTool("artboard"); setSelectedIds(new Set()); setSelectedPoints(new Map()); }} title={designerMode ? "Page — página" : "Artboard — mesa de trabajo (export)"}>
-          <LayoutTemplate size={20} strokeWidth={1.5} />
-        </ToolBtn>
 
         <div className="my-1 h-px w-6 bg-white/[0.08]" />
 
-        <ToolBtn onClick={() => fileInputRef.current?.click()} title="Import image">
-          <Upload size={18} strokeWidth={1.5} />
-        </ToolBtn>
-        <ToolBtn onClick={() => svgInputRef.current?.click()} title="Import SVG">
-          <FileType2 size={18} strokeWidth={1.5} />
-        </ToolBtn>
+        {!designerMode && (
+          <>
+            <ToolBtn onClick={() => fileInputRef.current?.click()} title="Import image">
+              <Upload size={18} strokeWidth={1.5} />
+            </ToolBtn>
+            <ToolBtn onClick={() => svgInputRef.current?.click()} title="Import SVG">
+              <FileType2 size={18} strokeWidth={1.5} />
+            </ToolBtn>
+          </>
+        )}
 
         <div className="flex-1 min-h-[8px]" />
 
@@ -6887,11 +7910,12 @@ export default function FreehandStudio({
           <Magnet size={18} strokeWidth={1.5} />
         </ToolBtn>
       </div>
+      )}
 
-      <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[#0B0D10]">
+      <div className={`relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[#0B0D10]${canvasZenMode ? " w-full" : ""}`}>
 
         {/* Isolation breadcrumb */}
-        {isolationDepth > 0 && (
+        {!canvasZenMode && isolationDepth > 0 && (
           <div className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-violet-900/40 border-b border-violet-500/30 text-[10px] font-bold uppercase tracking-wider">
             <button type="button" onClick={() => exitToLevel(0)}
               className="text-violet-300 hover:text-white transition-colors">Scene</button>
@@ -6919,6 +7943,7 @@ export default function FreehandStudio({
         )}
 
         {/* Selection + z-order context bar */}
+        {!canvasZenMode && (
         <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-white/10 bg-zinc-950/95 text-[11px]">
           <span className="text-zinc-200 font-medium truncate min-w-0 max-w-[min(280px,45vw)]">
             {isolationDepth === 0 ? (
@@ -6958,11 +7983,19 @@ export default function FreehandStudio({
             </div>
           )}
         </div>
+        )}
 
-      <div ref={containerRef} className="flex-1 relative overflow-hidden" style={{ cursor }}
-        onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}
-        onMouseLeave={() => { setHoverCanvasId(null); setHoverArtboardId(null); }}
-        onWheel={handleWheel} onContextMenu={handleContextMenu}
+      <div
+        className="flex min-h-0 flex-1 flex-col"
+        style={{ cursor }}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={() => {
+          setHoverCanvasId(null);
+        }}
+        onWheel={handleWheel}
+        onContextMenu={handleContextMenu}
         onDoubleClick={(e) => {
           const pos = screenToCanvas(e.clientX, e.clientY);
           const threshold = 6 / viewport.zoom;
@@ -7019,8 +8052,29 @@ export default function FreehandStudio({
           }
           if (isolationStackRef.current.length > 0) exitIsolation();
           if (activeTool === "select") fitAllCanvas();
-        }}>
-
+        }}
+      >
+        {designerMode && !canvasZenMode && (
+          <div className="flex shrink-0" style={{ height: DESIGNER_RULER_THICKNESS }}>
+            <DesignerRulerCorner ref={designerRulerCornerRef} />
+            <DesignerRulerHorizontal
+              ref={designerRulerHorizRef}
+              viewport={viewport}
+              widthPx={designerCanvasViewportSize.w}
+              onGuideEdgePointerDown={(e) => handleDesignerGuidePullStart("horizontal", e)}
+            />
+          </div>
+        )}
+        <div className="flex min-h-0 flex-1 flex-row">
+          {designerMode && !canvasZenMode && (
+            <DesignerRulerVertical
+              ref={designerRulerVertRef}
+              viewport={viewport}
+              heightPx={designerCanvasViewportSize.h}
+              onGuideEdgePointerDown={(e) => handleDesignerGuidePullStart("vertical", e)}
+            />
+          )}
+          <div ref={containerRef} className="relative min-h-0 flex-1 overflow-hidden">
         <svg ref={svgRef} className="absolute inset-0 w-full h-full" style={{ userSelect: "none" }}>
           <defs>
             <pattern id="fh-grid" width={20 * viewport.zoom} height={20 * viewport.zoom} patternUnits="userSpaceOnUse"
@@ -7043,60 +8097,24 @@ export default function FreehandStudio({
           )}
 
           <g data-fh-world transform={`translate(${viewport.x}, ${viewport.y}) scale(${viewport.zoom})`}>
-            {/* Artboards: fill behind objects; chrome is data-ui (stripped on export). */}
-            {artboards.map((ab) => {
-              const hz = 5 / viewport.zoom;
-              const showChrome = activeTool === "artboard" && selectedArtboardId === ab.id;
-              const handleCenters: { id: string; cx: number; cy: number }[] = [
-                { id: "nw", cx: ab.x, cy: ab.y },
-                { id: "n", cx: ab.x + ab.width / 2, cy: ab.y },
-                { id: "ne", cx: ab.x + ab.width, cy: ab.y },
-                { id: "e", cx: ab.x + ab.width, cy: ab.y + ab.height / 2 },
-                { id: "se", cx: ab.x + ab.width, cy: ab.y + ab.height },
-                { id: "s", cx: ab.x + ab.width / 2, cy: ab.y + ab.height },
-                { id: "sw", cx: ab.x, cy: ab.y + ab.height },
-                { id: "w", cx: ab.x, cy: ab.y + ab.height / 2 },
-              ];
-              const isHover = hoverArtboardId === ab.id && activeTool === "artboard";
-              return (
-                <g key={ab.id} data-fh-artboard={ab.id}>
-                  <rect
-                    x={ab.x}
-                    y={ab.y}
-                    width={ab.width}
-                    height={ab.height}
-                    fill={ab.background}
-                  />
-                  <rect
-                    x={ab.x}
-                    y={ab.y}
-                    width={ab.width}
-                    height={ab.height}
-                    fill="none"
-                    stroke={isHover ? "rgba(56,189,248,0.75)" : "rgba(148,163,184,0.4)"}
-                    strokeWidth={(isHover ? 1.25 : 1) / viewport.zoom}
-                    strokeDasharray={`${4 / viewport.zoom}`}
-                    data-ui="artboard-edge"
-                    pointerEvents="none"
-                  />
-                  {showChrome &&
-                    handleCenters.map(({ id, cx, cy }) => (
-                      <rect
-                        key={id}
-                        x={cx - hz}
-                        y={cy - hz}
-                        width={hz * 2}
-                        height={hz * 2}
-                        fill="#0f172a"
-                        stroke="#38bdf8"
-                        strokeWidth={1.2 / viewport.zoom}
-                        data-ui="artboard-handle"
-                        pointerEvents="none"
-                      />
-                    ))}
-                </g>
-              );
-            })}
+            {/* Pliego (página): fondo detrás de objetos; borde solo ayuda visual (data-ui se quita al exportar). */}
+            {artboards.map((ab) => (
+              <g key={ab.id} data-fh-artboard={ab.id}>
+                <rect x={ab.x} y={ab.y} width={ab.width} height={ab.height} fill={ab.background} />
+                <rect
+                  x={ab.x}
+                  y={ab.y}
+                  width={ab.width}
+                  height={ab.height}
+                  fill="none"
+                  stroke="rgba(148,163,184,0.4)"
+                  strokeWidth={1 / viewport.zoom}
+                  strokeDasharray={`${4 / viewport.zoom}`}
+                  data-ui="artboard-edge"
+                  pointerEvents="none"
+                />
+              </g>
+            ))}
 
             {/* Guías de diseño (no exportan con el vector; solo ayuda visual / snap) */}
             {showLayoutGuides &&
@@ -7128,6 +8146,36 @@ export default function FreehandStudio({
                     pointerEvents="none"
                   />
                 ),
+              )}
+            {dragState?.type === "guidePull" &&
+              dragState.guideOrientation === "vertical" &&
+              dragState.draftPos != null && (
+                <line
+                  data-ui="layout-guide-draft"
+                  x1={dragState.draftPos}
+                  y1={-5e5}
+                  x2={dragState.draftPos}
+                  y2={5e5}
+                  stroke="rgba(251,191,36,0.9)"
+                  strokeWidth={1 / viewport.zoom}
+                  strokeDasharray={`${5 / viewport.zoom} ${4 / viewport.zoom}`}
+                  pointerEvents="none"
+                />
+              )}
+            {dragState?.type === "guidePull" &&
+              dragState.guideOrientation === "horizontal" &&
+              dragState.draftPos != null && (
+                <line
+                  data-ui="layout-guide-draft"
+                  x1={-5e5}
+                  y1={dragState.draftPos}
+                  x2={5e5}
+                  y2={dragState.draftPos}
+                  stroke="rgba(251,191,36,0.9)"
+                  strokeWidth={1 / viewport.zoom}
+                  strokeDasharray={`${5 / viewport.zoom} ${4 / viewport.zoom}`}
+                  pointerEvents="none"
+                />
               )}
 
             {/* Render objects (multi-select: non-primary slightly faded) */}
@@ -7206,17 +8254,12 @@ export default function FreehandStudio({
 
             {/* Create preview */}
             {createPreviewRect && (
-              "shape" in createPreviewRect && createPreviewRect.shape === "artboard"
-                ? <rect x={createPreviewRect.x} y={createPreviewRect.y} width={createPreviewRect.w} height={createPreviewRect.h}
-                    fill="rgba(56,189,248,0.06)" stroke="#38bdf8" strokeWidth={1 / viewport.zoom} strokeDasharray={`${5 / viewport.zoom}`} data-ui="preview" />
-                : !("shape" in createPreviewRect) && createPreviewRect.type === "ellipse"
+              createPreviewRect.type === "ellipse"
                 ? <ellipse cx={createPreviewRect.x + createPreviewRect.w / 2} cy={createPreviewRect.y + createPreviewRect.h / 2}
                     rx={createPreviewRect.w / 2} ry={createPreviewRect.h / 2}
                     fill={fillColor} stroke={strokeColor} strokeWidth={strokeWidth} opacity={0.5} data-ui="preview" />
-                : !("shape" in createPreviewRect)
-                ? <rect x={createPreviewRect.x} y={createPreviewRect.y} width={createPreviewRect.w} height={createPreviewRect.h}
+                : <rect x={createPreviewRect.x} y={createPreviewRect.y} width={createPreviewRect.w} height={createPreviewRect.h}
                     fill={fillColor} stroke={strokeColor} strokeWidth={strokeWidth} opacity={0.5} data-ui="preview" />
-                : null
             )}
 
             {createTextPreviewRect && createTextPreviewRect.w > 1 && createTextPreviewRect.h > 1 && (
@@ -7457,42 +8500,68 @@ export default function FreehandStudio({
               />
             )}
 
-            {/* Direct select: anchor points and handles for selected paths */}
-            {activeTool === "directSelect" && selectedObjects.filter((o) => o.type === "path").map((obj) => {
-              const p = obj as PathObject;
-              const selPts = selectedPoints.get(obj.id);
-              return p.points.map((pt, pi) => {
-                const isSel = selPts?.has(pi);
-                const vm = getVertexMode(pt);
-                const anchorFill = isSel ? "#6366f1" : vm === "corner" ? "#fcd34d" : vm === "cusp" ? "#7dd3fc" : "#fff";
-                const anchorStroke = isSel ? "#fff" : "#6366f1";
-                return (
-                  <g key={`ds-${obj.id}-${pi}`} data-ui="ds-points">
-                    <title>{vm === "smooth" ? "Suave (simétrico)" : vm === "cusp" ? "Partir (tangente continua asimétrica)" : "Esquina (independiente)"}</title>
-                    <line x1={pt.handleIn.x} y1={pt.handleIn.y} x2={pt.anchor.x} y2={pt.anchor.y}
-                      stroke="rgba(99,102,241,0.5)" strokeWidth={1 / viewport.zoom} />
-                    <line x1={pt.anchor.x} y1={pt.anchor.y} x2={pt.handleOut.x} y2={pt.handleOut.y}
-                      stroke="rgba(99,102,241,0.5)" strokeWidth={1 / viewport.zoom} />
-                    <circle cx={pt.handleIn.x} cy={pt.handleIn.y} r={3.5 / viewport.zoom}
-                      fill="#fff" stroke="#6366f1" strokeWidth={1 / viewport.zoom} />
-                    <circle cx={pt.handleOut.x} cy={pt.handleOut.y} r={3.5 / viewport.zoom}
-                      fill="#fff" stroke="#6366f1" strokeWidth={1 / viewport.zoom} />
-                    {vm === "corner" ? (
-                      <polygon
-                        points={`${pt.anchor.x},${pt.anchor.y - 5 / viewport.zoom} ${pt.anchor.x + 4.5 / viewport.zoom},${pt.anchor.y + 4 / viewport.zoom} ${pt.anchor.x - 4.5 / viewport.zoom},${pt.anchor.y + 4 / viewport.zoom}`}
-                        fill={anchorFill} stroke={anchorStroke} strokeWidth={1 / viewport.zoom} />
-                    ) : vm === "cusp" ? (
-                      <rect x={pt.anchor.x - 4 / viewport.zoom} y={pt.anchor.y - 4 / viewport.zoom}
-                        width={8 / viewport.zoom} height={8 / viewport.zoom}
-                        fill={anchorFill} stroke={anchorStroke} strokeWidth={1 / viewport.zoom} rx={1 / viewport.zoom} />
-                    ) : (
-                      <circle cx={pt.anchor.x} cy={pt.anchor.y} r={4.2 / viewport.zoom}
-                        fill={anchorFill} stroke={anchorStroke} strokeWidth={1 / viewport.zoom} />
-                    )}
-                  </g>
-                );
-              });
-            })}
+            {/* Direct select: anchor points and handles for selected paths (incl. máscara de clippingContainer) */}
+            {activeTool === "directSelect" &&
+              (() => {
+                type DsPath = { keyId: string; p: PathObject; selPts: Set<number> | undefined };
+                const list: DsPath[] = [];
+                for (const o of objects) {
+                  if (!o.visible || o.locked) continue;
+                  if (o.type === "path" && selectedIds.has(o.id)) {
+                    list.push({ keyId: o.id, p: o as PathObject, selPts: selectedPoints.get(o.id) });
+                  }
+                  if (o.type === "clippingContainer" && selectedIds.has(o.id)) {
+                    const c = o as ClippingContainerObject;
+                    if (c.mask.type !== "path") continue;
+                    const raw = c.mask as PathObject;
+                    list.push({
+                      keyId: `${c.id}-${raw.id}`,
+                      p: clipMaskPathAnchorsToWorld(c, raw),
+                      selPts: selectedPoints.get(raw.id),
+                    });
+                  }
+                }
+                return list.map(({ keyId, p, selPts }) => {
+                  const rings = getPathRings(p);
+                  let gBase = 0;
+                  return rings.flatMap((ring) => {
+                    const slice = ring.map((pt, pi) => {
+                      const gIdx = gBase + pi;
+                      const isSel = selPts?.has(gIdx);
+                      const vm = getVertexMode(pt);
+                      const anchorFill = isSel ? "#6366f1" : vm === "corner" ? "#fcd34d" : vm === "cusp" ? "#7dd3fc" : "#fff";
+                      const anchorStroke = isSel ? "#fff" : "#6366f1";
+                      return (
+                        <g key={`ds-${keyId}-${gIdx}`} data-ui="ds-points">
+                          <title>{vm === "smooth" ? "Suave (simétrico)" : vm === "cusp" ? "Partir (tangente continua asimétrica)" : "Esquina (independiente)"}</title>
+                          <line x1={pt.handleIn.x} y1={pt.handleIn.y} x2={pt.anchor.x} y2={pt.anchor.y}
+                            stroke="rgba(99,102,241,0.5)" strokeWidth={1 / viewport.zoom} />
+                          <line x1={pt.anchor.x} y1={pt.anchor.y} x2={pt.handleOut.x} y2={pt.handleOut.y}
+                            stroke="rgba(99,102,241,0.5)" strokeWidth={1 / viewport.zoom} />
+                          <circle cx={pt.handleIn.x} cy={pt.handleIn.y} r={3.5 / viewport.zoom}
+                            fill="#fff" stroke="#6366f1" strokeWidth={1 / viewport.zoom} />
+                          <circle cx={pt.handleOut.x} cy={pt.handleOut.y} r={3.5 / viewport.zoom}
+                            fill="#fff" stroke="#6366f1" strokeWidth={1 / viewport.zoom} />
+                          {vm === "corner" ? (
+                            <polygon
+                              points={`${pt.anchor.x},${pt.anchor.y - 5 / viewport.zoom} ${pt.anchor.x + 4.5 / viewport.zoom},${pt.anchor.y + 4 / viewport.zoom} ${pt.anchor.x - 4.5 / viewport.zoom},${pt.anchor.y + 4 / viewport.zoom}`}
+                              fill={anchorFill} stroke={anchorStroke} strokeWidth={1 / viewport.zoom} />
+                          ) : vm === "cusp" ? (
+                            <rect x={pt.anchor.x - 4 / viewport.zoom} y={pt.anchor.y - 4 / viewport.zoom}
+                              width={8 / viewport.zoom} height={8 / viewport.zoom}
+                              fill={anchorFill} stroke={anchorStroke} strokeWidth={1 / viewport.zoom} rx={1 / viewport.zoom} />
+                          ) : (
+                            <circle cx={pt.anchor.x} cy={pt.anchor.y} r={4.2 / viewport.zoom}
+                              fill={anchorFill} stroke={anchorStroke} strokeWidth={1 / viewport.zoom} />
+                          )}
+                        </g>
+                      );
+                    });
+                    gBase += ring.length;
+                    return slice;
+                  });
+                });
+              })()}
 
             {/* Snap guides */}
             {snapGuides.map((g, i) => {
@@ -7518,12 +8587,14 @@ export default function FreehandStudio({
           </g>
         </svg>
 
-        {/* Zoom indicator */}
-        <div className="absolute bottom-3 left-3 text-[10px] text-white/30 font-mono select-none pointer-events-none">
-          {Math.round(viewport.zoom * 100)}%
-        </div>
+        {/* Zoom % en esquina (solo modo Freehand; Designer ya tiene controles en cabecera) */}
+        {!designerMode && !canvasZenMode && (
+          <div className="absolute bottom-3 left-3 text-[10px] text-white/30 font-mono select-none pointer-events-none">
+            {Math.round(viewport.zoom * 100)}%
+          </div>
+        )}
 
-        {quickEditMode && firstSelected && quickEditPos && (
+        {quickEditMode && firstSelected && quickEditPos && !canvasZenMode && (
           <div
             className="absolute z-[10002] flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-sky-500/35 bg-zinc-950/98 shadow-xl pointer-events-auto"
             style={{ left: quickEditPos.left, top: quickEditPos.top, transform: "translate(-50%, 0)" }}
@@ -7673,10 +8744,13 @@ export default function FreehandStudio({
             </svg>
           </div>
         )}
+          </div>
+        </div>
       </div>
       </div>
 
       {/* ── RIGHT PANEL ──────────────────────────────────────────── */}
+      {!canvasZenMode && (
       <div className="flex w-[200px] shrink-0 flex-col min-h-0 overflow-hidden border-l border-white/[0.08] bg-[#12151a]">
         {/* Header */}
         <div className="flex items-center justify-between px-3 py-2 border-b border-white/10 shrink-0">
@@ -7693,112 +8767,6 @@ export default function FreehandStudio({
 
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {activeTool === "artboard" && (
-              <div className="border-b border-white/[0.08] px-[14px] py-3 space-y-3">
-                <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Artboard</div>
-                {!selectedArtboardId ? (
-                  <p className="text-[10px] leading-relaxed text-zinc-500">
-                    Crea una mesa arrastrando en el lienzo. El export a tamaño completo usa el área de la mesa (el resto es borrador).
-                  </p>
-                ) : (() => {
-                  const selAb = artboards.find((a) => a.id === selectedArtboardId);
-                  if (!selAb) return null;
-                  const u = selAb.displayUnit;
-                  const wDu = pxToDisplayUnit(selAb.width, u);
-                  const hDu = pxToDisplayUnit(selAb.height, u);
-                  return (
-                    <>
-                      <div className="space-y-0.5">
-                        <label className="text-[8px] text-zinc-600">Nombre</label>
-                        <input
-                          type="text"
-                          value={selAb.name}
-                          onChange={(e) => updateSelectedArtboard({ name: e.target.value })}
-                          className="w-full rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white"
-                        />
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div className="space-y-0.5">
-                          <label className="text-[8px] text-zinc-600">Ancho ({u})</label>
-                          <input
-                            type="number"
-                            value={Math.round(wDu * 1000) / 1000}
-                            onChange={(e) => {
-                              const v = Number(e.target.value);
-                              if (!Number.isFinite(v) || v <= 0) return;
-                              updateSelectedArtboard({ width: displayUnitToPx(v, u) });
-                            }}
-                            className="w-full rounded border border-white/10 bg-white/5 px-2 py-1 font-mono text-[11px] text-white"
-                          />
-                        </div>
-                        <div className="space-y-0.5">
-                          <label className="text-[8px] text-zinc-600">Alto ({u})</label>
-                          <input
-                            type="number"
-                            value={Math.round(hDu * 1000) / 1000}
-                            onChange={(e) => {
-                              const v = Number(e.target.value);
-                              if (!Number.isFinite(v) || v <= 0) return;
-                              updateSelectedArtboard({ height: displayUnitToPx(v, u) });
-                            }}
-                            className="w-full rounded border border-white/10 bg-white/5 px-2 py-1 font-mono text-[11px] text-white"
-                          />
-                        </div>
-                      </div>
-                      <div className="space-y-0.5">
-                        <label className="text-[8px] text-zinc-600">Unidad</label>
-                        <select
-                          value={u}
-                          onChange={(e) => {
-                            const next = e.target.value as ArtboardDisplayUnit;
-                            updateSelectedArtboard({ displayUnit: next });
-                          }}
-                          className="w-full rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white"
-                        >
-                          {(["px", "mm", "cm", "in", "pt"] as const).map((unit) => (
-                            <option key={unit} value={unit}>
-                              {unit}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-[8px] text-zinc-600">Presets</label>
-                        <div className="flex flex-wrap gap-1">
-                          {ARTBOARD_PRESETS.map((p) => (
-                            <button
-                              key={p.label}
-                              type="button"
-                              title={p.label}
-                              onClick={() =>
-                                updateSelectedArtboard({
-                                  width: displayUnitToPx(p.width, p.unit),
-                                  height: displayUnitToPx(p.height, p.unit),
-                                  displayUnit: p.unit,
-                                })
-                              }
-                              className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-zinc-400 hover:bg-white/10 hover:text-white"
-                            >
-                              {p.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <label className="text-[8px] text-zinc-600 shrink-0">Fondo</label>
-                        <input
-                          type="color"
-                          value={/^#[0-9A-Fa-f]{6}$/.test(selAb.background) ? selAb.background : "#ffffff"}
-                          onChange={(e) => updateSelectedArtboard({ background: e.target.value })}
-                          className="h-8 w-10 cursor-pointer rounded border border-white/20 bg-transparent"
-                        />
-                      </div>
-                    </>
-                  );
-                })()}
-              </div>
-            )}
-
             <FreehandColorPalette
               inUse={documentColorStats}
               savedColors={savedPaletteColors}
@@ -7899,7 +8867,6 @@ export default function FreehandStudio({
                 {designerMode && firstSelected.isImageFrame && (() => {
                   const ifc = (firstSelected as any).imageFrameContent as FreehandObjectBase["imageFrameContent"];
                   const autoFit = (firstSelected as any).imageFrameAutoFit !== false;
-                  const align = ((firstSelected as any).imageFrameContentAlignment ?? "center") as NonNullable<FreehandObjectBase["imageFrameContentAlignment"]>;
                   const hasImg = !!ifc?.src;
                   const fitting = ifc?.fittingMode ?? "fill-proportional";
 
@@ -7911,16 +8878,6 @@ export default function FreehandStudio({
                     { value: "fill-stretch", label: "Rellenar sin proporción" },
                     { value: "frame-to-content", label: "Ajustar caja al contenido" },
                   ];
-                  const IMG_ALIGN_GRID: NonNullable<FreehandObjectBase["imageFrameContentAlignment"]>[] = [
-                    "top-left", "top-center", "top-right",
-                    "middle-left", "center", "middle-right",
-                    "bottom-left", "bottom-center", "bottom-right",
-                  ];
-                  const ALIGN_LABELS: Record<string, string> = {
-                    "top-left": "↖", "top-center": "↑", "top-right": "↗",
-                    "middle-left": "←", "center": "·", "middle-right": "→",
-                    "bottom-left": "↙", "bottom-center": "↓", "bottom-right": "↘",
-                  };
 
                   const applyFitting = (mode: string) => {
                     if (!ifc) return;
@@ -7940,37 +8897,6 @@ export default function FreehandStudio({
                     }
                     else { sX = sY = 1; oX = 0; oY = 0; }
                     updateSelectedProp("imageFrameContent", { ...ifc, scaleX: sX, scaleY: sY, offsetX: oX, offsetY: oY, fittingMode: mode });
-                  };
-
-                  const applyAlignment = (al: NonNullable<FreehandObjectBase["imageFrameContentAlignment"]>) => {
-                    if (!ifc) return;
-                    const fw = firstSelected.width, fh = firstSelected.height;
-                    const w = ifc.originalWidth * ifc.scaleX, h = ifc.originalHeight * ifc.scaleY;
-                    const col = al.includes("left") ? 0 : al.includes("right") ? 2 : 1;
-                    const row = al.includes("top") ? 0 : al.includes("bottom") ? 2 : 1;
-                    const oX = col === 0 ? 0 : col === 1 ? (fw - w) / 2 : fw - w;
-                    const oY = row === 0 ? 0 : row === 1 ? (fh - h) / 2 : fh - h;
-                    updateSelectedProp("imageFrameContent", { ...ifc, offsetX: oX, offsetY: oY });
-                    updateSelectedProp("imageFrameContentAlignment", al);
-                  };
-
-                  const frameId = firstSelected.id;
-                  const applyManualScalePct = (axis: "x" | "y", pct: number, silent: boolean) => {
-                    setObjects((prev) => {
-                      const sel = selectedIdsRef.current;
-                      const next = prev.map((o) => {
-                        if (!sel.has(o.id) || o.id !== frameId || !o.isImageFrame) return o;
-                        const c = o.imageFrameContent;
-                        if (!c?.src) return o;
-                        const v = Math.max(0.01, pct / 100);
-                        if (axis === "x") {
-                          return { ...o, imageFrameAutoFit: false, imageFrameContent: { ...c, scaleX: v } };
-                        }
-                        return { ...o, imageFrameAutoFit: false, imageFrameContent: { ...c, scaleY: v } };
-                      });
-                      if (!silent) pushHistory(next, sel);
-                      return next;
-                    });
                   };
 
                   return (
@@ -8002,73 +8928,29 @@ export default function FreehandStudio({
 
                       {hasImg && (
                         <>
-                          <div className="space-y-1">
+                          <div className="space-y-1.5">
                             <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Ajuste (fitting)</span>
-                            <select
-                              value={fitting}
-                              onChange={(e) => applyFitting(e.target.value)}
-                              className="w-full rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1.5 text-[11px] text-zinc-100 outline-none focus:ring-1 focus:ring-violet-500/40"
-                            >
-                              {IMG_FIT_OPTIONS.map((o) => (
-                                <option key={o.value} value={o.value}>{o.label}</option>
-                              ))}
-                            </select>
-                          </div>
-
-                          <div className="space-y-1">
-                            <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Alinear dentro de la caja</span>
-                            <div className="grid max-w-[9rem] grid-cols-3 gap-1">
-                              {IMG_ALIGN_GRID.map((al) => (
-                                <button
-                                  key={al}
-                                  type="button"
-                                  title={al}
-                                  onClick={() => applyAlignment(al)}
-                                  className={`h-7 rounded border text-[11px] font-bold transition ${
-                                    align === al
-                                      ? "border-violet-400/50 bg-violet-500/25 text-violet-200"
-                                      : "border-white/[0.08] bg-white/[0.04] text-zinc-500 hover:bg-white/[0.08] hover:text-zinc-300"
-                                  }`}
-                                >
-                                  {ALIGN_LABELS[al]}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-
-                          <div className="space-y-2 border-t border-white/[0.06] pt-2.5">
-                            <p className="text-[9px] leading-snug text-zinc-500">
-                              Escala del contenido (el marco no cambia de tamaño). Al ajustar, Auto-Fit se desactiva.
-                            </p>
-                            <div className="grid grid-cols-1 gap-2">
-                              <div className="space-y-0.5">
-                                <label className="text-[10px] text-zinc-500 uppercase tracking-wider">Escala X %</label>
-                                <ScrubNumberInput
-                                  value={Math.round((ifc?.scaleX ?? 1) * 100)}
-                                  onKeyboardCommit={(n) => applyManualScalePct("x", n, false)}
-                                  onScrubLive={(n) => applyManualScalePct("x", n, true)}
-                                  onScrubEnd={commitHistoryAfterScrub}
-                                  step={1}
-                                  min={1}
-                                  max={2000}
-                                  title="Escala horizontal del bitmap · Mayús = ×10"
-                                  className="w-full cursor-ew-resize rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1 font-mono text-[11px] text-zinc-100"
-                                />
-                              </div>
-                              <div className="space-y-0.5">
-                                <label className="text-[10px] text-zinc-500 uppercase tracking-wider">Escala Y %</label>
-                                <ScrubNumberInput
-                                  value={Math.round((ifc?.scaleY ?? 1) * 100)}
-                                  onKeyboardCommit={(n) => applyManualScalePct("y", n, false)}
-                                  onScrubLive={(n) => applyManualScalePct("y", n, true)}
-                                  onScrubEnd={commitHistoryAfterScrub}
-                                  step={1}
-                                  min={1}
-                                  max={2000}
-                                  title="Escala vertical del bitmap · Mayús = ×10"
-                                  className="w-full cursor-ew-resize rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1 font-mono text-[11px] text-zinc-100"
-                                />
-                              </div>
+                            <div className="grid grid-cols-3 gap-1">
+                              {IMG_FIT_OPTIONS.map((o) => {
+                                const active = fitting === o.value;
+                                return (
+                                  <button
+                                    key={o.value}
+                                    type="button"
+                                    title={o.label}
+                                    aria-label={o.label}
+                                    aria-pressed={active}
+                                    onClick={() => applyFitting(o.value)}
+                                    className={`flex h-9 items-center justify-center rounded-md border transition ${
+                                      active
+                                        ? "border-violet-400/50 bg-violet-500/25 text-violet-200"
+                                        : "border-white/[0.08] bg-white/[0.04] text-zinc-400 hover:bg-white/[0.08] hover:text-zinc-200"
+                                    }`}
+                                  >
+                                    <ImageFrameFittingGlyph mode={o.value} />
+                                  </button>
+                                );
+                              })}
                             </div>
                           </div>
                         </>
@@ -9274,10 +10156,14 @@ export default function FreehandStudio({
                       className="w-full py-1.5 rounded-lg bg-violet-600/30 border border-violet-500/30 text-white text-[9px] font-bold uppercase tracking-wider hover:bg-violet-600/50 transition-colors">
                       Edit Children (double-click)
                     </button>
-                    <button type="button" onClick={expandBoolean}
-                      className="w-full py-1.5 rounded-lg bg-white/5 border border-white/10 text-zinc-400 text-[9px] font-bold uppercase tracking-wider hover:bg-white/10 hover:text-white transition-colors">
-                      Expand Boolean (destructive)
+                    <button type="button" onClick={flattenBooleanToDefinitivePath}
+                      className="w-full py-1.5 rounded-lg bg-white/5 border border-white/10 text-zinc-400 text-[9px] font-bold uppercase tracking-wider hover:bg-white/10 hover:text-white transition-colors"
+                      title="Aplica el boolean de forma destructiva: un solo trazo vectorial. Luego usa Pegar dentro (⇧⌘V) con este trazo como máscara.">
+                      Forma definitiva (trazo)
                     </button>
+                    <p className="text-[8px] leading-snug text-zinc-600">
+                      Convierte el grupo booleano en un <span className="text-zinc-500">path</span> cerrado. Sirve como máscara para <span className="text-zinc-500">Pegar dentro</span>.
+                    </p>
                   </div>
                 )}
                 </div>
@@ -9341,39 +10227,6 @@ export default function FreehandStudio({
                     <span className="text-[7px] font-bold uppercase tracking-wider text-zinc-500 group-hover:text-zinc-200">{label}</span>
                   </button>
                 ))}
-              </div>
-            </div>
-          )}
-
-          {/* ── Artboards (quick select) ─────────────────────────── */}
-          {artboards.length > 0 && (
-            <div className="p-3 border-b border-white/10">
-              <div className="text-[9px] font-bold uppercase tracking-widest text-zinc-500 mb-2">Artboards</div>
-              <div className="space-y-0.5">
-                {artboards.map((ab) => {
-                  const isSel = selectedArtboardId === ab.id;
-                  return (
-                    <button
-                      key={ab.id}
-                      type="button"
-                      onClick={() => {
-                        setActiveTool("artboard");
-                        setSelectedArtboardId(ab.id);
-                        setSelectedIds(new Set());
-                        setSelectedPoints(new Map());
-                      }}
-                      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[10px] transition-colors ${
-                        isSel ? "bg-sky-600/25 text-white ring-1 ring-sky-500/40" : "text-zinc-400 hover:bg-white/5 hover:text-white"
-                      }`}
-                    >
-                      <LayoutTemplate size={12} className="shrink-0 opacity-70" />
-                      <span className="truncate">{ab.name}</span>
-                      <span className="ml-auto font-mono text-[8px] text-zinc-600 tabular-nums">
-                        {Math.round(ab.width)}×{Math.round(ab.height)}
-                      </span>
-                    </button>
-                  );
-                })}
               </div>
             </div>
           )}
@@ -9564,9 +10417,10 @@ export default function FreehandStudio({
           <span>{objects.length} objects · {selectedIds.size} selected{isolationDepth > 0 ? ` · Isolation (depth ${isolationDepth})` : ""}</span>
         </div>
       </div>
+      )}
 
-      {designerPagesRail != null ? (
-        <div className="flex w-[60px] shrink-0 flex-col overflow-hidden border-l border-white/[0.08] bg-[#12151a] text-zinc-300">
+      {!canvasZenMode && designerPagesRail != null ? (
+        <div className="flex w-[110px] shrink-0 flex-col overflow-hidden border-l border-white/[0.08] bg-[#12151a] text-zinc-300">
           {designerPagesRail}
         </div>
       ) : null}
@@ -9581,7 +10435,7 @@ export default function FreehandStudio({
           onClose={() => setShowExportModal(false)}
           bounds={
             exportModalScope === "full"
-              ? resolveSceneExportBounds(objects, artboards, selectedArtboardId)
+              ? resolveSceneExportBounds(objects, artboards)
               : selectedObjects.length > 0
                 ? getGroupBounds(selectedObjects)
                 : null
@@ -9589,11 +10443,11 @@ export default function FreehandStudio({
           defaultFilename={
             exportModalScope === "selection" && firstSelected
               ? `${firstSelected.name || "selection"}`
-              : "artboard"
+              : "page"
           }
           selectionLabel={
             exportModalScope === "full"
-              ? "Entire artboard"
+              ? "Página completa"
               : selectedObjects.length === 0
                 ? "Nothing selected"
                 : selectedObjects.length === 1
@@ -9602,10 +10456,16 @@ export default function FreehandStudio({
           }
           hasSelection={selectedIds.size > 0}
           exportScope={exportModalScope}
-          artboardList={artboards.map((a) => ({ id: a.id, name: a.name }))}
+          artboardList={[]}
           onExport={runProfessionalExport}
           designerMultipageVectorPdf={designerMultipageVectorPdfExport ?? null}
         />
+      )}
+
+      {canvasZenMode && (
+        <div className="pointer-events-none fixed bottom-5 left-1/2 z-[100002] -translate-x-1/2 rounded-md border border-white/[0.08] bg-black/45 px-3 py-1.5 text-[10px] text-zinc-500">
+          P o Esc · salir del modo lienzo
+        </div>
       )}
 
       {toast && (

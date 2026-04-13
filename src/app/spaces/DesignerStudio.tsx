@@ -5,10 +5,9 @@ import { flushSync } from "react-dom";
 import {
   Plus,
   Trash2,
-  ChevronDown,
-  ChevronUp,
   Layers,
   ArrowLeftRight,
+  Maximize2,
 } from "lucide-react";
 import FreehandStudio, {
   type FreehandObject,
@@ -22,6 +21,7 @@ import {
   formatById,
   getPageDimensions,
 } from "./indesign/page-formats";
+import { DesignerPagePreview } from "./DesignerPagePreview";
 import { createArtboard, type Artboard } from "./freehand/artboard";
 import { computeFittingLayout } from "./indesign/image-frame-layout";
 import { layoutPageStories } from "./indesign/text-layout";
@@ -115,8 +115,20 @@ export default function DesignerStudio({
     Math.min(initialActiveIdx, Math.max(0, pages.length - 1)),
   );
 
-  const [addPageOpen, setAddPageOpen] = useState(false);
+  /** null | nueva página | cambiar tamaño de una página existente */
+  const [formatModal, setFormatModal] = useState<
+    null | { kind: "add" } | { kind: "resize"; pageIndex: number }
+  >(null);
   const [pendingFormat, setPendingFormat] = useState<IndesignPageFormatId>("a4v");
+
+  const dragPageIndexRef = useRef<number | null>(null);
+  /** Evita activar la página al soltar tras un drag HTML5 de reordenación. */
+  const suppressPageThumbClickRef = useRef(false);
+
+  const [designerFitToViewNonce, setDesignerFitToViewNonce] = useState(0);
+  const requestDesignerFitToView = useCallback(() => {
+    setDesignerFitToViewNonce((n) => n + 1);
+  }, []);
 
   const imageFrameInputRef = useRef<HTMLInputElement>(null);
   const imageFrameTargetIdRef = useRef<string | null>(null);
@@ -622,17 +634,40 @@ export default function DesignerStudio({
       queueMicrotask(() => setActivePageIndex(next.length - 1));
       return next;
     });
-    setAddPageOpen(false);
+    setFormatModal(null);
   }, [commitPages, pendingFormat]);
 
-  const deletePage = useCallback(
-    (idx: number) => {
-      if (pagesRef.current.length <= 1) return;
-      commitPages((prev) => prev.filter((_, i) => i !== idx));
-      setActivePageIndex((i) => Math.min(i >= idx ? i - 1 : i, pagesRef.current.length - 2));
-    },
-    [commitPages],
-  );
+  const applyPageFormatPreset = useCallback(() => {
+    setPages((prev) => {
+      if (formatModal?.kind !== "resize") return prev;
+      const idx = formatModal.pageIndex;
+      if (idx < 0 || idx >= prev.length) return prev;
+      const n = [...prev];
+      const p = n[idx];
+      if (!p) return prev;
+      n[idx] = {
+        ...p,
+        format: pendingFormat,
+        customWidth: undefined,
+        customHeight: undefined,
+      };
+      return n;
+    });
+    setFormatModal(null);
+  }, [formatModal, pendingFormat]);
+
+  const deletePage = useCallback((idx: number) => {
+    setPages((prev) => {
+      if (prev.length <= 1) return prev;
+      const filtered = prev.filter((_, i) => i !== idx);
+      setActivePageIndex((ai) => {
+        if (ai < idx) return ai;
+        if (ai > idx) return ai - 1;
+        return Math.min(idx, Math.max(0, filtered.length - 1));
+      });
+      return filtered;
+    });
+  }, []);
 
   const movePage = useCallback(
     (fromIndex: number, toIndex: number) => {
@@ -1000,7 +1035,12 @@ export default function DesignerStudio({
     }
   }, [multiPdfBusy]);
 
-  const studioKey = `${activePage?.id ?? "none"}_${activePageIndex}`;
+  /** Incluir tamaño del pliego para que el lienzo (artboard) se regenere al cambiar orientación. */
+  const studioKey = (() => {
+    const ap = activePage ?? pages[0];
+    const d = ap ? getPageDimensions(ap) : { width: 0, height: 0 };
+    return `${ap?.id ?? "none"}_${activePageIndex}_${Math.round(d.width)}_${Math.round(d.height)}`;
+  })();
 
   return (
     <div className="fixed inset-0 z-[9999] flex flex-col bg-[#0b0d10]">
@@ -1033,103 +1073,141 @@ export default function DesignerStudio({
           busy: multiPdfBusy,
           onExport: handleExportMultiPageVectorPdf,
         }}
+        designerFitToViewNonce={designerFitToViewNonce}
         designerPagesRail={
           <div className="flex h-full min-h-0 flex-col">
             <div className="flex shrink-0 items-center justify-center border-b border-white/[0.08] py-2">
               <Layers className="h-3.5 w-3.5 text-violet-300/70" strokeWidth={2} />
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 py-1.5">
-              <div className="flex flex-col gap-1.5">
+              <div className="flex flex-col gap-2">
                 {pages.map((p, i) => {
                   const pd = getPageDimensions(p);
                   const pf = formatById(p.format);
-                  const maxThumb = 22;
-                  const tw =
-                    pd.width >= pd.height ? maxThumb : Math.round((maxThumb * pd.width) / pd.height);
-                  const th =
-                    pd.height >= pd.width ? maxThumb : Math.round((maxThumb * pd.height) / pd.width);
                   const active = i === activePageIndex;
+                  const resLabel = `${Math.round(pd.width)}×${Math.round(pd.height)}`;
                   return (
-                    <div key={p.id} className="flex flex-col items-center gap-0.5">
-                      <button
-                        type="button"
-                        title={`${i + 1}. ${pf.label}`}
-                        onClick={() => setActivePageIndex(i)}
-                        className={`relative flex w-full flex-col items-center gap-0.5 rounded-lg border px-0.5 py-1 transition ${
-                          active
-                            ? "border-violet-400/45 bg-violet-950/35 shadow-[0_0_0_1px_rgba(167,139,250,0.15)]"
-                            : "border-white/[0.08] bg-black/20 hover:border-white/15"
-                        }`}
-                      >
-                        <div className="flex h-7 w-full items-center justify-center rounded bg-zinc-950/90 ring-1 ring-inset ring-white/[0.06]">
-                          <div
-                            className="rounded-sm bg-white shadow-sm shadow-black/30 ring-1 ring-black/10"
-                            style={{ width: tw, height: th }}
-                          />
-                        </div>
-                        <span className="font-mono text-[8px] font-bold tabular-nums text-zinc-500">
-                          {i + 1}
-                        </span>
-                      </button>
-                      {active && pages.length > 1 && (
-                        <div className="flex w-full justify-center gap-px">
-                          <button
-                            type="button"
-                            title="Subir página"
-                            disabled={i === 0}
-                            className="rounded p-0.5 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 disabled:pointer-events-none disabled:opacity-25"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              movePage(i, i - 1);
-                            }}
-                          >
-                            <ChevronUp className="h-2.5 w-2.5" />
-                          </button>
-                          <button
-                            type="button"
-                            title="Bajar página"
-                            disabled={i === pages.length - 1}
-                            className="rounded p-0.5 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 disabled:pointer-events-none disabled:opacity-25"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              movePage(i, i + 1);
-                            }}
-                          >
-                            <ChevronDown className="h-2.5 w-2.5" />
-                          </button>
-                        </div>
-                      )}
+                    <div
+                      key={p.id}
+                      className="rounded-[2px] border border-white/[0.08] bg-black/15 px-0.5 py-1"
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "move";
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        const raw = e.dataTransfer.getData("text/plain");
+                        const from = dragPageIndexRef.current ?? (raw ? Number.parseInt(raw, 10) : NaN);
+                        dragPageIndexRef.current = null;
+                        if (Number.isNaN(from) || from === i) return;
+                        movePage(from, i);
+                      }}
+                    >
+                      <div className="flex w-full flex-col gap-0.5">
+                        <button
+                          type="button"
+                          draggable
+                          title={`${i + 1}. ${pf.label} · ${resLabel} — arrastra para reordenar; clic para ver en pantalla`}
+                          className={`relative flex w-full cursor-grab touch-none flex-col items-center gap-0.5 rounded-[2px] border px-0.5 py-0.5 text-left transition active:cursor-grabbing ${
+                            active
+                              ? "border-violet-400/45 bg-violet-950/35 shadow-[0_0_0_1px_rgba(167,139,250,0.15)]"
+                              : "border-white/[0.08] bg-black/20 hover:border-white/15"
+                          }`}
+                          onDragStart={(e) => {
+                            suppressPageThumbClickRef.current = false;
+                            dragPageIndexRef.current = i;
+                            e.dataTransfer.setData("text/plain", String(i));
+                            e.dataTransfer.effectAllowed = "move";
+                          }}
+                          onDrag={() => {
+                            suppressPageThumbClickRef.current = true;
+                          }}
+                          onDragEnd={() => {
+                            dragPageIndexRef.current = null;
+                          }}
+                          onClick={() => {
+                            if (suppressPageThumbClickRef.current) {
+                              suppressPageThumbClickRef.current = false;
+                              return;
+                            }
+                            setActivePageIndex(i);
+                            requestDesignerFitToView();
+                          }}
+                          onDoubleClick={(e) => {
+                            e.preventDefault();
+                            suppressPageThumbClickRef.current = false;
+                            setActivePageIndex(i);
+                            requestDesignerFitToView();
+                          }}
+                        >
+                          <div className="flex h-[72px] w-full items-stretch justify-center overflow-hidden rounded-[2px] bg-zinc-950/90 ring-1 ring-inset ring-white/[0.06]">
+                            <DesignerPagePreview
+                              objects={p.objects ?? []}
+                              pageWidth={pd.width}
+                              pageHeight={pd.height}
+                            />
+                          </div>
+                          <span className="font-mono text-[8px] font-bold tabular-nums text-zinc-500">
+                            {i + 1}
+                          </span>
+                          <span className="max-w-full truncate px-0.5 text-center font-mono text-[6px] leading-tight text-zinc-500">
+                            {resLabel}
+                          </span>
+                        </button>
+                      </div>
+                      <div className="mt-1 flex w-full justify-center gap-0.5">
+                        <button
+                          type="button"
+                          title="Intercambiar orientación"
+                          className="rounded-[2px] border border-white/[0.12] bg-white/[0.06] p-0.5 text-white transition hover:bg-white/12"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            swapOrientation(i);
+                          }}
+                        >
+                          <ArrowLeftRight className="h-2.5 w-2.5" strokeWidth={2} />
+                        </button>
+                        <button
+                          type="button"
+                          title="Tamaño del pliego (preset)"
+                          className="rounded-[2px] border border-white/[0.12] bg-white/[0.06] p-0.5 text-white transition hover:bg-white/12"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPendingFormat(pages[i]?.format ?? "a4v");
+                            setFormatModal({ kind: "resize", pageIndex: i });
+                          }}
+                        >
+                          <Maximize2 className="h-2.5 w-2.5" strokeWidth={2} />
+                        </button>
+                        <button
+                          type="button"
+                          title="Eliminar página"
+                          disabled={pages.length <= 1}
+                          className="rounded-[2px] border border-white/25 bg-white/[0.12] p-0.5 text-white transition hover:bg-white/20 disabled:pointer-events-none disabled:opacity-35"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deletePage(i);
+                          }}
+                        >
+                          <Trash2 className="h-2.5 w-2.5" strokeWidth={2} />
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
+                <button
+                  type="button"
+                  title="Añadir página"
+                  onClick={() => {
+                    setPendingFormat(activePage?.format ?? pages[0]?.format ?? "a4v");
+                    setFormatModal({ kind: "add" });
+                  }}
+                  className="flex w-full items-center justify-center gap-1 rounded-[2px] border border-dashed border-white/18 bg-white/[0.02] py-1.5 text-[10px] font-medium text-zinc-400 transition hover:border-violet-400/35 hover:bg-violet-500/10 hover:text-zinc-200"
+                >
+                  <Plus className="h-3.5 w-3.5" strokeWidth={2} />
+                  Nueva
+                </button>
               </div>
-            </div>
-            <div className="flex shrink-0 flex-col gap-1 border-t border-white/[0.08] p-1">
-              <button
-                type="button"
-                title="Intercambiar orientación (página activa)"
-                onClick={() => swapOrientation(activePageIndex)}
-                className="flex w-full items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.04] py-1 text-zinc-400 transition hover:bg-white/[0.08] hover:text-zinc-100"
-              >
-                <ArrowLeftRight className="h-3 w-3" />
-              </button>
-              <button
-                type="button"
-                title="Añadir página"
-                onClick={() => setAddPageOpen(true)}
-                className="flex w-full items-center justify-center rounded-md border border-dashed border-white/18 bg-white/[0.02] py-1 text-zinc-500 transition hover:border-violet-400/35 hover:bg-violet-500/10 hover:text-zinc-200"
-              >
-                <Plus className="h-3.5 w-3.5" strokeWidth={2} />
-              </button>
-              <button
-                type="button"
-                title="Eliminar página activa"
-                disabled={pages.length <= 1}
-                onClick={() => deletePage(activePageIndex)}
-                className="flex w-full items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.03] py-1 text-zinc-500 transition hover:border-rose-500/30 hover:bg-rose-500/15 hover:text-rose-200 disabled:pointer-events-none disabled:opacity-35"
-              >
-                <Trash2 className="h-3 w-3" strokeWidth={2} />
-              </button>
             </div>
           </div>
         }
@@ -1155,7 +1233,10 @@ export default function DesignerStudio({
           <button
             key={p.id}
             type="button"
-            onClick={() => setActivePageIndex(i)}
+            onClick={() => {
+              setActivePageIndex(i);
+              requestDesignerFitToView();
+            }}
             className={`min-w-[1.75rem] rounded-md px-2 py-1 text-[10px] font-bold tabular-nums transition ${
               i === activePageIndex
                 ? "bg-violet-500/25 text-violet-200 ring-1 ring-violet-400/30"
@@ -1165,26 +1246,24 @@ export default function DesignerStudio({
             {i + 1}
           </button>
         ))}
-        <button
-          type="button"
-          onClick={() => setAddPageOpen(true)}
-          className="rounded-md px-1.5 py-1 text-zinc-600 transition hover:bg-white/[0.06] hover:text-zinc-300"
-          title="Añadir página"
-        >
-          <Plus size={14} />
-        </button>
       </div>
 
-      {/* Add page modal */}
-      {addPageOpen && (
+      {/* Formato: nueva página o cambiar tamaño de pliego */}
+      {formatModal && (
         <div
           className="fixed inset-0 z-[10060] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
         >
           <div className="w-full max-w-sm rounded-2xl border border-white/12 bg-gradient-to-b from-zinc-900/98 to-[#12121a] p-5 shadow-2xl shadow-black/60 ring-1 ring-white/[0.06]">
-            <p className="text-sm font-bold tracking-tight text-zinc-100">Formato de página</p>
-            <p className="mt-1 text-[11px] text-zinc-500">Elige el tamaño del nuevo pliego.</p>
+            <p className="text-sm font-bold tracking-tight text-zinc-100">
+              {formatModal.kind === "add" ? "Nueva página" : "Tamaño del pliego"}
+            </p>
+            <p className="mt-1 text-[11px] text-zinc-500">
+              {formatModal.kind === "add"
+                ? "Elige el preset del pliego que se añadirá al final."
+                : "Aplica un preset de tamaño a esta página (se sustituyen ancho y alto personalizados)."}
+            </p>
             <div className="mt-4 space-y-2">
               {INDESIGN_PAGE_FORMATS.map((f) => (
                 <label
@@ -1215,16 +1294,16 @@ export default function DesignerStudio({
               <button
                 type="button"
                 className="rounded-lg border border-white/12 px-4 py-2 text-xs font-medium text-zinc-300 transition hover:bg-white/5"
-                onClick={() => setAddPageOpen(false)}
+                onClick={() => setFormatModal(null)}
               >
                 Cancelar
               </button>
               <button
                 type="button"
                 className="rounded-lg bg-gradient-to-b from-violet-500 to-purple-600 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-violet-950/40"
-                onClick={addPage}
+                onClick={formatModal.kind === "add" ? addPage : applyPageFormatPreset}
               >
-                Añadir
+                {formatModal.kind === "add" ? "Añadir" : "Aplicar"}
               </button>
             </div>
           </div>
