@@ -74,6 +74,7 @@ import { ExternalApiBlockedModal } from './ExternalApiBlockedModal';
 import {
   TopbarPins,
 } from './TopbarPins';
+import { TOPBAR_GLYPH_BY_NODE_TYPE } from './TopbarPinIcons';
 import {
   resolveHandleMetaForCanvasDrop,
   pickNewNodeTypeForCanvasDrop,
@@ -4613,6 +4614,23 @@ const SpacesContent = () => {
             >
               {/* Quick Actions */}
               <div className="flex shrink-0 gap-1.5">
+                {isAuthenticated && !windowMode && (
+                  <button
+                    type="button"
+                    title="Designer (F). Doble clic para añadir nodo al lienzo."
+                    className="group relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-violet-400/25 bg-violet-500/[0.08] text-slate-700 shadow-sm backdrop-blur-xl transition-all hover:scale-105 hover:border-violet-400/40 hover:bg-violet-500/[0.14] hover:text-slate-900"
+                    onDoubleClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      addNodeFromTopbarPinDoubleClick('designer');
+                    }}
+                  >
+                    {React.createElement(TOPBAR_GLYPH_BY_NODE_TYPE.designer, {
+                      size: 18,
+                      className: 'text-violet-800/90 group-hover:text-violet-950 dark:text-violet-200/95 dark:group-hover:text-violet-100',
+                    })}
+                  </button>
+                )}
                 <div className="flex overflow-hidden rounded-xl border border-white/25 bg-white/[0.08] shadow-sm backdrop-blur-xl">
                   <button
                     type="button"

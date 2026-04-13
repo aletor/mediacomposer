@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   X,
   Plus,
@@ -11,6 +12,7 @@ import {
   ArrowLeftRight,
   Type,
   ImageIcon,
+  FileDown,
 } from "lucide-react";
 import FreehandStudio, {
   type FreehandObject,
@@ -93,6 +95,27 @@ export default function DesignerStudio({
   const imageFrameTargetIdRef = useRef<string | null>(null);
 
   const studioApiRef = useRef<DesignerStudioApi | null>(null);
+  const designerClipboardRef = useRef<FreehandObject[] | null>(null);
+
+  const designerHistoryBridge = useMemo(
+    () => ({
+      capture: (canvasObjects: FreehandObject[]) => {
+        const idx = activeIdxRef.current;
+        return pagesRef.current.map((page, i) => {
+          const clone = JSON.parse(JSON.stringify(page)) as DesignerPageState;
+          if (i === idx) {
+            clone.objects = JSON.parse(JSON.stringify(canvasObjects)) as FreehandObject[];
+          }
+          return clone;
+        });
+      },
+      restore: (snap: unknown) => {
+        if (!Array.isArray(snap)) return;
+        setPages(snap as DesignerPageState[]);
+      },
+    }),
+    [],
+  );
 
   const pagesRef = useRef(pages);
   pagesRef.current = pages;
@@ -860,6 +883,54 @@ export default function DesignerStudio({
     [],
   );
 
+  const [multiPdfBusy, setMultiPdfBusy] = useState(false);
+
+  const handleExportMultiPageVectorPdf = useCallback(async () => {
+    if (multiPdfBusy) return;
+    const pageCount = pagesRef.current.length;
+    if (pageCount === 0) return;
+    setMultiPdfBusy(true);
+    const savedIdx = activeIdxRef.current;
+    const markups: string[] = [];
+    try {
+      const { downloadMultiPageVectorPdf } = await import("./freehand/download-vector-pdf");
+      for (let i = 0; i < pageCount; i++) {
+        const pg = pagesRef.current[i];
+        if (!pg) continue;
+        const expectedKey = `${pg.id}_${i}`;
+        flushSync(() => {
+          setActivePageIndex(i);
+        });
+        let api: DesignerStudioApi | null = null;
+        for (let t = 0; t < 200; t++) {
+          api = studioApiRef.current;
+          const sessionOk = api?.getExportSessionKey?.() === expectedKey;
+          if (api?.getVectorPdfMarkupForCurrentPage && sessionOk) {
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 12));
+        }
+        if (!api?.getVectorPdfMarkupForCurrentPage || api.getExportSessionKey?.() !== expectedKey) {
+          continue;
+        }
+        let m = "";
+        for (let r = 0; r < 12; r++) {
+          m = await api.getVectorPdfMarkupForCurrentPage();
+          if (m.length > 0) break;
+          await new Promise((res) => setTimeout(res, 40));
+        }
+        if (m) markups.push(m);
+      }
+      if (markups.length === 0) return;
+      await downloadMultiPageVectorPdf(markups, `diseno-${Date.now()}.pdf`);
+    } finally {
+      flushSync(() => {
+        setActivePageIndex(savedIdx);
+      });
+      setMultiPdfBusy(false);
+    }
+  }, [multiPdfBusy]);
+
   const studioKey = `${activePage?.id ?? "none"}_${activePageIndex}`;
 
   return (
@@ -886,6 +957,8 @@ export default function DesignerStudio({
         onDesignerStoryRichChange={handleDesignerStoryRichChange}
         onDesignerUnlinkTextFrame={handleDesignerUnlinkTextFrame}
         onDesignerTypographyChange={handleDesignerTypographyChange}
+        designerHistoryBridge={designerHistoryBridge}
+        designerClipboardRef={designerClipboardRef}
       />
 
       {/* Hidden file input for image frame placement */}
@@ -916,6 +989,15 @@ export default function DesignerStudio({
               Páginas
             </span>
             <span className="ml-auto text-[10px] text-zinc-600">{pages.length}</span>
+            <button
+              type="button"
+              title="Descargar PDF vectorial (todas las páginas)"
+              disabled={multiPdfBusy || pages.length === 0}
+              onClick={() => void handleExportMultiPageVectorPdf()}
+              className="rounded-md p-1 text-zinc-500 transition hover:bg-white/10 hover:text-violet-200 disabled:pointer-events-none disabled:opacity-40"
+            >
+              <FileDown className="h-4 w-4" strokeWidth={2} />
+            </button>
             <button
               type="button"
               onClick={() => setPagesPanelOpen(false)}

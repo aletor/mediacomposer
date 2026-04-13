@@ -232,6 +232,58 @@ function measureLineWidth(
   return w;
 }
 
+/**
+ * Ajuste de líneas para export PDF/SVG (opentype): mismo criterio que el lienzo en modo área
+ * (el texto en memoria suele ser una sola cadena sin \n; el navegador envuelve con CSS).
+ */
+function wrapParagraphToLinesWithFirstIndent(
+  font: opentype.Font,
+  paragraph: string,
+  fontSize: number,
+  letterSpacing: number,
+  useKern: boolean,
+  maxWidthInner: number,
+  firstLineIndent: number,
+): string[] {
+  if (!paragraph.length) return [""];
+  const lines: string[] = [];
+  let charIdx = 0;
+  let isFirstLineOfParagraph = true;
+
+  while (charIdx < paragraph.length) {
+    while (charIdx < paragraph.length && paragraph[charIdx] === " ") charIdx++;
+    if (charIdx >= paragraph.length) break;
+
+    const wrapW = Math.max(4, maxWidthInner - (isFirstLineOfParagraph ? firstLineIndent : 0));
+    isFirstLineOfParagraph = false;
+
+    let lineEnd = charIdx;
+    let lastWordBreak = -1;
+
+    while (lineEnd < paragraph.length) {
+      const ch = paragraph[lineEnd]!;
+      if (ch === "\n") break;
+      const seg = paragraph.slice(charIdx, lineEnd + 1);
+      const cw = measureLineWidth(font, seg, fontSize, letterSpacing, useKern);
+      if (cw > wrapW && lineEnd > charIdx) {
+        if (lastWordBreak > charIdx) lineEnd = lastWordBreak;
+        break;
+      }
+      if (ch === " " || ch === "\t") lastWordBreak = lineEnd + 1;
+      lineEnd++;
+    }
+
+    if (lineEnd === charIdx && charIdx < paragraph.length) {
+      lineEnd = charIdx + 1;
+    }
+
+    lines.push(paragraph.slice(charIdx, lineEnd).replace(/\s+$/g, ""));
+    charIdx = lineEnd;
+  }
+
+  return lines.length > 0 ? lines : [""];
+}
+
 export type TextConversionInput = {
   name: string;
   text: string;
@@ -258,16 +310,46 @@ export async function textToGlyphPathPayloads(
   const indent = t.paragraphIndent ?? 0;
   const boxW = t.textMode === "point" ? Math.max(t.width, 32) : t.width;
   const lhPx = t.fontSize * t.lineHeight;
-  const lines = t.text.split("\n");
-  const ta = t.textAlign === "justify" ? "left" : t.textAlign;
+  const innerW = Math.max(4, boxW - 2 * pad);
   const useKern = t.fontKerning !== "none";
+
+  type PhysicalLine = { text: string; addParagraphIndent: boolean };
+  let physicalLines: PhysicalLine[];
+
+  if (t.textMode === "point") {
+    const raw = t.text.split("\n");
+    physicalLines = raw.map((text, i) => ({
+      text,
+      addParagraphIndent: i === 0,
+    }));
+  } else {
+    physicalLines = [];
+    const paras = t.text.split(/\r?\n/);
+    for (const para of paras) {
+      const wrapped = wrapParagraphToLinesWithFirstIndent(
+        font,
+        para,
+        t.fontSize,
+        t.letterSpacing,
+        useKern,
+        innerW,
+        indent,
+      );
+      wrapped.forEach((text, wi) => {
+        physicalLines.push({ text, addParagraphIndent: wi === 0 });
+      });
+    }
+  }
+
+  const ta = t.textAlign === "justify" ? "left" : t.textAlign;
   const out: GlyphPathPayload[] = [];
   let gIdx = 0;
 
-  for (let li = 0; li < lines.length; li++) {
-    const line = lines[li];
+  for (let li = 0; li < physicalLines.length; li++) {
+    const { text: line, addParagraphIndent } = physicalLines[li]!;
     const baselineY = t.y + pad + t.fontSize + li * lhPx;
     const lineW = measureLineWidth(font, line, t.fontSize, t.letterSpacing, useKern);
+    const indentPx = addParagraphIndent ? indent : 0;
 
     let xCursor: number;
     if (ta === "center") {
@@ -275,7 +357,7 @@ export async function textToGlyphPathPayloads(
     } else if (ta === "right") {
       xCursor = t.x + boxW - pad - lineW;
     } else {
-      xCursor = t.x + pad + (li === 0 ? indent : 0);
+      xCursor = t.x + pad + indentPx;
     }
 
     const glyphs = font.stringToGlyphs(line);

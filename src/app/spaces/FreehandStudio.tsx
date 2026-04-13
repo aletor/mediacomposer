@@ -408,6 +408,15 @@ interface FreehandStudioProps {
   onDesignerUnlinkTextFrame?: (frameId: string) => void;
   /** Called when typography properties change on a text frame (to sync back to Story model). */
   onDesignerTypographyChange?: (storyId: string, patch: Record<string, unknown>) => void;
+  /**
+   * Designer: capture/restore full document state (pages, stories, textFrames) alongside canvas objects for undo.
+   */
+  designerHistoryBridge?: {
+    capture: (canvasObjects: FreehandObject[]) => unknown;
+    restore: (snap: unknown) => void;
+  };
+  /** Designer: shared clipboard across page switches (same ref for all FreehandStudio mounts). */
+  designerClipboardRef?: React.MutableRefObject<FreehandObject[] | null>;
 }
 
 export interface DesignerStudioApi {
@@ -416,6 +425,10 @@ export interface DesignerStudioApi {
   getObjects: () => FreehandObject[];
   getTextEditingId: () => string | null;
   setSelectedIds: (ids: Set<string>) => void;
+  /** Returns SVG string prepared for vector PDF (text as paths). Designer multi-page export. */
+  getVectorPdfMarkupForCurrentPage?: () => Promise<string>;
+  /** Same value as `nodeId` / studio key — used to wait until export API matches the active page after remount. */
+  getExportSessionKey?: () => string;
 }
 
 interface ContextMenuItem {
@@ -2613,6 +2626,8 @@ export default function FreehandStudio({
   onDesignerStoryRichChange,
   onDesignerUnlinkTextFrame,
   onDesignerTypographyChange,
+  designerHistoryBridge,
+  designerClipboardRef,
 }: FreehandStudioProps) {
 
   // ── Core state ─────────────────────────────────────────────────────
@@ -2712,8 +2727,9 @@ export default function FreehandStudio({
   // Direct-select: selected anchor points
   const [selectedPoints, setSelectedPoints] = useState<Map<string, Set<number>>>(new Map());
 
-  // History
-  const historyRef = useRef<{ objects: FreehandObject[]; sel: string[] }[]>([
+  // History (optional designerSnap = full Designer document for undo with threaded text / image frames)
+  type HistoryEntry = { objects: FreehandObject[]; sel: string[]; designerSnap?: unknown };
+  const historyRef = useRef<HistoryEntry[]>([
     {
       objects:
         initialObjects.length > 0
@@ -2723,6 +2739,7 @@ export default function FreehandStudio({
     },
   ]);
   const historyIdxRef = useRef(0);
+  const designerHistoryInitRef = useRef(false);
   const [, forceRender] = useState(0);
 
   // Próxima forma / pluma: se actualiza al cambiar la selección primaria (o al editar ese objeto)
@@ -2788,18 +2805,84 @@ export default function FreehandStudio({
   const layoutGuidesRef = useRef<LayoutGuide[]>(layoutGuides);
   layoutGuidesRef.current = layoutGuides;
 
+  // ── History helpers (using refs to avoid stale closures) ──────────
+
+  const pushHistory = useCallback(
+    (newObjects: FreehandObject[], newSel: Set<string>) => {
+      const h = historyRef.current;
+      const idx = historyIdxRef.current;
+      let designerSnap: unknown = undefined;
+      if (designerHistoryBridge) {
+        try {
+          designerSnap = designerHistoryBridge.capture(newObjects);
+        } catch {
+          /* noop */
+        }
+      }
+      historyRef.current = [
+        ...h.slice(0, idx + 1),
+        { objects: [...newObjects], sel: Array.from(newSel), designerSnap },
+      ];
+      historyIdxRef.current = idx + 1;
+    },
+    [designerHistoryBridge],
+  );
+
+  const pushHistoryRef = useRef(pushHistory);
+  pushHistoryRef.current = pushHistory;
+
+  useEffect(() => {
+    if (!designerHistoryBridge || designerHistoryInitRef.current) return;
+    designerHistoryInitRef.current = true;
+    const h0 = historyRef.current[0];
+    if (h0) {
+      try {
+        h0.designerSnap = designerHistoryBridge.capture(h0.objects);
+      } catch {
+        /* noop */
+      }
+    }
+  }, [designerHistoryBridge]);
+
+  const undo = useCallback(() => {
+    if (historyIdxRef.current <= 0) return;
+    historyIdxRef.current -= 1;
+    const entry = historyRef.current[historyIdxRef.current]!;
+    if (entry.designerSnap != null && designerHistoryBridge) {
+      designerHistoryBridge.restore(entry.designerSnap);
+    }
+    setObjects([...entry.objects]);
+    setSelectedIds(new Set(entry.sel));
+    forceRender((n) => n + 1);
+  }, [designerHistoryBridge]);
+
+  const redo = useCallback(() => {
+    if (historyIdxRef.current >= historyRef.current.length - 1) return;
+    historyIdxRef.current += 1;
+    const entry = historyRef.current[historyIdxRef.current]!;
+    if (entry.designerSnap != null && designerHistoryBridge) {
+      designerHistoryBridge.restore(entry.designerSnap);
+    }
+    setObjects([...entry.objects]);
+    setSelectedIds(new Set(entry.sel));
+    forceRender((n) => n + 1);
+  }, [designerHistoryBridge]);
+
   useEffect(() => {
     if (!studioApiRef) return;
     studioApiRef.current = {
       patchObject: (id, patch) => {
         queueMicrotask(() => {
-          setObjects(prev => {
-            const idx = prev.findIndex(o => o.id === id);
+          setObjects((prev) => {
+            const idx = prev.findIndex((o) => o.id === id);
             if (idx < 0) return prev;
             const obj = prev[idx]!;
             let changed = false;
             for (const k of Object.keys(patch)) {
-              if ((obj as any)[k] !== (patch as any)[k]) { changed = true; break; }
+              if ((obj as any)[k] !== (patch as any)[k]) {
+                changed = true;
+                break;
+              }
             }
             if (!changed) return prev;
             const next = [...prev];
@@ -2810,9 +2893,11 @@ export default function FreehandStudio({
       },
       addObject: (obj) => {
         queueMicrotask(() => {
-          setObjects(prev => {
-            if (prev.some(o => o.id === obj.id)) return prev;
-            return [...prev, obj];
+          setObjects((prev) => {
+            if (prev.some((o) => o.id === obj.id)) return prev;
+            const next = [...prev, obj];
+            pushHistoryRef.current(next, new Set([obj.id]));
+            return next;
           });
         });
       },
@@ -2821,36 +2906,61 @@ export default function FreehandStudio({
       setSelectedIds: (ids: Set<string>) => {
         queueMicrotask(() => setSelectedIds(ids));
       },
+      getExportSessionKey: () => nodeId,
+      getVectorPdfMarkupForCurrentPage: async () => {
+        const svg = svgRef.current;
+        if (!svg) return "";
+        const objs = objectsRef.current;
+        const abs = artboardsRef.current;
+        const sid = selectedArtboardIdRef.current;
+        const bounds = resolveSceneExportBounds(objs, abs, sid);
+        const ab = pickPrimaryArtboard(abs, sid);
+        const bg: "transparent" | string = ab?.background ?? "transparent";
+        let strRaw = buildStandaloneSvgFromCanvasDom(svg, {
+          exportIds: null,
+          bounds,
+          scale: 1,
+          background: bg,
+        });
+        const textObjs = objs.filter((o): o is TextObject => o.type === "text" && o.visible && !o.isClipMask);
+        if (textObjs.length > 0) {
+          strRaw = await substituteTextWithOutlinedPathsInSvg(
+            strRaw,
+            textObjs.map((tx) => {
+              const f = migrateFill(tx.fill);
+              const fillColor = f.type === "solid" && f.color !== "none" ? f.color : "#000000";
+              return {
+                id: tx.id,
+                name: tx.name,
+                text: tx.text,
+                textMode: tx.textMode,
+                x: tx.x,
+                y: tx.y,
+                width: tx.width,
+                height: tx.height,
+                fontSize: tx.fontSize,
+                fontWeight: tx.fontWeight,
+                lineHeight: tx.lineHeight,
+                letterSpacing: tx.letterSpacing,
+                fontKerning: tx.fontKerning,
+                textAlign: tx.textAlign,
+                paragraphIndent: tx.paragraphIndent,
+                fontFamily: tx.fontFamily,
+                fillColor,
+                stroke: tx.stroke,
+                strokeWidth: tx.strokeWidth,
+                opacity: tx.opacity,
+              };
+            }),
+          );
+        }
+        return strRaw;
+      },
     };
-    return () => { if (studioApiRef) studioApiRef.current = null; };
-  }, [studioApiRef]);
-
-  // ── History helpers (using refs to avoid stale closures) ──────────
-
-  const pushHistory = useCallback((newObjects: FreehandObject[], newSel: Set<string>) => {
-    const h = historyRef.current;
-    const idx = historyIdxRef.current;
-    historyRef.current = [...h.slice(0, idx + 1), { objects: [...newObjects], sel: Array.from(newSel) }];
-    historyIdxRef.current = idx + 1;
-  }, []);
-
-  const undo = useCallback(() => {
-    if (historyIdxRef.current <= 0) return;
-    historyIdxRef.current -= 1;
-    const entry = historyRef.current[historyIdxRef.current];
-    setObjects([...entry.objects]);
-    setSelectedIds(new Set(entry.sel));
-    forceRender((n) => n + 1);
-  }, []);
-
-  const redo = useCallback(() => {
-    if (historyIdxRef.current >= historyRef.current.length - 1) return;
-    historyIdxRef.current += 1;
-    const entry = historyRef.current[historyIdxRef.current];
-    setObjects([...entry.objects]);
-    setSelectedIds(new Set(entry.sel));
-    forceRender((n) => n + 1);
-  }, []);
+    return () => {
+      if (studioApiRef) studioApiRef.current = null;
+    };
+  }, [studioApiRef, nodeId]);
 
   // ── Sync to node ──────────────────────────────────────────────────
 
@@ -3343,11 +3453,19 @@ export default function FreehandStudio({
     const sel = selectedIdsRef.current;
     const objs = objectsRef.current.filter((o) => sel.has(o.id));
     if (objs.length === 0) return;
-    objectClipboardRef.current = objs.map((o) => deepCloneFreehandObject(o, uid));
-  }, []);
+    const cloned = objs.map((o) => deepCloneFreehandObject(o, uid));
+    if (designerMode && designerClipboardRef) {
+      designerClipboardRef.current = cloned;
+    } else {
+      objectClipboardRef.current = cloned;
+    }
+  }, [designerMode, designerClipboardRef]);
 
   const pasteClipboardObjects = useCallback(() => {
-    const clip = objectClipboardRef.current;
+    const clip =
+      designerMode && designerClipboardRef?.current != null
+        ? designerClipboardRef.current
+        : objectClipboardRef.current;
     if (!clip || clip.length === 0) return;
     const dupes = clip.map((o) => {
       const c = deepCloneFreehandObject(o, uid);

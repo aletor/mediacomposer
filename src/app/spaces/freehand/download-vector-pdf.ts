@@ -53,3 +53,38 @@ export async function svgMarkupToPdfBlob(svgMarkup: string): Promise<Blob> {
   await svg2pdf(svgRoot, pdf, { x: 0, y: 0, width: wPt, height: hPt });
   return pdf.output("blob") as Blob;
 }
+
+/**
+ * Une varias páginas SVG (ya preparadas para PDF, p. ej. con texto como trazos) en un solo PDF vectorial.
+ */
+export async function downloadMultiPageVectorPdf(
+  svgMarkups: string[],
+  filename: string,
+): Promise<void> {
+  if (svgMarkups.length === 0) return;
+  let pdf: InstanceType<typeof jsPDF> | null = null;
+  for (let i = 0; i < svgMarkups.length; i++) {
+    const svgMarkup = svgMarkups[i]!;
+    const parser = new DOMParser();
+    const parsed = parser.parseFromString(svgMarkup, "image/svg+xml");
+    if (parsed.querySelector("parsererror")) continue;
+    const svgRoot = parsed.documentElement;
+    const w = Math.max(1, parseFloat(svgRoot.getAttribute("width") || "1"));
+    const h = Math.max(1, parseFloat(svgRoot.getAttribute("height") || "1"));
+    const wPt = (w * 72) / 96;
+    const hPt = (h * 72) / 96;
+    const orientation = wPt >= hPt ? "landscape" : "portrait";
+    if (i === 0) {
+      pdf = new jsPDF({
+        unit: "pt",
+        format: [wPt, hPt],
+        orientation,
+        compress: true,
+      });
+    } else {
+      pdf!.addPage([wPt, hPt], orientation);
+    }
+    await svg2pdf(svgRoot, pdf!, { x: 0, y: 0, width: wPt, height: hPt });
+  }
+  if (pdf) pdf.save(filename);
+}
