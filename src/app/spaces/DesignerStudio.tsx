@@ -3,16 +3,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
-  X,
   Plus,
   Trash2,
   ChevronDown,
   ChevronUp,
   Layers,
   ArrowLeftRight,
-  Type,
-  ImageIcon,
-  FileDown,
 } from "lucide-react";
 import FreehandStudio, {
   type FreehandObject,
@@ -121,7 +117,6 @@ export default function DesignerStudio({
 
   const [addPageOpen, setAddPageOpen] = useState(false);
   const [pendingFormat, setPendingFormat] = useState<IndesignPageFormatId>("a4v");
-  const [pagesPanelOpen, setPagesPanelOpen] = useState(true);
 
   const imageFrameInputRef = useRef<HTMLInputElement>(null);
   const imageFrameTargetIdRef = useRef<string | null>(null);
@@ -1033,6 +1028,111 @@ export default function DesignerStudio({
         onDesignerTypographyChange={handleDesignerTypographyChange}
         designerHistoryBridge={designerHistoryBridge}
         designerClipboardRef={designerClipboardRef}
+        designerMultipageVectorPdfExport={{
+          pageCount: pages.length,
+          busy: multiPdfBusy,
+          onExport: handleExportMultiPageVectorPdf,
+        }}
+        designerPagesRail={
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="flex shrink-0 items-center justify-center border-b border-white/[0.08] py-2">
+              <Layers className="h-3.5 w-3.5 text-violet-300/70" strokeWidth={2} />
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 py-1.5">
+              <div className="flex flex-col gap-1.5">
+                {pages.map((p, i) => {
+                  const pd = getPageDimensions(p);
+                  const pf = formatById(p.format);
+                  const maxThumb = 22;
+                  const tw =
+                    pd.width >= pd.height ? maxThumb : Math.round((maxThumb * pd.width) / pd.height);
+                  const th =
+                    pd.height >= pd.width ? maxThumb : Math.round((maxThumb * pd.height) / pd.width);
+                  const active = i === activePageIndex;
+                  return (
+                    <div key={p.id} className="flex flex-col items-center gap-0.5">
+                      <button
+                        type="button"
+                        title={`${i + 1}. ${pf.label}`}
+                        onClick={() => setActivePageIndex(i)}
+                        className={`relative flex w-full flex-col items-center gap-0.5 rounded-lg border px-0.5 py-1 transition ${
+                          active
+                            ? "border-violet-400/45 bg-violet-950/35 shadow-[0_0_0_1px_rgba(167,139,250,0.15)]"
+                            : "border-white/[0.08] bg-black/20 hover:border-white/15"
+                        }`}
+                      >
+                        <div className="flex h-7 w-full items-center justify-center rounded bg-zinc-950/90 ring-1 ring-inset ring-white/[0.06]">
+                          <div
+                            className="rounded-sm bg-white shadow-sm shadow-black/30 ring-1 ring-black/10"
+                            style={{ width: tw, height: th }}
+                          />
+                        </div>
+                        <span className="font-mono text-[8px] font-bold tabular-nums text-zinc-500">
+                          {i + 1}
+                        </span>
+                      </button>
+                      {active && pages.length > 1 && (
+                        <div className="flex w-full justify-center gap-px">
+                          <button
+                            type="button"
+                            title="Subir página"
+                            disabled={i === 0}
+                            className="rounded p-0.5 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 disabled:pointer-events-none disabled:opacity-25"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              movePage(i, i - 1);
+                            }}
+                          >
+                            <ChevronUp className="h-2.5 w-2.5" />
+                          </button>
+                          <button
+                            type="button"
+                            title="Bajar página"
+                            disabled={i === pages.length - 1}
+                            className="rounded p-0.5 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 disabled:pointer-events-none disabled:opacity-25"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              movePage(i, i + 1);
+                            }}
+                          >
+                            <ChevronDown className="h-2.5 w-2.5" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="flex shrink-0 flex-col gap-1 border-t border-white/[0.08] p-1">
+              <button
+                type="button"
+                title="Intercambiar orientación (página activa)"
+                onClick={() => swapOrientation(activePageIndex)}
+                className="flex w-full items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.04] py-1 text-zinc-400 transition hover:bg-white/[0.08] hover:text-zinc-100"
+              >
+                <ArrowLeftRight className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                title="Añadir página"
+                onClick={() => setAddPageOpen(true)}
+                className="flex w-full items-center justify-center rounded-md border border-dashed border-white/18 bg-white/[0.02] py-1 text-zinc-500 transition hover:border-violet-400/35 hover:bg-violet-500/10 hover:text-zinc-200"
+              >
+                <Plus className="h-3.5 w-3.5" strokeWidth={2} />
+              </button>
+              <button
+                type="button"
+                title="Eliminar página activa"
+                disabled={pages.length <= 1}
+                onClick={() => deletePage(activePageIndex)}
+                className="flex w-full items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.03] py-1 text-zinc-500 transition hover:border-rose-500/30 hover:bg-rose-500/15 hover:text-rose-200 disabled:pointer-events-none disabled:opacity-35"
+              >
+                <Trash2 className="h-3 w-3" strokeWidth={2} />
+              </button>
+            </div>
+          </div>
+        }
       />
 
       {/* Hidden file input for image frame placement */}
@@ -1049,169 +1149,7 @@ export default function DesignerStudio({
         }}
       />
 
-      {/* Pages panel — right side overlay */}
-      <div
-        className={`pointer-events-auto fixed right-0 top-0 bottom-0 z-[10001] flex flex-col transition-transform duration-300 ${
-          pagesPanelOpen ? "translate-x-0" : "translate-x-full"
-        }`}
-        style={{ width: 220 }}
-      >
-        <div className="flex h-full flex-col border-l border-white/[0.08] bg-[#0e1015]/95 backdrop-blur-xl">
-          <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.06] px-3 py-2.5">
-            <Layers className="h-4 w-4 text-violet-300/70" strokeWidth={2} />
-            <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-zinc-300">
-              Páginas
-            </span>
-            <span className="ml-auto text-[10px] text-zinc-600">{pages.length}</span>
-            <button
-              type="button"
-              title="Descargar PDF vectorial (todas las páginas)"
-              disabled={multiPdfBusy || pages.length === 0}
-              onClick={() => {
-                void handleExportMultiPageVectorPdf().catch((err) => {
-                  console.error("[Designer] PDF export (unhandled):", err);
-                });
-              }}
-              className="rounded-md p-1 text-zinc-500 transition hover:bg-white/10 hover:text-violet-200 disabled:pointer-events-none disabled:opacity-40"
-            >
-              <FileDown className="h-4 w-4" strokeWidth={2} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setPagesPanelOpen(false)}
-              className="ml-1 rounded-md p-1 text-zinc-600 hover:bg-white/10 hover:text-zinc-300"
-            >
-              <X size={14} />
-            </button>
-          </div>
-
-          <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 py-2.5">
-            {pages.map((p, i) => {
-              const pd = getPageDimensions(p);
-              const pf = formatById(p.format);
-              const maxThumb = 44;
-              const tw = pd.width >= pd.height ? maxThumb : Math.round((maxThumb * pd.width) / pd.height);
-              const th = pd.height >= pd.width ? maxThumb : Math.round((maxThumb * pd.height) / pd.width);
-              const storyCount = (p.stories ?? []).length;
-              const imgFrameCount = (p.objects ?? []).filter(o => o.isImageFrame).length;
-              return (
-                <div
-                  key={p.id}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      setActivePageIndex(i);
-                    }
-                  }}
-                  className={`group relative flex cursor-pointer flex-col gap-2 rounded-xl border p-2.5 transition ${
-                    i === activePageIndex
-                      ? "border-violet-400/40 bg-gradient-to-b from-violet-950/40 to-zinc-950/60 shadow-[0_0_0_1px_rgba(167,139,250,0.12)]"
-                      : "border-white/[0.08] bg-black/25 hover:border-white/18 hover:bg-black/35"
-                  }`}
-                  onClick={() => setActivePageIndex(i)}
-                >
-                  <div className="flex h-[3.25rem] w-full items-center justify-center rounded-lg bg-zinc-950/80 ring-1 ring-inset ring-white/[0.06]">
-                    <div
-                      className="rounded-sm bg-white shadow-md shadow-black/40 ring-1 ring-black/10"
-                      style={{ width: tw, height: th }}
-                    />
-                  </div>
-                  <div className="min-w-0">
-                    <span className="block truncate font-mono text-[10px] font-semibold text-zinc-300">
-                      {i + 1}. {pf.label}
-                    </span>
-                    <span className="text-[9px] text-zinc-600">
-                      {pd.width}×{pd.height}
-                      {storyCount > 0 && <> · {storyCount} <Type size={8} className="inline" /></>}
-                      {imgFrameCount > 0 && <> · {imgFrameCount} <ImageIcon size={8} className="inline" /></>}
-                    </span>
-                  </div>
-
-                  {i === activePageIndex && (
-                    <button
-                      type="button"
-                      className="mt-1 flex w-full items-center justify-center gap-1 rounded-md border border-white/12 bg-white/[0.04] py-1 text-[9px] font-semibold text-zinc-400 transition hover:bg-white/10 hover:text-zinc-200"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        swapOrientation(i);
-                      }}
-                    >
-                      <ArrowLeftRight className="h-3 w-3" />
-                      Orientación
-                    </button>
-                  )}
-
-                  {pages.length > 1 && (
-                    <div className="absolute right-1.5 top-1.5 flex flex-col gap-0.5 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100">
-                      <button
-                        type="button"
-                        title="Subir página"
-                        disabled={i === 0}
-                        className="rounded-md p-0.5 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 disabled:pointer-events-none disabled:opacity-25"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          movePage(i, i - 1);
-                        }}
-                      >
-                        <ChevronUp className="h-3 w-3" />
-                      </button>
-                      <button
-                        type="button"
-                        title="Bajar página"
-                        disabled={i === pages.length - 1}
-                        className="rounded-md p-0.5 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 disabled:pointer-events-none disabled:opacity-25"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          movePage(i, i + 1);
-                        }}
-                      >
-                        <ChevronDown className="h-3 w-3" />
-                      </button>
-                      <button
-                        type="button"
-                        title="Eliminar página"
-                        className="rounded-md p-0.5 text-zinc-500 hover:bg-rose-500/25 hover:text-rose-200"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deletePage(i);
-                        }}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-
-            <button
-              type="button"
-              onClick={() => setAddPageOpen(true)}
-              className="flex items-center justify-center gap-1.5 rounded-xl border border-dashed border-white/18 bg-white/[0.02] py-2.5 text-[11px] font-semibold text-zinc-500 transition hover:border-violet-400/35 hover:bg-violet-500/5 hover:text-zinc-300"
-            >
-              <Plus className="h-4 w-4" strokeWidth={2} />
-              Añadir página
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Pages panel toggle (when collapsed) */}
-      {!pagesPanelOpen && (
-        <button
-          type="button"
-          onClick={() => setPagesPanelOpen(true)}
-          className="pointer-events-auto fixed right-3 top-1/2 z-[10001] -translate-y-1/2 flex flex-col items-center gap-1 rounded-xl border border-white/15 bg-[#0e1015]/90 px-2 py-3 text-zinc-500 backdrop-blur-md transition hover:border-violet-400/30 hover:text-zinc-200"
-          title="Abrir panel de páginas"
-        >
-          <Layers size={16} />
-          <span className="text-[8px] font-bold uppercase tracking-wider">{pages.length}p</span>
-        </button>
-      )}
-
-      {/* Page indicator bar at bottom */}
+      {/* Barra inferior: saltar de página y añadir (misma interacción que antes) */}
       <div className="pointer-events-auto fixed bottom-0 left-1/2 z-[10001] -translate-x-1/2 flex items-center gap-1 rounded-t-xl border border-b-0 border-white/[0.08] bg-[#0e1015]/90 px-3 py-1.5 backdrop-blur-md">
         {pages.map((p, i) => (
           <button

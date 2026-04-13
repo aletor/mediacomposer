@@ -29,6 +29,12 @@ type Props = {
   /** Listado para exportación por lote (mismo documento). */
   artboardList?: { id: string; name: string }[];
   onExport: (opts: ProfessionalExportOptions) => void | Promise<void>;
+  /** Designer: export full document as one multipage vector PDF (separate from single-frame export). */
+  designerMultipageVectorPdf?: {
+    pageCount: number;
+    busy: boolean;
+    onExport: () => void | Promise<void>;
+  } | null;
 };
 
 export function FreehandExportModal({
@@ -41,6 +47,7 @@ export function FreehandExportModal({
   exportScope = "selection",
   artboardList = [],
   onExport,
+  designerMultipageVectorPdf = null,
 }: Props) {
   const [format, setFormat] = useState<ExportFormat>("png");
   const [scalePreset, setScalePreset] = useState<ExportScalePreset>(1);
@@ -206,6 +213,25 @@ export function FreehandExportModal({
               <p className="text-[10px] text-amber-500/90">JPG always uses a solid background; transparent becomes white.</p>
             )}
           </div>
+
+          {designerMultipageVectorPdf != null && designerMultipageVectorPdf.pageCount > 0 && (
+            <div className="space-y-2 rounded-lg border border-violet-500/20 bg-violet-950/20 p-3">
+              <label className="text-[10px] font-medium uppercase tracking-wider text-violet-300/90">Documento (Designer)</label>
+              <p className="text-[10px] leading-snug text-zinc-500">
+                PDF vectorial multipágina: una hoja por página del documento (texto como trazados, mismas primitivas que el SVG).
+              </p>
+              <button
+                type="button"
+                disabled={designerMultipageVectorPdf.busy}
+                onClick={() => void designerMultipageVectorPdf.onExport()}
+                className="w-full rounded-lg border border-violet-400/30 bg-violet-600/25 px-3 py-2 text-[11px] font-semibold text-violet-100 transition-colors duration-150 hover:bg-violet-500/35 disabled:pointer-events-none disabled:opacity-45"
+              >
+                {designerMultipageVectorPdf.busy
+                  ? "Generando PDF…"
+                  : `Descargar PDF (${designerMultipageVectorPdf.pageCount} páginas)`}
+              </button>
+            </div>
+          )}
 
           {exportScope === "full" && artboardList.length > 1 && (
             <div className="space-y-2">

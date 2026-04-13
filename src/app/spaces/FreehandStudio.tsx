@@ -420,6 +420,14 @@ interface FreehandStudioProps {
   };
   /** Designer: shared clipboard across page switches (same ref for all FreehandStudio mounts). */
   designerClipboardRef?: React.MutableRefObject<FreehandObject[] | null>;
+  /** Designer: narrow page rail (~60px) rendered to the right of the properties panel. */
+  designerPagesRail?: React.ReactNode;
+  /** Designer: multipage vector PDF export (shown in Export modal). */
+  designerMultipageVectorPdfExport?: {
+    pageCount: number;
+    busy: boolean;
+    onExport: () => void | Promise<void>;
+  } | null;
 }
 
 export interface DesignerStudioApi {
@@ -503,6 +511,53 @@ function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min
 function escapeHtmlStr(s: string): string { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>"); }
 
 function dist(a: Point, b: Point) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+/** Geometría del bitmap dentro de un marco de imagen (coordenadas mundo). */
+function getImageFrameContentGeom(o: FreehandObject): {
+  fx: number; fy: number; fw: number; fh: number;
+  L: number; T: number; R: number; B: number;
+  iw: number; ih: number;
+  ow: number; oh: number;
+  ifc: NonNullable<FreehandObjectBase["imageFrameContent"]>;
+} | null {
+  if (o.type !== "rect" || !o.isImageFrame) return null;
+  const ifc = o.imageFrameContent;
+  if (!ifc?.src) return null;
+  const fx = o.x, fy = o.y, fw = o.width, fh = o.height;
+  const iw = ifc.originalWidth * ifc.scaleX;
+  const ih = ifc.originalHeight * ifc.scaleY;
+  const L = fx + ifc.offsetX, T = fy + ifc.offsetY, R = L + iw, B = T + ih;
+  return { fx, fy, fw, fh, L, T, R, B, iw, ih, ow: ifc.originalWidth, oh: ifc.originalHeight, ifc };
+}
+
+function hitTestImageContentEdit(
+  pos: Point,
+  o: FreehandObject,
+  zoom: number,
+): "nw" | "ne" | "sw" | "se" | "pan" | null {
+  const g = getImageFrameContentGeom(o);
+  if (!g) return null;
+  let lp: Point = pos;
+  if (o.rotation || o.flipX || o.flipY) {
+    const inv = inverseObjMatrix(o);
+    if (inv) {
+      const t = inv.transformPoint(new DOMPoint(pos.x, pos.y));
+      lp = { x: t.x, y: t.y };
+    }
+  }
+  const hs = 10 / zoom;
+  const corners: { id: "nw" | "ne" | "sw" | "se"; x: number; y: number }[] = [
+    { id: "nw", x: g.L, y: g.T },
+    { id: "ne", x: g.R, y: g.T },
+    { id: "sw", x: g.L, y: g.B },
+    { id: "se", x: g.R, y: g.B },
+  ];
+  for (const c of corners) {
+    if (dist(lp, { x: c.x, y: c.y }) <= hs) return c.id;
+  }
+  if (lp.x >= g.L && lp.x <= g.R && lp.y >= g.T && lp.y <= g.B) return "pan";
+  return null;
+}
 
 /** Normalized 0–1 in object box → world (respects rotation). */
 function localBoxToWorld(o: FreehandObject, lx: number, ly: number): Point {
@@ -688,6 +743,23 @@ function inverseObjMatrix(o: FreehandObject): DOMMatrix | null {
   if (fx !== 1 || fy !== 1) m.scaleSelf(fx, fy);
   m.translateSelf(-cx, -cy);
   return m.inverse();
+}
+
+/** Mundo → coordenadas locales del objeto (antes de rotación/espejo del `<g>`). */
+function worldPointToObjLocal(world: Point, o: FreehandObject): Point {
+  const inv = inverseObjMatrix(o);
+  if (!inv) return world;
+  const t = inv.transformPoint(new DOMPoint(world.x, world.y));
+  return { x: t.x, y: t.y };
+}
+
+/** Local del objeto → mundo (para dibujar overlays alineados con el marco). */
+function objLocalToWorldPoint(local: Point, o: FreehandObject): Point {
+  const inv = inverseObjMatrix(o);
+  if (!inv) return local;
+  const fwd = inv.inverse();
+  const t = fwd.transformPoint(new DOMPoint(local.x, local.y));
+  return { x: t.x, y: t.y };
 }
 
 function pointInRotatedRect(px: number, py: number, obj: FreehandObject): boolean {
@@ -2633,6 +2705,8 @@ export default function FreehandStudio({
   onDesignerTypographyChange,
   designerHistoryBridge,
   designerClipboardRef,
+  designerPagesRail,
+  designerMultipageVectorPdfExport,
 }: FreehandStudioProps) {
 
   // ── Core state ─────────────────────────────────────────────────────
@@ -2659,7 +2733,7 @@ export default function FreehandStudio({
 
   // Drag state
   const [dragState, setDragState] = useState<{
-    type: "move" | "resize" | "pan" | "create" | "createText" | "createTextFrame" | "createImageFrame" | "directSelect" | "marquee" | "penHandle" | "rotate" | "gradient" | "artboardMove" | "artboardResize" | "guideMove";
+    type: "move" | "resize" | "pan" | "create" | "createText" | "createTextFrame" | "createImageFrame" | "directSelect" | "marquee" | "penHandle" | "rotate" | "gradient" | "artboardMove" | "artboardResize" | "guideMove" | "imageContentPan" | "imageContentResize";
     startX: number;
     startY: number;
     startCanvas?: Point;
@@ -2702,7 +2776,20 @@ export default function FreehandStudio({
     guideId?: string;
     guideOrientation?: "vertical" | "horizontal";
     guideStartPos?: number;
+    /** Designer: arrastrar bitmap dentro del marco. */
+    imageFrameId?: string;
+    startOffsetX?: number;
+    startOffsetY?: number;
+    imageCorner?: "nw" | "ne" | "sw" | "se";
   } | null>(null);
+
+  /** Designer: edición en lienzo del contenido (límites visibles, pan/escala). */
+  const [imageFrameContentEditId, setImageFrameContentEditId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!imageFrameContentEditId) return;
+    if (!selectedIds.has(imageFrameContentEditId)) setImageFrameContentEditId(null);
+  }, [selectedIds, imageFrameContentEditId]);
 
   /** Paso de duplicado (⌘D): por defecto 20×20 px mundo; tras Alt+arrastre copia = último desplazamiento. */
   const duplicateStepRef = useRef({ dx: 20, dy: 20 });
@@ -2793,6 +2880,8 @@ export default function FreehandStudio({
 
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  /** Designer: sección «Marco de imagen» en el panel derecho (scroll en doble clic). */
+  const designerImageFramePropsRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const svgInputRef = useRef<HTMLInputElement>(null);
   const customFontInputRef = useRef<HTMLInputElement>(null);
@@ -3139,6 +3228,19 @@ export default function FreehandStudio({
   }, [selectedIds, quickEditMode]);
   const groupBounds = useMemo(() => getGroupBounds(selectedObjects), [selectedObjects]);
   const selectionFrame = useMemo(() => computeOrientedSelectionFrame(selectedObjects), [selectedObjects]);
+
+  /** Ocultar caja blanca de selección cuando editamos solo el contenido del marco de imagen (overlay ámbar). */
+  const suppressSelectionForImageContentEdit = useMemo(
+    () =>
+      designerMode &&
+      imageFrameContentEditId != null &&
+      (activeTool === "select" || activeTool === "directSelect") &&
+      selectedObjects.length === 1 &&
+      selectedObjects[0]?.id === imageFrameContentEditId &&
+      Boolean(selectedObjects[0]?.isImageFrame) &&
+      Boolean((selectedObjects[0] as RectObject | undefined)?.imageFrameContent?.src),
+    [designerMode, imageFrameContentEditId, activeTool, selectedObjects],
+  );
 
   /** Vertex modes of currently selected anchors (direct select). */
   const selectedAnchorVertexHint = useMemo(() => {
@@ -4713,6 +4815,10 @@ export default function FreehandStudio({
 
       if (e.key === "Escape") {
         e.preventDefault();
+        if (designerMode && imageFrameContentEditId) {
+          setImageFrameContentEditId(null);
+          return;
+        }
         setQuickEditMode(null);
         if (isPenDrawing && penPoints.length > 0) finishPenPath(false);
         else if (isolationStackRef.current.length > 0) exitIsolation();
@@ -4760,7 +4866,8 @@ export default function FreehandStudio({
   }, [objects, selectedIds, selectedPoints, isPenDrawing, penPoints, activeTool, textEditingId, viewport.zoom, dragState,
       undo, redo, pushHistory, deleteSelected, duplicateSelected, groupSelected,
       ungroupSelected, bringForward, sendBackward, finishPenPath, deleteSelectedPoints, exitIsolation,
-      copySelectedObjects, cutSelectedObjects, pasteClipboardObjects, pasteInside, quickExportSelectionPng, convertTextToOutlines]);
+      copySelectedObjects, cutSelectedObjects, pasteClipboardObjects, pasteInside, quickExportSelectionPng, convertTextToOutlines,
+      designerMode, imageFrameContentEditId]);
 
   // ── Mouse handlers ────────────────────────────────────────────────
 
@@ -5151,8 +5258,51 @@ export default function FreehandStudio({
       }
     }
 
+    // Designer: pan / escala del bitmap dentro del marco (modo edición en lienzo)
+    if (
+      designerMode &&
+      imageFrameContentEditId &&
+      activeTool === "select" &&
+      e.button === 0 &&
+      !extendSel
+    ) {
+      const edObj = objects.find((o) => o.id === imageFrameContentEditId);
+      if (edObj?.isImageFrame && edObj.imageFrameContent?.src && selectedIds.has(edObj.id) && selectedIds.size === 1) {
+        const hitIc = hitTestImageContentEdit(pos, edObj, viewport.zoom);
+        if (hitIc === "pan") {
+          const g = getImageFrameContentGeom(edObj);
+          if (g) {
+            setDragState({
+              type: "imageContentPan",
+              startX: e.clientX,
+              startY: e.clientY,
+              imageFrameId: edObj.id,
+              startOffsetX: g.ifc.offsetX,
+              startOffsetY: g.ifc.offsetY,
+            });
+            return;
+          }
+        } else if (hitIc === "nw" || hitIc === "ne" || hitIc === "sw" || hitIc === "se") {
+          setDragState({
+            type: "imageContentResize",
+            startX: e.clientX,
+            startY: e.clientY,
+            imageFrameId: edObj.id,
+            imageCorner: hitIc,
+          });
+          return;
+        }
+      }
+    }
+
+    const hideFrameHandlesForImageContentEdit =
+      designerMode &&
+      imageFrameContentEditId != null &&
+      selectedIds.size === 1 &&
+      selectedIds.has(imageFrameContentEditId);
+
     // Resize/rotate handles (omitir si se amplía selección: el clic debe llegar al objeto bajo el marco)
-    if (selectedObjects.length > 0 && selectionFrame && !extendSel) {
+    if (selectedObjects.length > 0 && selectionFrame && !extendSel && !hideFrameHandlesForImageContentEdit) {
       const f = selectionFrame;
       const handleSize = 8 / viewport.zoom;
       const rotOffset = 14 / viewport.zoom;
@@ -5289,11 +5439,12 @@ export default function FreehandStudio({
     if (!extendSel) {
       setSelectedIds(new Set());
       setSelectedArtboardId(null);
+      if (designerMode) setImageFrameContentEditId(null);
     }
     setDragState({ type: "marquee", startX: e.clientX, startY: e.clientY, marqueeOrigin: pos, currentCanvas: pos, shiftKey: extendSel });
   }, [activeTool, viewport, spaceHeld, objects, artboards, selectedIds, selectedArtboardId, selectedObjects, groupBounds, selectionFrame,
       screenToCanvas, isPenDrawing, penPoints, finishPenPath, resolveSelection, addPointOnSegment, pushHistory,
-      layoutGuides, showLayoutGuides]);
+      layoutGuides, showLayoutGuides, designerMode, imageFrameContentEditId]);
 
   const handleMouseMove = useCallback((e: ReactMouseEvent) => {
     if (!dragState) {
@@ -5333,6 +5484,117 @@ export default function FreehandStudio({
 
     if (dragState.type === "pan") {
       setViewport((v) => ({ ...v, x: (dragState.svpX ?? 0) + dx, y: (dragState.svpY ?? 0) + dy }));
+      return;
+    }
+
+    if (
+      dragState.type === "imageContentPan" &&
+      dragState.imageFrameId != null &&
+      dragState.startOffsetX != null &&
+      dragState.startOffsetY != null
+    ) {
+      const scale = 1 / viewport.zoom;
+      const ddx = (e.clientX - dragState.startX) * scale;
+      const ddy = (e.clientY - dragState.startY) * scale;
+      const fid = dragState.imageFrameId;
+      const ox0 = dragState.startOffsetX;
+      const oy0 = dragState.startOffsetY;
+      setObjects((prev) =>
+        prev.map((o) => {
+          if (o.id !== fid || !o.isImageFrame || !o.imageFrameContent?.src) return o;
+          const c = o.imageFrameContent;
+          return {
+            ...o,
+            imageFrameAutoFit: false,
+            imageFrameContent: {
+              ...c,
+              offsetX: ox0 + ddx,
+              offsetY: oy0 + ddy,
+            },
+          };
+        }),
+      );
+      return;
+    }
+
+    if (dragState.type === "imageContentResize" && dragState.imageFrameId && dragState.imageCorner) {
+      const pos = screenToCanvas(e.clientX, e.clientY);
+      const mx = pos.x, my = pos.y;
+      const fid = dragState.imageFrameId;
+      const corner = dragState.imageCorner;
+      const lockAspect = isShiftHeld(e);
+      setObjects((prev) =>
+        prev.map((obj) => {
+          if (obj.id !== fid || !obj.isImageFrame || !obj.imageFrameContent?.src) return obj;
+          const c = obj.imageFrameContent;
+          const fx = obj.x, fy = obj.y;
+          const L = fx + c.offsetX, T = fy + c.offsetY;
+          const R = L + c.originalWidth * c.scaleX, B = T + c.originalHeight * c.scaleY;
+          const ow = c.originalWidth, oh = c.originalHeight;
+          let nextScaleX = c.scaleX, nextScaleY = c.scaleY, nextOx = c.offsetX, nextOy = c.offsetY;
+          if (corner === "se") {
+            let sx = Math.max(0.01, (mx - L) / ow);
+            let sy = Math.max(0.01, (my - T) / oh);
+            if (lockAspect) {
+              const s = Math.min(sx, sy);
+              sx = sy = s;
+            }
+            nextScaleX = sx;
+            nextScaleY = sy;
+          } else if (corner === "nw") {
+            let sx = Math.max(0.01, (R - mx) / ow);
+            let sy = Math.max(0.01, (B - my) / oh);
+            if (lockAspect) {
+              const s = Math.min(sx, sy);
+              sx = sy = s;
+              const Ln = R - ow * sx;
+              const Tn = B - oh * sy;
+              nextOx = Ln - fx;
+              nextOy = Tn - fy;
+            } else {
+              nextOx = mx - fx;
+              nextOy = my - fy;
+            }
+            nextScaleX = sx;
+            nextScaleY = sy;
+          } else if (corner === "ne") {
+            let sx = Math.max(0.01, (mx - L) / ow);
+            let sy = Math.max(0.01, (B - my) / oh);
+            if (lockAspect) {
+              const s = Math.min(sx, sy);
+              sx = sy = s;
+              nextOy = B - oh * sy - fy;
+            } else {
+              nextOy = my - fy;
+            }
+            nextScaleX = sx;
+            nextScaleY = sy;
+          } else if (corner === "sw") {
+            let sx = Math.max(0.01, (R - mx) / ow);
+            let sy = Math.max(0.01, (my - T) / oh);
+            if (lockAspect) {
+              const s = Math.min(sx, sy);
+              sx = sy = s;
+              nextOx = R - ow * sx - fx;
+            } else {
+              nextOx = mx - fx;
+            }
+            nextScaleX = sx;
+            nextScaleY = sy;
+          }
+          return {
+            ...obj,
+            imageFrameAutoFit: false,
+            imageFrameContent: {
+              ...c,
+              scaleX: nextScaleX,
+              scaleY: nextScaleY,
+              offsetX: nextOx,
+              offsetY: nextOy,
+            },
+          };
+        }),
+      );
       return;
     }
 
@@ -6036,7 +6298,15 @@ export default function FreehandStudio({
       }
     }
 
-    if (dragState.type === "move" || dragState.type === "resize" || dragState.type === "directSelect" || dragState.type === "rotate" || dragState.type === "gradient") {
+    if (
+      dragState.type === "move" ||
+      dragState.type === "resize" ||
+      dragState.type === "directSelect" ||
+      dragState.type === "rotate" ||
+      dragState.type === "gradient" ||
+      dragState.type === "imageContentPan" ||
+      dragState.type === "imageContentResize"
+    ) {
       pushHistory(objects, selectedIds);
     }
 
@@ -6355,6 +6625,13 @@ export default function FreehandStudio({
 
   const cursor = useMemo(() => {
     if (spaceHeld || dragState?.type === "pan") return "grab";
+    if (dragState?.type === "imageContentPan") return "move";
+    if (dragState?.type === "imageContentResize" && dragState.imageCorner) {
+      const m: Record<string, string> = {
+        nw: "nwse-resize", ne: "nesw-resize", sw: "nesw-resize", se: "nwse-resize",
+      };
+      return m[dragState.imageCorner] ?? "default";
+    }
     if (dragState?.type === "resize" && dragState.handle) {
       const h = dragState.handle;
       const map: Record<string, string> = {
@@ -6689,12 +6966,18 @@ export default function FreehandStudio({
         onDoubleClick={(e) => {
           const pos = screenToCanvas(e.clientX, e.clientY);
           const threshold = 6 / viewport.zoom;
-          if (activeTool === "select" || activeTool === "text") {
+          if (activeTool === "select" || activeTool === "text" || activeTool === "imageFrame") {
             for (let i = objects.length - 1; i >= 0; i--) {
               const obj = objects[i];
               if (obj.isImageFrame && hitTestObject(pos, obj, threshold, objects)) {
                 setSelectedIds(new Set([obj.id]));
-                onDesignerImageFramePlace?.(obj.id);
+                setPrimarySelectedId(obj.id);
+                const hasImg = !!(obj as RectObject).imageFrameContent?.src;
+                if (!hasImg) {
+                  onDesignerImageFramePlace?.(obj.id);
+                } else if (designerMode) {
+                  setImageFrameContentEditId(obj.id);
+                }
                 return;
               }
               if (obj.type === "text" && hitTestObject(pos, obj, threshold, objects)) {
@@ -7022,7 +7305,7 @@ export default function FreehandStudio({
               return null;
             })()}
 
-            {selectedObjects.length > 0 && (activeTool === "select" || activeTool === "directSelect") && selectionFrame && (
+            {selectedObjects.length > 0 && (activeTool === "select" || activeTool === "directSelect") && selectionFrame && !suppressSelectionForImageContentEdit && (
               <g data-ui="selection-box" transform={`translate(${selectionFrame.cx},${selectionFrame.cy}) rotate(${selectionFrame.angleDeg})`} filter="url(#fh-selection-shadow)">
                 <rect x={-selectionFrame.w / 2 - 1 / viewport.zoom} y={-selectionFrame.h / 2 - 1 / viewport.zoom}
                   width={selectionFrame.w + 2 / viewport.zoom} height={selectionFrame.h + 2 / viewport.zoom}
@@ -7057,6 +7340,47 @@ export default function FreehandStudio({
                 })()}
               </g>
             )}
+
+            {/* Designer: límites marco (blanco) + bitmap completo (ámbar) + esquinas al editar contenido */}
+            {designerMode && suppressSelectionForImageContentEdit && imageFrameContentEditId && (() => {
+              const o = objects.find((x) => x.id === imageFrameContentEditId) as RectObject | undefined;
+              if (!o?.isImageFrame) return null;
+              const ifc = o.imageFrameContent;
+              if (!ifc?.src) return null;
+              const tf = buildObjTransform(o);
+              const z = viewport.zoom;
+              const iw = ifc.originalWidth * ifc.scaleX;
+              const ih = ifc.originalHeight * ifc.scaleY;
+              const hz = 6 / z;
+              return (
+                <g key="image-content-edit-overlay" data-ui="image-content-edit" pointerEvents="none">
+                  <g transform={tf}>
+                    <rect
+                      x={o.x} y={o.y} width={o.width} height={o.height} rx={o.rx ?? 0}
+                      fill="none" stroke="rgba(255,255,255,0.9)" strokeWidth={1.25 / z}
+                    />
+                    <rect
+                      x={o.x + ifc.offsetX} y={o.y + ifc.offsetY} width={iw} height={ih}
+                      fill="rgba(251,191,36,0.07)" stroke="#fbbf24" strokeWidth={1.5 / z}
+                      strokeDasharray={`${5 / z} ${4 / z}`}
+                    />
+                    {(["nw", "ne", "sw", "se"] as const).map((corner) => {
+                      let cx = o.x + ifc.offsetX;
+                      let cy = o.y + ifc.offsetY;
+                      if (corner.includes("e")) cx = o.x + ifc.offsetX + iw;
+                      if (corner.includes("s")) cy = o.y + ifc.offsetY + ih;
+                      return (
+                        <rect
+                          key={corner}
+                          x={cx - hz / 2} y={cy - hz / 2} width={hz} height={hz}
+                          fill="#1a1d24" stroke="#fbbf24" strokeWidth={1 / z} rx={1 / z}
+                        />
+                      );
+                    })}
+                  </g>
+                </g>
+              );
+            })()}
 
             {/* ── Designer: text frame ports overlay (above selection box) ── */}
             {designerMode && (() => {
@@ -7353,7 +7677,7 @@ export default function FreehandStudio({
       </div>
 
       {/* ── RIGHT PANEL ──────────────────────────────────────────── */}
-      <div className="flex w-[300px] shrink-0 flex-col min-h-0 overflow-hidden border-l border-white/[0.08] bg-[#12151a]">
+      <div className="flex w-[200px] shrink-0 flex-col min-h-0 overflow-hidden border-l border-white/[0.08] bg-[#12151a]">
         {/* Header */}
         <div className="flex items-center justify-between px-3 py-2 border-b border-white/10 shrink-0">
           <span className="text-[11px] font-bold uppercase tracking-widest text-zinc-400">Freehand Studio</span>
@@ -7630,8 +7954,27 @@ export default function FreehandStudio({
                     updateSelectedProp("imageFrameContentAlignment", al);
                   };
 
+                  const frameId = firstSelected.id;
+                  const applyManualScalePct = (axis: "x" | "y", pct: number, silent: boolean) => {
+                    setObjects((prev) => {
+                      const sel = selectedIdsRef.current;
+                      const next = prev.map((o) => {
+                        if (!sel.has(o.id) || o.id !== frameId || !o.isImageFrame) return o;
+                        const c = o.imageFrameContent;
+                        if (!c?.src) return o;
+                        const v = Math.max(0.01, pct / 100);
+                        if (axis === "x") {
+                          return { ...o, imageFrameAutoFit: false, imageFrameContent: { ...c, scaleX: v } };
+                        }
+                        return { ...o, imageFrameAutoFit: false, imageFrameContent: { ...c, scaleY: v } };
+                      });
+                      if (!silent) pushHistory(next, sel);
+                      return next;
+                    });
+                  };
+
                   return (
-                    <div className="border-b border-white/[0.08] px-[14px] py-3 space-y-2.5">
+                    <div ref={designerImageFramePropsRef} className="border-b border-white/[0.08] px-[14px] py-3 space-y-2.5">
                       <p className="text-[10px] font-bold uppercase tracking-widest text-amber-200/80">Marco de imagen</p>
 
                       <button
@@ -7693,9 +8036,40 @@ export default function FreehandStudio({
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-2 gap-1.5 text-[10px] text-zinc-400">
-                            <span>Escala X: {((ifc?.scaleX ?? 1) * 100).toFixed(0)}%</span>
-                            <span>Escala Y: {((ifc?.scaleY ?? 1) * 100).toFixed(0)}%</span>
+                          <div className="space-y-2 border-t border-white/[0.06] pt-2.5">
+                            <p className="text-[9px] leading-snug text-zinc-500">
+                              Escala del contenido (el marco no cambia de tamaño). Al ajustar, Auto-Fit se desactiva.
+                            </p>
+                            <div className="grid grid-cols-1 gap-2">
+                              <div className="space-y-0.5">
+                                <label className="text-[10px] text-zinc-500 uppercase tracking-wider">Escala X %</label>
+                                <ScrubNumberInput
+                                  value={Math.round((ifc?.scaleX ?? 1) * 100)}
+                                  onKeyboardCommit={(n) => applyManualScalePct("x", n, false)}
+                                  onScrubLive={(n) => applyManualScalePct("x", n, true)}
+                                  onScrubEnd={commitHistoryAfterScrub}
+                                  step={1}
+                                  min={1}
+                                  max={2000}
+                                  title="Escala horizontal del bitmap · Mayús = ×10"
+                                  className="w-full cursor-ew-resize rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1 font-mono text-[11px] text-zinc-100"
+                                />
+                              </div>
+                              <div className="space-y-0.5">
+                                <label className="text-[10px] text-zinc-500 uppercase tracking-wider">Escala Y %</label>
+                                <ScrubNumberInput
+                                  value={Math.round((ifc?.scaleY ?? 1) * 100)}
+                                  onKeyboardCommit={(n) => applyManualScalePct("y", n, false)}
+                                  onScrubLive={(n) => applyManualScalePct("y", n, true)}
+                                  onScrubEnd={commitHistoryAfterScrub}
+                                  step={1}
+                                  min={1}
+                                  max={2000}
+                                  title="Escala vertical del bitmap · Mayús = ×10"
+                                  className="w-full cursor-ew-resize rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1 font-mono text-[11px] text-zinc-100"
+                                />
+                              </div>
+                            </div>
                           </div>
                         </>
                       )}
@@ -9190,6 +9564,12 @@ export default function FreehandStudio({
           <span>{objects.length} objects · {selectedIds.size} selected{isolationDepth > 0 ? ` · Isolation (depth ${isolationDepth})` : ""}</span>
         </div>
       </div>
+
+      {designerPagesRail != null ? (
+        <div className="flex w-[60px] shrink-0 flex-col overflow-hidden border-l border-white/[0.08] bg-[#12151a] text-zinc-300">
+          {designerPagesRail}
+        </div>
+      ) : null}
       </div>
 
       {/* ── Context menu ─────────────────────────────────────────── */}
@@ -9224,6 +9604,7 @@ export default function FreehandStudio({
           exportScope={exportModalScope}
           artboardList={artboards.map((a) => ({ id: a.id, name: a.name }))}
           onExport={runProfessionalExport}
+          designerMultipageVectorPdf={designerMultipageVectorPdfExport ?? null}
         />
       )}
 
