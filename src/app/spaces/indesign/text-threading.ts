@@ -4,6 +4,7 @@ import {
   DEFAULT_TYPOGRAPHY,
   plainTextToStoryNodes,
   serializeStoryContent,
+  sliceStoryContent,
   uid,
 } from "./text-model";
 
@@ -79,22 +80,20 @@ export function unlinkFrameAt(
   if (idx <= 0) return { stories, textFrames };
 
   const stream = serializeStoryContent(story.content);
-  const headText = stream.slice(0, contentSplitIndex);
-  const tailText = stream.slice(contentSplitIndex);
 
   const headFrameIds = ord.slice(0, idx);
   const tailFrameIds = ord.slice(idx);
 
   const headStory: Story = {
     ...story,
-    content: plainTextToStoryNodes(headText),
+    content: sliceStoryContent(story.content, 0, contentSplitIndex),
     frames: headFrameIds,
   };
 
   const newSid = uid("story");
   const tailStory: Story = {
     id: newSid,
-    content: plainTextToStoryNodes(tailText),
+    content: sliceStoryContent(story.content, contentSplitIndex, stream.length),
     frames: tailFrameIds,
     typography: { ...story.typography },
   };

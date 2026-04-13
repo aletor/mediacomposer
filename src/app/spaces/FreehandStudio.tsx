@@ -273,6 +273,7 @@ interface FreehandObjectBase {
   imageFrameContentAlignment?: "top-left" | "top-center" | "top-right" | "middle-left" | "center" | "middle-right" | "bottom-left" | "bottom-center" | "bottom-right";
   _designerOverflow?: boolean;
   _designerThreadInfo?: { index: number; total: number };
+  _designerRichSpans?: Array<{ text: string; style?: { fontWeight?: string; fontStyle?: string; textUnderline?: boolean; textStrikethrough?: boolean; fontSize?: number; color?: string; fontFamily?: string; letterSpacing?: number } }>;
 }
 
 interface RectObject extends FreehandObjectBase { type: "rect"; rx: number }
@@ -392,13 +393,17 @@ interface FreehandStudioProps {
   /** Imperative API ref for external object mutations (DesignerStudio ↔ FreehandStudio). */
   studioApiRef?: React.MutableRefObject<DesignerStudioApi | null>;
   /** Called when text editing ends on a text frame (blur). */
-  onDesignerTextFrameEdit?: (frameId: string, storyId: string, newText: string) => void;
+  onDesignerTextFrameEdit?: (frameId: string, storyId: string, newText: string, richHtml?: string) => void;
   /** Called when user requests a threaded continuation frame from an overflowing text frame. */
   onDesignerAppendThreadedFrame?: (sourceFrameId: string) => void;
   /** Serialized story content by storyId, for panel display. */
   designerStoryMap?: Map<string, string>;
+  /** Rich HTML story content by storyId, for panel rich editor. */
+  designerStoryHtmlMap?: Map<string, string>;
   /** Called when the full story text is changed from the panel textarea. */
   onDesignerStoryTextChange?: (storyId: string, newText: string) => void;
+  /** Called when rich HTML story content changes from the panel editor. */
+  onDesignerStoryRichChange?: (storyId: string, richHtml: string) => void;
   /** Called when user unlinks a text frame from its thread chain. */
   onDesignerUnlinkTextFrame?: (frameId: string) => void;
   /** Called when typography properties change on a text frame (to sync back to Story model). */
@@ -479,6 +484,7 @@ function createLayoutGuide(orientation: "vertical" | "horizontal", position: num
 }
 
 function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
+function escapeHtmlStr(s: string): string { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>"); }
 
 function dist(a: Point, b: Point) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
@@ -1705,7 +1711,28 @@ function renderObj(obj: FreehandObject, allObjects: FreehandObject[]): React.Rea
         opacity: t.opacity,
         userSelect: "none",
       };
-      const content = t.text || "\u00a0";
+      const richSpans = t._designerRichSpans;
+      const hasRich = richSpans && richSpans.length > 0 && richSpans.some(s => s.style && Object.keys(s.style).length > 0);
+      const renderRichContent = (): React.ReactNode => {
+        if (!richSpans || richSpans.length === 0) return t.text || "\u00a0";
+        return richSpans.map((span, si) => {
+          if (!span.style || Object.keys(span.style).length === 0) {
+            return <React.Fragment key={si}>{span.text}</React.Fragment>;
+          }
+          const ss: React.CSSProperties = {};
+          if (span.style.fontWeight) ss.fontWeight = span.style.fontWeight;
+          if (span.style.fontStyle) ss.fontStyle = span.style.fontStyle;
+          if (span.style.textUnderline || span.style.textStrikethrough) {
+            ss.textDecoration = [span.style.textUnderline && "underline", span.style.textStrikethrough && "line-through"].filter(Boolean).join(" ");
+          }
+          if (span.style.fontSize != null) ss.fontSize = span.style.fontSize;
+          if (span.style.color) ss.color = span.style.color;
+          if (span.style.fontFamily) ss.fontFamily = span.style.fontFamily;
+          if (span.style.letterSpacing != null) ss.letterSpacing = span.style.letterSpacing;
+          return <span key={si} style={ss}>{span.text}</span>;
+        });
+      };
+      const content = hasRich ? renderRichContent() : (t.text || "\u00a0");
       const solidFillHex =
         fill.type === "solid" && fill.color !== "none" ? fill.color : undefined;
       let inner: React.ReactNode;
@@ -2581,7 +2608,9 @@ export default function FreehandStudio({
   onDesignerTextFrameEdit,
   onDesignerAppendThreadedFrame,
   designerStoryMap,
+  designerStoryHtmlMap,
   onDesignerStoryTextChange,
+  onDesignerStoryRichChange,
   onDesignerUnlinkTextFrame,
   onDesignerTypographyChange,
 }: FreehandStudioProps) {
@@ -7080,8 +7109,6 @@ export default function FreehandStudio({
           const rcy = to.y + to.height / 2;
           const rot = to.rotation ?? 0;
           const tl = rotatePointAround({ x: to.x, y: to.y }, { x: rcx, y: rcy }, rot);
-          // Coordinates relative to containerRef (position:absolute), same basis as SVG <g data-fh-world>:
-          // screen = containerRect + (viewport pan + world * zoom); do not add getBoundingClientRect here.
           const left = viewport.x + tl.x * viewport.zoom;
           const top = viewport.y + tl.y * viewport.zoom;
           const w = Math.max(foW * viewport.zoom, 120);
@@ -7093,34 +7120,36 @@ export default function FreehandStudio({
               : (fill.stops[0]?.color ?? "rgba(255,255,255,0.95)");
           const padSide = (to.textMode === "area" ? 4 : 0) + (to.paragraphIndent ?? 0);
           const z = viewport.zoom;
+          const editorStyle: React.CSSProperties = {
+            left,
+            top,
+            width: w,
+            minHeight: h,
+            fontFamily: to.fontFamily,
+            fontSize: Math.max(8, to.fontSize * z),
+            fontWeight: to.fontWeight,
+            lineHeight: to.lineHeight,
+            letterSpacing: to.letterSpacing !== undefined ? `${to.letterSpacing * z}px` : undefined,
+            textAlign: to.textAlign,
+            fontFeatureSettings: to.fontFeatureSettings ?? '"kern" 1, "liga" 1',
+            fontKerning: to.fontKerning === "none" ? "none" : undefined,
+            paddingTop: (to.textMode === "area" ? 4 : 0) * z,
+            paddingRight: (to.textMode === "area" ? 4 : 0) * z,
+            paddingBottom: (to.textMode === "area" ? 4 : 0) * z,
+            paddingLeft: padSide * z,
+            boxSizing: "border-box",
+            color: "transparent",
+            WebkitTextFillColor: "transparent",
+            caretColor,
+            transform: rot ? `rotate(${rot}deg)` : undefined,
+            transformOrigin: `${(to.width / 2) * z}px ${(to.height / 2) * z}px`,
+          };
+
           return (
             <textarea
               data-fh-text-editor
               className="absolute z-[10001] resize-none border-0 bg-transparent p-0 shadow-none outline-none ring-0 placeholder:text-transparent [&::selection]:bg-white/15 [&::selection]:text-transparent"
-              style={{
-                left,
-                top,
-                width: w,
-                minHeight: h,
-                fontFamily: to.fontFamily,
-                fontSize: Math.max(8, to.fontSize * z),
-                fontWeight: to.fontWeight,
-                lineHeight: to.lineHeight,
-                letterSpacing: to.letterSpacing !== undefined ? `${to.letterSpacing * z}px` : undefined,
-                textAlign: to.textAlign,
-                fontFeatureSettings: to.fontFeatureSettings ?? '"kern" 1, "liga" 1',
-                fontKerning: to.fontKerning === "none" ? "none" : undefined,
-                paddingTop: (to.textMode === "area" ? 4 : 0) * z,
-                paddingRight: (to.textMode === "area" ? 4 : 0) * z,
-                paddingBottom: (to.textMode === "area" ? 4 : 0) * z,
-                paddingLeft: padSide * z,
-                boxSizing: "border-box",
-                color: "transparent",
-                WebkitTextFillColor: "transparent",
-                caretColor,
-                transform: rot ? `rotate(${rot}deg)` : undefined,
-                transformOrigin: `${(to.width / 2) * z}px ${(to.height / 2) * z}px`,
-              }}
+              style={editorStyle}
               value={to.text}
               onChange={(e) => {
                 const v = e.target.value;
@@ -7562,6 +7591,18 @@ export default function FreehandStudio({
                   const canUnlink = ti && ti.index > 0;
                   const storyText = storyId ? designerStoryMap?.get(storyId) ?? "" : "";
 
+                  const storyHtml = storyId ? designerStoryHtmlMap?.get(storyId) ?? "" : "";
+                  const richEditorRef = React.createRef<HTMLDivElement>();
+                  const applyRichCmd = (cmd: string) => {
+                    const el = richEditorRef.current;
+                    if (!el) return;
+                    el.focus();
+                    document.execCommand(cmd, false);
+                    if (storyId && onDesignerStoryRichChange) {
+                      onDesignerStoryRichChange(storyId, el.innerHTML);
+                    }
+                  };
+
                   return (
                     <div className="border-b border-white/[0.08] px-[14px] py-3 space-y-2.5">
                       <p className="text-[10px] font-bold uppercase tracking-widest text-sky-200/80">Marco de texto</p>
@@ -7586,14 +7627,34 @@ export default function FreehandStudio({
                       )}
 
                       <label className="block text-[10px] font-medium text-zinc-500">Contenido</label>
-                      <textarea
-                        className="mt-0.5 min-h-[80px] w-full resize-y rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2.5 py-2 text-xs leading-relaxed text-zinc-100 outline-none focus:ring-1 focus:ring-sky-500/40"
-                        value={storyText}
-                        onChange={(e) => {
-                          if (storyId && onDesignerStoryTextChange) {
-                            onDesignerStoryTextChange(storyId, e.target.value);
+                      {/* Rich text formatting toolbar */}
+                      <div className="flex items-center gap-0.5 rounded-t-[5px] border border-b-0 border-white/[0.08] bg-white/[0.04] px-1.5 py-1">
+                        <button type="button" title="Bold (Ctrl+B)" className="rounded px-1.5 py-0.5 text-[11px] font-bold text-zinc-400 hover:bg-white/10 hover:text-white" onMouseDown={(e) => { e.preventDefault(); applyRichCmd("bold"); }}><b>B</b></button>
+                        <button type="button" title="Italic (Ctrl+I)" className="rounded px-1.5 py-0.5 text-[11px] italic text-zinc-400 hover:bg-white/10 hover:text-white" onMouseDown={(e) => { e.preventDefault(); applyRichCmd("italic"); }}><i>I</i></button>
+                        <button type="button" title="Underline (Ctrl+U)" className="rounded px-1.5 py-0.5 text-[11px] underline text-zinc-400 hover:bg-white/10 hover:text-white" onMouseDown={(e) => { e.preventDefault(); applyRichCmd("underline"); }}><u>U</u></button>
+                        <button type="button" title="Strikethrough" className="rounded px-1.5 py-0.5 text-[11px] line-through text-zinc-400 hover:bg-white/10 hover:text-white" onMouseDown={(e) => { e.preventDefault(); applyRichCmd("strikeThrough"); }}><s>S</s></button>
+                        <div className="mx-1 h-4 w-px bg-white/10" />
+                        <button type="button" title="Remove formatting" className="rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-white/10 hover:text-white" onMouseDown={(e) => { e.preventDefault(); applyRichCmd("removeFormat"); }}>T̈</button>
+                      </div>
+                      {/* contentEditable rich text editor in panel */}
+                      <div
+                        key={`rich-${storyId}-${storyText.length}`}
+                        ref={(el) => {
+                          (richEditorRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
+                          if (el && !el.dataset.init) {
+                            el.dataset.init = "1";
+                            el.innerHTML = storyHtml || escapeHtmlStr(storyText) || "";
                           }
                         }}
+                        contentEditable
+                        suppressContentEditableWarning
+                        className="mt-0 min-h-[80px] w-full resize-y overflow-y-auto rounded-b-[5px] border border-white/[0.08] bg-white/[0.06] px-2.5 py-2 text-xs leading-relaxed text-zinc-100 outline-none focus:ring-1 focus:ring-sky-500/40 [&_b]:font-bold [&_i]:italic [&_u]:underline [&_s]:line-through"
+                        onInput={(e) => {
+                          if (storyId && onDesignerStoryRichChange) {
+                            onDesignerStoryRichChange(storyId, (e.target as HTMLElement).innerHTML);
+                          }
+                        }}
+                        onKeyDown={(e) => e.stopPropagation()}
                         spellCheck={false}
                       />
 

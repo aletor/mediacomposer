@@ -27,10 +27,14 @@ import {
 import { createArtboard, type Artboard } from "./freehand/artboard";
 import { computeFittingLayout } from "./indesign/image-frame-layout";
 import { layoutPageStories } from "./indesign/text-layout";
-import type { Story, TextFrame } from "./indesign/text-model";
+import type { Story, TextFrame, SpanStyle } from "./indesign/text-model";
 import {
   serializeStoryContent,
   plainTextToStoryNodes,
+  htmlToStoryNodes,
+  storyNodesToHtml,
+  sliceStoryContent,
+  flattenStoryContent,
   DEFAULT_TYPOGRAPHY,
 } from "./indesign/text-model";
 import {
@@ -122,6 +126,18 @@ export default function DesignerStudio({
       }),
     ];
   }, [activePage, activePageIndex]);
+
+  // ── Helper: build rich span array for a frame's content slice ──
+
+  function buildRichSpansForFrame(contentNodes: import("./indesign/text-model").StoryNode[]): Array<{ text: string; style?: SpanStyle }> {
+    const runs = flattenStoryContent(contentNodes);
+    const spans: Array<{ text: string; style?: SpanStyle }> = [];
+    for (const run of runs) {
+      const hasStyle = run.style && Object.keys(run.style).length > 0;
+      spans.push({ text: run.text, ...(hasStyle ? { style: run.style } : {}) });
+    }
+    return spans;
+  }
 
   // ── Sync text frame layouts (overflow detection + multi-frame text distribution) ──
 
@@ -220,13 +236,15 @@ export default function DesignerStudio({
         api.patchObject(fl.frameId, { _designerOverflow: fl.hasOverflow, _designerThreadInfo: threadInfo });
         continue;
       }
-      if (story && story.frames.length > 1) {
-        const fullText = serializeStoryContent(story.content);
-        const frameText = fullText.slice(fl.contentRange.start, fl.contentRange.end);
+      if (story) {
+        const frameContent = sliceStoryContent(story.content, fl.contentRange.start, fl.contentRange.end);
+        const frameText = serializeStoryContent(frameContent);
+        const richSpans = buildRichSpansForFrame(frameContent);
         api.patchObject(fl.frameId, {
           text: frameText,
           _designerOverflow: fl.hasOverflow,
           _designerThreadInfo: threadInfo,
+          _designerRichSpans: richSpans,
           ...typoPatch,
         });
       } else {
@@ -376,7 +394,7 @@ export default function DesignerStudio({
   // ── Text frame editing end ──
 
   const handleDesignerTextFrameEdit = useCallback(
-    (frameId: string, storyId: string, newText: string) => {
+    (frameId: string, storyId: string, newText: string, richHtml?: string) => {
       const idx = activeIdxRef.current;
       const p = pagesRef.current[idx];
       if (!p) return;
@@ -386,25 +404,32 @@ export default function DesignerStudio({
       const story = stories.find(s => s.id === storyId);
       if (!story) return;
 
+      // Parse rich HTML into StoryNodes if provided
+      const newNodes = richHtml ? htmlToStoryNodes(richHtml) : plainTextToStoryNodes(newText);
+
       let updatedStories: Story[];
 
       if (story.frames.length <= 1) {
-        updatedStories = patchStoryContentPlain(stories, storyId, newText);
+        updatedStories = stories.map(s =>
+          s.id === storyId ? { ...s, content: newNodes } : s,
+        );
       } else {
-        const fullText = serializeStoryContent(story.content);
         const layouts = layoutPageStories(stories, textFrames);
         const frameLayout = layouts.find(l => l.frameId === frameId);
 
-        let updatedFullText: string;
         if (frameLayout) {
-          updatedFullText =
-            fullText.slice(0, frameLayout.contentRange.start) +
-            newText +
-            fullText.slice(frameLayout.contentRange.end);
+          const before = sliceStoryContent(story.content, 0, frameLayout.contentRange.start);
+          const fullText = serializeStoryContent(story.content);
+          const after = sliceStoryContent(story.content, frameLayout.contentRange.end, fullText.length);
+          const merged = [...before, ...newNodes, ...after];
+          updatedStories = stories.map(s =>
+            s.id === storyId ? { ...s, content: merged } : s,
+          );
         } else {
-          updatedFullText = newText;
+          updatedStories = stories.map(s =>
+            s.id === storyId ? { ...s, content: newNodes } : s,
+          );
         }
-        updatedStories = patchStoryContentPlain(stories, storyId, updatedFullText);
       }
 
       setPages((prev) => {
@@ -413,17 +438,21 @@ export default function DesignerStudio({
         return n;
       });
 
-      if (story.frames.length > 1) {
-        const api = studioApiRef.current;
-        if (api) {
-          const newLayouts = layoutPageStories(updatedStories, textFrames);
-          for (const fl of newLayouts) {
-            if (fl.storyId !== storyId) continue;
-            const st = updatedStories.find(s => s.id === fl.storyId);
-            if (!st) continue;
-            const ft = serializeStoryContent(st.content).slice(fl.contentRange.start, fl.contentRange.end);
-            api.patchObject(fl.frameId, { text: ft, _designerOverflow: fl.hasOverflow });
-          }
+      const api = studioApiRef.current;
+      if (api) {
+        const newLayouts = layoutPageStories(updatedStories, textFrames);
+        for (const fl of newLayouts) {
+          if (fl.storyId !== storyId) continue;
+          const st = updatedStories.find(s => s.id === fl.storyId);
+          if (!st) continue;
+          const frameContent = sliceStoryContent(st.content, fl.contentRange.start, fl.contentRange.end);
+          const ft = serializeStoryContent(frameContent);
+          const richSpans = buildRichSpansForFrame(frameContent);
+          api.patchObject(fl.frameId, {
+            text: ft,
+            _designerOverflow: fl.hasOverflow,
+            _designerRichSpans: richSpans,
+          });
         }
       }
     },
@@ -660,6 +689,15 @@ export default function DesignerStudio({
     return map;
   }, [activePage?.stories]);
 
+  const designerStoryHtmlMap = useMemo(() => {
+    const map = new Map<string, string>();
+    const stories = activePage?.stories ?? [];
+    for (const s of stories) {
+      map.set(s.id, storyNodesToHtml(s.content, s.typography));
+    }
+    return map;
+  }, [activePage?.stories]);
+
   // ── Story text change from panel textarea ──
 
   const handleDesignerStoryTextChange = useCallback(
@@ -700,6 +738,50 @@ export default function DesignerStudio({
           api.patchObject(story.frames[0]!, {
             text: newText,
             _designerOverflow: fl?.hasOverflow ?? false,
+          });
+        }
+      }
+    },
+    [],
+  );
+
+  // ── Story rich text change from panel contentEditable ──
+
+  const handleDesignerStoryRichChange = useCallback(
+    (storyId: string, richHtml: string) => {
+      const idx = activeIdxRef.current;
+      const api = studioApiRef.current;
+      const p = pagesRef.current[idx];
+      if (!p) return;
+
+      const stories = p.stories ?? [];
+      const textFrames = p.textFrames ?? [];
+
+      const newNodes = htmlToStoryNodes(richHtml);
+      const updatedStories = stories.map(s =>
+        s.id === storyId ? { ...s, content: newNodes } : s,
+      );
+
+      setPages((prev) => {
+        const n = [...prev];
+        n[idx] = { ...prev[idx]!, stories: updatedStories };
+        return n;
+      });
+
+      if (api) {
+        const layouts = layoutPageStories(updatedStories, textFrames);
+        for (const fl of layouts) {
+          if (fl.storyId !== storyId) continue;
+          const st = updatedStories.find(s => s.id === fl.storyId);
+          if (!st) continue;
+          const frameContent = sliceStoryContent(st.content, fl.contentRange.start, fl.contentRange.end);
+          const ft = serializeStoryContent(frameContent);
+          const richSpans = buildRichSpansForFrame(frameContent);
+          api.patchObject(fl.frameId, {
+            text: ft,
+            _designerOverflow: fl.hasOverflow,
+            _designerThreadInfo: { index: Math.max(0, st.frames.indexOf(fl.frameId)), total: st.frames.length },
+            _designerRichSpans: richSpans,
           });
         }
       }
@@ -799,7 +881,9 @@ export default function DesignerStudio({
         onDesignerTextFrameEdit={handleDesignerTextFrameEdit}
         onDesignerAppendThreadedFrame={handleAppendThreadedFrame}
         designerStoryMap={designerStoryMap}
+        designerStoryHtmlMap={designerStoryHtmlMap}
         onDesignerStoryTextChange={handleDesignerStoryTextChange}
+        onDesignerStoryRichChange={handleDesignerStoryRichChange}
         onDesignerUnlinkTextFrame={handleDesignerUnlinkTextFrame}
         onDesignerTypographyChange={handleDesignerTypographyChange}
       />

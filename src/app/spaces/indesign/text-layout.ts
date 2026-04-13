@@ -1,16 +1,25 @@
 /**
- * Motor de layout: una sola superficie Canvas 2D para medir.
- * Las mismas propiedades de fuente deben usarse al pintar en Fabric (mismo font string).
+ * Rich text layout engine: measures styled runs (SpanNode with overrides)
+ * and distributes them across TextFrames with word-wrapping.
  */
 
-import type { Story, TextFrame, Typography, StoryNode } from "./text-model";
-import { plainTextToStoryNodes, serializeStoryContent } from "./text-model";
+import type { Story, TextFrame, Typography, StoryNode, SpanStyle, FlatRun } from "./text-model";
+import { flattenStoryContent, serializeStoryContent, plainTextToStoryNodes } from "./text-model";
+
+/** A single styled piece of text on one line, with position. */
+export type RichLineRun = {
+  text: string;
+  x: number;
+  y: number;
+  style?: SpanStyle;
+};
 
 export type LineData = {
   text: string;
   x: number;
   y: number;
   fontSize: number;
+  runs?: RichLineRun[];
 };
 
 export type FrameLayout = {
@@ -18,11 +27,9 @@ export type FrameLayout = {
   storyId: string;
   lines: LineData[];
   hasOverflow: boolean;
-  /** Rango en serializeStoryContent(story.content) asignado a este frame. */
   contentRange: { start: number; end: number };
 };
 
-/** Canvas dedicado al layout (mismo motor que se documenta para preview 2D). */
 let layoutCanvas: HTMLCanvasElement | null = null;
 
 export function getLayoutCanvasContext(): CanvasRenderingContext2D {
@@ -51,121 +58,249 @@ export function fontStringFromTypography(t: Typography): string {
   return `${caps}${style}${weight} ${t.fontSize}px ${t.fontFamily}`;
 }
 
-function measureLineWidth(ctx: CanvasRenderingContext2D, line: string, typo: Typography): number {
-  if (!line.length) return 0;
+function resolveRunTypo(base: Typography, style?: SpanStyle): Typography {
+  if (!style) return base;
+  return {
+    ...base,
+    ...(style.fontWeight != null ? { fontWeight: style.fontWeight } : {}),
+    ...(style.fontStyle != null ? { fontStyle: style.fontStyle } : {}),
+    ...(style.fontSize != null ? { fontSize: style.fontSize } : {}),
+    ...(style.color != null ? { color: style.color } : {}),
+    ...(style.fontFamily != null ? { fontFamily: style.fontFamily } : {}),
+    ...(style.letterSpacing != null ? { letterSpacing: style.letterSpacing } : {}),
+  };
+}
+
+function measureText(ctx: CanvasRenderingContext2D, text: string, typo: Typography): number {
+  if (!text.length) return 0;
+  ctx.font = fontStringFromTypography(typo);
   const extra = typo.letterSpacing * typo.fontSize;
   let w = 0;
-  for (let i = 0; i < line.length; i++) {
-    w += ctx.measureText(line[i]!).width + (i < line.length - 1 ? extra : 0);
+  for (let i = 0; i < text.length; i++) {
+    w += ctx.measureText(text[i]!).width + (i < text.length - 1 ? extra : 0);
   }
   return w;
 }
 
-function nextLineFrom(
-  text: string,
-  start: number,
-  maxW: number,
+/**
+ * Layout rich text runs into a single TextFrame.
+ * Returns lines with positioned styled runs, consumed character count, and overflow flag.
+ */
+export function layoutRichTextInFrame(
+  runs: FlatRun[],
+  frame: TextFrame,
+  baseTypo: Typography,
   ctx: CanvasRenderingContext2D,
-  typo: Typography,
-): { line: string; next: number } {
-  if (start >= text.length) return { line: "", next: start };
-  if (text[start] === "\n") return { line: "", next: start + 1 };
+): { lines: LineData[]; consumedChars: number; hasOverflow: boolean } {
+  const pad = frame.padding;
+  const innerW = Math.max(4, frame.width - pad * 2);
+  const innerH = Math.max(4, frame.height - pad * 2);
+  const lineHeightPx = baseTypo.fontSize * baseTypo.lineHeight;
+  const maxLines = Math.max(1, Math.floor(innerH / lineHeightPx));
 
-  let end = start;
-  let line = "";
-  while (end < text.length) {
-    const ch = text[end]!;
-    if (ch === "\n") break;
-    const trial = line + ch;
-    if (measureLineWidth(ctx, trial, typo) <= maxW) {
-      line = trial;
-      end++;
-    } else {
-      if (line.length > 0) {
-        const trimmed = line.replace(/\s+$/u, "");
-        const back = line.length - (trimmed || line).length;
-        return { line: trimmed || line, next: end - back };
-      }
-      return { line: ch, next: end + 1 };
+  const lines: LineData[] = [];
+  let totalConsumed = 0;
+
+  // Flatten all runs into a single character stream with styles
+  type CharInfo = { ch: string; style?: SpanStyle };
+  const chars: CharInfo[] = [];
+  for (const run of runs) {
+    for (const ch of run.text) {
+      chars.push({ ch, style: run.style });
     }
   }
-  return { line, next: end + (text[end] === "\n" ? 1 : 0) };
+
+  let charIdx = 0;
+
+  while (lines.length < maxLines && charIdx < chars.length) {
+    // Check for newline
+    if (chars[charIdx]!.ch === "\n") {
+      lines.push({ text: "", x: pad, y: pad + lines.length * lineHeightPx, fontSize: baseTypo.fontSize, runs: [] });
+      charIdx++;
+      totalConsumed = charIdx;
+      continue;
+    }
+
+    const atParagraphStart = charIdx === 0 || (charIdx > 0 && chars[charIdx - 1]!.ch === "\n");
+    const ind = atParagraphStart ? baseTypo.paragraphIndent : 0;
+    const wrapW = Math.max(4, innerW - ind);
+
+    // Build one line: accumulate characters until we exceed wrapW
+    let lineWidth = 0;
+    let lineEnd = charIdx;
+    let lastWordBreak = -1;
+
+    while (lineEnd < chars.length) {
+      const c = chars[lineEnd]!;
+      if (c.ch === "\n") break;
+
+      const cTypo = resolveRunTypo(baseTypo, c.style);
+      ctx.font = fontStringFromTypography(cTypo);
+      const extra = cTypo.letterSpacing * cTypo.fontSize;
+      const charW = ctx.measureText(c.ch).width + (lineEnd > charIdx ? extra : 0);
+
+      if (lineWidth + charW > wrapW && lineEnd > charIdx) {
+        // Try to break at last word boundary
+        if (lastWordBreak > charIdx) {
+          lineEnd = lastWordBreak;
+        }
+        break;
+      }
+
+      if (c.ch === " ") lastWordBreak = lineEnd + 1;
+      lineWidth += charW;
+      lineEnd++;
+    }
+
+    if (lineEnd === charIdx && charIdx < chars.length) {
+      // Force at least one character per line
+      lineEnd = charIdx + 1;
+    }
+
+    // Build styled runs for this line
+    const lineRuns: RichLineRun[] = [];
+    let runX = pad + ind;
+    let currentStyle: SpanStyle | undefined = chars[charIdx]?.style;
+    let runText = "";
+    const lineText = chars.slice(charIdx, lineEnd).map(c => c.ch).join("");
+
+    for (let ci = charIdx; ci < lineEnd; ci++) {
+      const c = chars[ci]!;
+      const sameStyle = spanStylesEqual(currentStyle, c.style);
+      if (!sameStyle && runText.length > 0) {
+        const rTypo = resolveRunTypo(baseTypo, currentStyle);
+        const w = measureText(ctx, runText, rTypo);
+        lineRuns.push({ text: runText, x: runX, y: pad + lines.length * lineHeightPx, style: currentStyle });
+        runX += w;
+        runText = "";
+        currentStyle = c.style;
+      }
+      runText += c.ch;
+      if (!sameStyle) currentStyle = c.style;
+    }
+    if (runText.length > 0) {
+      lineRuns.push({ text: runText, x: runX, y: pad + lines.length * lineHeightPx, style: currentStyle });
+    }
+
+    // Apply alignment
+    const totalLineW = (() => {
+      let w = 0;
+      for (const lr of lineRuns) {
+        w += measureText(ctx, lr.text, resolveRunTypo(baseTypo, lr.style));
+      }
+      return w;
+    })();
+
+    let offsetX = 0;
+    if (baseTypo.align === "center") offsetX = (innerW - ind - totalLineW) / 2;
+    else if (baseTypo.align === "right") offsetX = innerW - ind - totalLineW;
+
+    if (offsetX !== 0) {
+      for (const lr of lineRuns) lr.x += offsetX;
+    }
+
+    lines.push({
+      text: lineText,
+      x: pad + ind + offsetX,
+      y: pad + lines.length * lineHeightPx,
+      fontSize: baseTypo.fontSize,
+      runs: lineRuns,
+    });
+
+    charIdx = lineEnd;
+    // Skip trailing space at line break
+    if (charIdx < chars.length && chars[charIdx]!.ch === " " && lineEnd < chars.length) {
+      charIdx++;
+    }
+    totalConsumed = charIdx;
+  }
+
+  const hasOverflow = totalConsumed < chars.length;
+  return { lines, consumedChars: totalConsumed, hasOverflow };
 }
 
-/**
- * Ajusta texto al rectángulo interior; devuelve líneas con posiciones locales (origen arriba-izquierda del frame).
- */
+/** Backward-compatible: layout with uniform typography (no runs). */
 export function layoutTextInFrame(
   text: string,
   frame: TextFrame,
   typo: Typography,
   ctx: CanvasRenderingContext2D,
 ): { lines: LineData[]; consumedChars: number; hasOverflow: boolean } {
-  ctx.font = fontStringFromTypography(typo);
-  const pad = frame.padding;
-  const innerW = Math.max(4, frame.width - pad * 2);
-  const innerH = Math.max(4, frame.height - pad * 2);
-  const lineHeightPx = typo.fontSize * typo.lineHeight;
-  const maxLines = Math.max(1, Math.floor(innerH / lineHeightPx));
-
-  const lines: LineData[] = [];
-  let pos = 0;
-  while (lines.length < maxLines && pos <= text.length) {
-    if (pos === text.length) break;
-    const atParagraphStart = pos === 0 || text[pos - 1] === "\n";
-    const ind = atParagraphStart ? typo.paragraphIndent : 0;
-    const wrapW = Math.max(4, innerW - (atParagraphStart ? ind : 0));
-    const { line, next } = nextLineFrom(text, pos, wrapW, ctx, typo);
-    if (next === pos && pos < text.length) break;
-    let x = pad + ind;
-    const w = measureLineWidth(ctx, line, typo);
-    if (typo.align === "center") x = pad + ind + (innerW - ind - w) / 2;
-    else if (typo.align === "right") x = pad + innerW - w;
-    else if (typo.align === "justify" && lines.length < maxLines - 1 && line.includes(" ")) {
-      x = pad + ind;
+  const runs: FlatRun[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "\n") {
+      runs.push({ text: "\n" });
+    } else {
+      const lastRun = runs[runs.length - 1];
+      if (lastRun && lastRun.text !== "\n") {
+        lastRun.text += text[i];
+      } else {
+        runs.push({ text: text[i]! });
+      }
     }
-    lines.push({
-      text: line,
-      x,
-      y: pad + lines.length * lineHeightPx,
-      fontSize: typo.fontSize,
-    });
-    pos = next;
   }
-
-  const consumed = pos;
-  const hasOverflow = consumed < text.length;
-  return {
-    lines,
-    consumedChars: consumed,
-    hasOverflow,
-  };
+  return layoutRichTextInFrame(runs, frame, typo, ctx);
 }
 
 export function layoutStory(
   story: Story,
   frameById: Map<string, TextFrame>,
 ): FrameLayout[] {
+  const flatRuns = flattenStoryContent(story.content);
   const stream = serializeStoryContent(story.content);
   const ctx = getLayoutCanvasContext();
-  ctx.font = fontStringFromTypography(story.typography);
 
   const out: FrameLayout[] = [];
   let cursor = 0;
+  let runIdx = 0;
+  let runCharIdx = 0;
 
   for (const frameId of story.frames) {
     const fr = frameById.get(frameId);
     if (!fr || fr.storyId !== story.id) continue;
-    const remaining = stream.slice(cursor);
-    const { lines, consumedChars, hasOverflow } = layoutTextInFrame(
-      remaining,
+
+    // Build remaining runs from current position
+    const remainingRuns: FlatRun[] = [];
+    let ri = runIdx;
+    let rci = runCharIdx;
+    while (ri < flatRuns.length) {
+      const run = flatRuns[ri]!;
+      if (rci > 0) {
+        remainingRuns.push({ text: run.text.slice(rci), style: run.style });
+        ri++;
+        rci = 0;
+      } else {
+        remainingRuns.push({ text: run.text, style: run.style });
+        ri++;
+      }
+    }
+
+    const { lines, consumedChars, hasOverflow } = layoutRichTextInFrame(
+      remainingRuns,
       fr,
       story.typography,
       ctx,
     );
+
     const start = cursor;
     const end = cursor + consumedChars;
     cursor = end;
+
+    // Advance run position
+    let charsToSkip = consumedChars;
+    while (charsToSkip > 0 && runIdx < flatRuns.length) {
+      const run = flatRuns[runIdx]!;
+      const avail = run.text.length - runCharIdx;
+      if (charsToSkip >= avail) {
+        charsToSkip -= avail;
+        runIdx++;
+        runCharIdx = 0;
+      } else {
+        runCharIdx += charsToSkip;
+        charsToSkip = 0;
+      }
+    }
+
     out.push({
       frameId: fr.id,
       storyId: story.id,
@@ -196,7 +331,6 @@ export function layoutPageStories(
   return all;
 }
 
-/** Parchea el contenido serializado sustituyendo [start,end) por newText. */
 export function patchSerializedContent(
   nodes: StoryNode[],
   start: number,
@@ -206,4 +340,19 @@ export function patchSerializedContent(
   const stream = serializeStoryContent(nodes);
   const next = stream.slice(0, start) + newText + stream.slice(end);
   return plainTextToStoryNodes(next);
+}
+
+function spanStylesEqual(a?: SpanStyle, b?: SpanStyle): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return (
+    a.fontWeight === b.fontWeight &&
+    a.fontStyle === b.fontStyle &&
+    a.textUnderline === b.textUnderline &&
+    a.textStrikethrough === b.textStrikethrough &&
+    a.fontSize === b.fontSize &&
+    a.color === b.color &&
+    a.fontFamily === b.fontFamily &&
+    a.letterSpacing === b.letterSpacing
+  );
 }
