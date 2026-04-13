@@ -17,6 +17,7 @@ export type IndesignPageState = {
 
 export const INDESIGN_CUSTOM_PROPS = [
   "indesignType",
+  "shapeKind",
   "indesignBoxW",
   "indesignBoxH",
   "imageFit",

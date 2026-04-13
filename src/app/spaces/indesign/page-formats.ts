@@ -11,7 +11,7 @@ export type IndesignPageFormat = {
 export const INDESIGN_PAGE_FORMATS: IndesignPageFormat[] = [
   { id: "a4v", label: "A4 vertical", width: 595, height: 842 },
   { id: "a4h", label: "A4 horizontal", width: 842, height: 595 },
-  { id: "web169", label: "Web 16:9", width: 960, height: 540 },
+  { id: "web169", label: "Web 1920×1080", width: 1920, height: 1080 },
   { id: "story916", label: "Story 9:16", width: 540, height: 960 },
 ];
 

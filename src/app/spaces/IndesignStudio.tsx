@@ -11,10 +11,13 @@ import {
   Plus,
   Trash2,
   ChevronDown,
+  ChevronUp,
   Layers,
   Unlink,
   Grid3x3,
   ArrowLeftRight,
+  Square,
+  Circle,
 } from "lucide-react";
 import type {
   Canvas as FabricCanvas,
@@ -365,7 +368,7 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
     linkingMode: linkingFlow,
     onLinkTargetFrame,
     onLinkEmptyCanvas,
-    onAfterTextFrameDraw: () => setTool("select"),
+    onAfterPlaceDraw: () => setTool("select"),
   });
   canvasApiRef.current = canvasApi;
 
@@ -407,6 +410,34 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
         if (e.shiftKey) redoStudio();
         else undoStudio();
         return;
+      }
+      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        const k = e.key.toLowerCase();
+        if (k === "v") {
+          e.preventDefault();
+          setTool("select");
+          return;
+        }
+        if (k === "t") {
+          e.preventDefault();
+          setTool("text");
+          return;
+        }
+        if (k === "f") {
+          e.preventDefault();
+          setTool("frame");
+          return;
+        }
+        if (k === "r") {
+          e.preventDefault();
+          setTool("rect");
+          return;
+        }
+        if (k === "o") {
+          e.preventDefault();
+          setTool("ellipse");
+          return;
+        }
       }
       if (e.code === "Space" && !e.repeat) {
         e.preventDefault();
@@ -689,6 +720,30 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
     [commitPages, pages.length],
   );
 
+  const movePage = useCallback(
+    (fromIndex: number, toIndex: number) => {
+      if (fromIndex === toIndex) return;
+      if (fromIndex < 0 || toIndex < 0) return;
+      if (fromIndex >= pages.length || toIndex >= pages.length) return;
+      commitPages((prev) => {
+        const next = [...prev];
+        const [item] = next.splice(fromIndex, 1);
+        next.splice(toIndex, 0, item!);
+        return next;
+      });
+      setActivePageIndex((active) => {
+        if (active === fromIndex) return toIndex;
+        if (fromIndex < toIndex) {
+          if (active > fromIndex && active <= toIndex) return active - 1;
+          return active;
+        }
+        if (active >= toIndex && active < fromIndex) return active + 1;
+        return active;
+      });
+    },
+    [commitPages, pages.length],
+  );
+
   return createPortal(
     <div
       ref={studioRootRef}
@@ -718,6 +773,12 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
             </ToolBtn>
             <ToolBtn active={tool === "frame"} label="Marco imagen (F)" onClick={() => setTool("frame")}>
               <Frame className="h-4 w-4" />
+            </ToolBtn>
+            <ToolBtn active={tool === "rect"} label="Rectángulo (R)" onClick={() => setTool("rect")}>
+              <Square className="h-4 w-4" />
+            </ToolBtn>
+            <ToolBtn active={tool === "ellipse"} label="Elipse (O)" onClick={() => setTool("ellipse")}>
+              <Circle className="h-4 w-4" />
             </ToolBtn>
           </div>
         </div>
@@ -930,17 +991,43 @@ export const IndesignStudio = memo(function IndesignStudio(props: IndesignStudio
                   </span>
                 </div>
                 {pages.length > 1 && (
-                  <button
-                    type="button"
-                    title="Eliminar página"
-                    className="absolute right-1.5 top-1.5 rounded-md p-1 text-zinc-500 opacity-0 transition hover:bg-rose-500/25 hover:text-rose-200 group-hover:opacity-100"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deletePage(i);
-                    }}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  <div className="absolute right-1.5 top-1.5 flex flex-col gap-0.5 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100">
+                    <button
+                      type="button"
+                      title="Subir página"
+                      disabled={i === 0}
+                      className="rounded-md p-0.5 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 disabled:pointer-events-none disabled:opacity-25"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        movePage(i, i - 1);
+                      }}
+                    >
+                      <ChevronUp className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
+                      title="Bajar página"
+                      disabled={i === pages.length - 1}
+                      className="rounded-md p-0.5 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 disabled:pointer-events-none disabled:opacity-25"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        movePage(i, i + 1);
+                      }}
+                    >
+                      <ChevronDown className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
+                      title="Eliminar página"
+                      className="rounded-md p-0.5 text-zinc-500 hover:bg-rose-500/25 hover:text-rose-200"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deletePage(i);
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 )}
               </div>
             );

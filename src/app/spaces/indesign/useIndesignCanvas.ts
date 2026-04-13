@@ -79,7 +79,7 @@ function positionInlineTextarea(canvas: FabricCanvas, ta: HTMLTextAreaElement, f
   ta.style.boxSizing = "border-box";
 }
 
-export type IndesignTool = "select" | "text" | "frame";
+export type IndesignTool = "select" | "text" | "frame" | "rect" | "ellipse";
 
 export type IndesignCanvasApi = {
   getCanvas: () => FabricCanvas | null;
@@ -105,8 +105,8 @@ type UseIndesignCanvasOpts = {
   linkingMode: boolean;
   onLinkTargetFrame: (frameId: string) => void;
   onLinkEmptyCanvas: (point: { x: number; y: number }) => void;
-  /** Tras soltar el dibujo de un marco de texto (herramienta T), p. ej. volver a Selección. */
-  onAfterTextFrameDraw?: () => void;
+  /** Tras colocar texto / forma / marco por arrastre, p. ej. volver a Selección. */
+  onAfterPlaceDraw?: () => void;
 };
 
 export function useIndesignCanvas(opts: UseIndesignCanvasOpts): IndesignCanvasApi {
@@ -125,7 +125,7 @@ export function useIndesignCanvas(opts: UseIndesignCanvasOpts): IndesignCanvasAp
     linkingMode,
     onLinkTargetFrame,
     onLinkEmptyCanvas,
-    onAfterTextFrameDraw,
+    onAfterPlaceDraw,
   } = opts;
 
   const canvasRef = useRef<FabricCanvas | null>(null);
@@ -141,7 +141,7 @@ export function useIndesignCanvas(opts: UseIndesignCanvasOpts): IndesignCanvasAp
   const onTextModelChangeRef = useRef(onTextModelChange);
   const onLinkTargetFrameRef = useRef(onLinkTargetFrame);
   const onLinkEmptyCanvasRef = useRef(onLinkEmptyCanvas);
-  const onAfterTextFrameDrawRef = useRef(onAfterTextFrameDraw);
+  const onAfterPlaceDrawRef = useRef(onAfterPlaceDraw);
   const editingFrameIdRef = useRef<string | null>(null);
   const editTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -154,7 +154,7 @@ export function useIndesignCanvas(opts: UseIndesignCanvasOpts): IndesignCanvasAp
   onTextModelChangeRef.current = onTextModelChange;
   onLinkTargetFrameRef.current = onLinkTargetFrame;
   onLinkEmptyCanvasRef.current = onLinkEmptyCanvas;
-  onAfterTextFrameDrawRef.current = onAfterTextFrameDraw;
+  onAfterPlaceDrawRef.current = onAfterPlaceDraw;
 
   const emitChange = useCallback(() => {
     const c = canvasRef.current;
@@ -242,7 +242,7 @@ export function useIndesignCanvas(opts: UseIndesignCanvasOpts): IndesignCanvasAp
       const fabric = await import("fabric");
       if (disposed || !hostRef.current) return;
       fabricRef.current = fabric;
-      const { Canvas, Rect, FabricImage } = fabric;
+      const { Canvas, Rect, Ellipse, FabricImage } = fabric;
 
       const cw = pageWidth + INDESIGN_PAD * 2;
       const ch = pageHeight + INDESIGN_PAD * 2;
@@ -287,6 +287,56 @@ export function useIndesignCanvas(opts: UseIndesignCanvasOpts): IndesignCanvasAp
         });
         canvas.add(frame);
         canvas.setActiveObject(frame);
+        canvas.requestRenderAll();
+        emitChange();
+      }
+
+      function addVectorShapeRect(left: number, top: number, w: number, h: number) {
+        const shape = new Rect({
+          left,
+          top,
+          width: Math.max(4, w),
+          height: Math.max(4, h),
+          fill: "rgba(147, 197, 253, 0.28)",
+          stroke: "#60a5fa",
+          strokeWidth: 2,
+          originX: "left",
+          originY: "top",
+        });
+        shape.set({
+          indesignType: "vectorShape",
+          shapeKind: "rect",
+          indesignUid: uid(),
+        });
+        canvas.add(shape);
+        canvas.setActiveObject(shape);
+        canvas.requestRenderAll();
+        emitChange();
+      }
+
+      function addVectorShapeEllipse(x1: number, y1: number, w: number, h: number) {
+        const ww = Math.max(8, w);
+        const hh = Math.max(8, h);
+        const cx = x1 + ww / 2;
+        const cy = y1 + hh / 2;
+        const shape = new Ellipse({
+          left: cx,
+          top: cy,
+          originX: "center",
+          originY: "center",
+          rx: ww / 2,
+          ry: hh / 2,
+          fill: "rgba(253, 224, 71, 0.22)",
+          stroke: "#eab308",
+          strokeWidth: 2,
+        });
+        shape.set({
+          indesignType: "vectorShape",
+          shapeKind: "ellipse",
+          indesignUid: uid(),
+        });
+        canvas.add(shape);
+        canvas.setActiveObject(shape);
         canvas.requestRenderAll();
         emitChange();
       }
@@ -477,8 +527,7 @@ export function useIndesignCanvas(opts: UseIndesignCanvasOpts): IndesignCanvasAp
         };
 
         const hits = textHitsFromSelection(active);
-        if (hits.length === 0) return;
-
+        if (hits.length > 0) {
         e.preventDefault();
         e.stopPropagation();
 
@@ -504,6 +553,52 @@ export function useIndesignCanvas(opts: UseIndesignCanvasOpts): IndesignCanvasAp
         onSelectionChangeRef.current(null);
         c.requestRenderAll();
         paintTextFromModelRef.current();
+        return;
+        }
+
+        const removeVectorOrFrame = (o: FabricObject): boolean => {
+          const t = o.get("indesignType") as string | undefined;
+          if (t === "vectorShape") {
+            c.remove(o);
+            return true;
+          }
+          if (t === "frame") {
+            const fid = o.get("indesignUid") as string;
+            for (const obj of [...c.getObjects()]) {
+              if (obj.get("frameUid") === fid) c.remove(obj);
+            }
+            c.remove(o);
+            return true;
+          }
+          return false;
+        };
+
+        if (isFabricActiveSelection(active)) {
+          const group = active as FabricGroup;
+          const objs = group.getObjects();
+          let removed = false;
+          for (const o of objs) {
+            if (removeVectorOrFrame(o)) removed = true;
+          }
+          if (removed) {
+            e.preventDefault();
+            e.stopPropagation();
+            c.discardActiveObject();
+            onSelectionChangeRef.current(null);
+            c.requestRenderAll();
+            emitChange();
+          }
+          return;
+        }
+
+        if (removeVectorOrFrame(active)) {
+          e.preventDefault();
+          e.stopPropagation();
+          c.discardActiveObject();
+          onSelectionChangeRef.current(null);
+          c.requestRenderAll();
+          emitChange();
+        }
       };
 
       const onWinResizeOrScroll = () => syncInlineTextareaLayout();
@@ -684,13 +779,25 @@ export function useIndesignCanvas(opts: UseIndesignCanvasOpts): IndesignCanvasAp
         }
         const e = opt.e as MouseEvent;
         const p = canvas.getPointer(e);
-        const x1 = Math.min(d.x, p.x);
-        const y1 = Math.min(d.y, p.y);
-        const w = Math.abs(p.x - d.x);
-        const h = Math.abs(p.y - d.y);
+        let x1 = Math.min(d.x, p.x);
+        let y1 = Math.min(d.y, p.y);
+        let w = Math.abs(p.x - d.x);
+        let h = Math.abs(p.y - d.y);
+        if (e.shiftKey) {
+          const s = Math.max(w, h);
+          const dx = p.x - d.x;
+          const dy = p.y - d.y;
+          const signX = dx >= 0 ? 1 : -1;
+          const signY = dy >= 0 ? 1 : -1;
+          w = s;
+          h = s;
+          x1 = Math.min(d.x, d.x + signX * s);
+          y1 = Math.min(d.y, d.y + signY * s);
+        }
         drawRef.current = null;
         if (w < 4 || h < 4) return;
         const mode = toolRef.current;
+        let placed = false;
         if (mode === "text") {
           const { story, frame } = createStoryWithFrame({
             x: x1,
@@ -703,9 +810,18 @@ export function useIndesignCanvas(opts: UseIndesignCanvasOpts): IndesignCanvasAp
             stories: [...storiesRef.current, story],
             textFrames: [...textFramesRef.current, frame],
           });
-          queueMicrotask(() => onAfterTextFrameDrawRef.current?.());
+          placed = true;
+        } else if (mode === "frame") {
+          addFrame(x1, y1, w, h);
+          placed = true;
+        } else if (mode === "rect") {
+          addVectorShapeRect(x1, y1, w, h);
+          placed = true;
+        } else if (mode === "ellipse") {
+          addVectorShapeEllipse(x1, y1, w, h);
+          placed = true;
         }
-        if (mode === "frame") addFrame(x1, y1, w, h);
+        if (placed) queueMicrotask(() => onAfterPlaceDrawRef.current?.());
       });
 
       const onDragOver = (ev: DragEvent) => ev.preventDefault();
