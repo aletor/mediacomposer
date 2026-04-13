@@ -997,7 +997,9 @@ export default function DesignerStudio({
       for (let i = 0; i < pageCount; i++) {
         const pg = pagesRef.current[i];
         if (!pg) continue;
-        const expectedKey = `${pg.id}_${i}`;
+        // Debe coincidir con `studioKey` / `nodeId` en FreehandStudio: `${pageId}_${index}_${w}_${h}`
+        const pd = getPageDimensions(pg);
+        const expectedKey = `${pg.id}_${i}_${Math.round(pd.width)}_${Math.round(pd.height)}`;
         flushSync(() => {
           setActivePageIndex(i);
         });
@@ -1021,7 +1023,10 @@ export default function DesignerStudio({
         }
         if (m) markups.push(m);
       }
-      if (markups.length === 0) return;
+      if (markups.length === 0) {
+        alert("No se pudo preparar ninguna página para el PDF (el lienzo no estaba listo). Cierra el diálogo de exportación e inténtalo de nuevo.");
+        return;
+      }
       await downloadMultiPageVectorPdf(markups, `diseno-${Date.now()}.pdf`);
     } catch (e) {
       console.error("[Designer] PDF multipágina:", e);

@@ -976,11 +976,10 @@ function hitTestObject(
         if (pathObj.closed && pointInRotatedRect(lp.x, lp.y, { ...pathObj, rotation: 0 })) return true;
         return distToPathSegments(lp, pathObj).dist < threshold;
       })();
-      if (maskHit) return true;
-      for (const ch of c.content) {
-        if (hitTestObject(lp, ch, threshold, allObjects)) return true;
-      }
-      return false;
+      // No usar el bbox del contenido pegado (p. ej. imagen): puede cubrir todo el pliego y bloquear deseleccionar.
+      // Sí incluir el rect del contenedor: misma caja que el envolvente de la máscara al crear el clip; permite acertar
+      // en agujeros de máscara / marco y tras cambios de zoom (modo P) sin depender solo del trazo fino de la máscara.
+      return maskHit || pointInRotatedRect(pos.x, pos.y, c as FreehandObject);
     }
     default: return pointInRotatedRect(pos.x, pos.y, obj);
   }
@@ -3918,6 +3917,15 @@ export default function FreehandStudio({
   const fitAllCanvasRef = useRef(fitAllCanvas);
   fitAllCanvasRef.current = fitAllCanvas;
 
+  /** Tras mostrar de nuevo paneles (salir de modo P), el contenedor cambia de tamaño; re-encajar el pliego como tras "Fit all". */
+  const scheduleFitAllAfterLayout = useCallback(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        fitAllCanvasRef.current();
+      });
+    });
+  }, []);
+
   useEffect(() => {
     if (!designerMode) return;
     if (designerFitToViewNonce === 0) return;
@@ -3926,24 +3934,6 @@ export default function FreehandStudio({
     });
     return () => cancelAnimationFrame(id);
   }, [designerMode, designerFitToViewNonce]);
-
-  const scheduleRecenterViewportAfterLayoutChange = useCallback((beforeW: number, beforeH: number) => {
-    if (beforeW < 4 || beforeH < 4) return;
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const el = containerRef.current;
-        if (!el) return;
-        const w = el.clientWidth, h = el.clientHeight;
-        if (w === beforeW && h === beforeH) return;
-        setViewport((v) => {
-          const worldCx = (beforeW / 2 - v.x) / v.zoom;
-          const worldCy = (beforeH / 2 - v.y) / v.zoom;
-          return { ...v, x: w / 2 - worldCx * v.zoom, y: h / 2 - worldCy * v.zoom };
-        });
-        lastCanvasContainerSizeRef.current = { w, h };
-      });
-    });
-  }, []);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -5575,10 +5565,7 @@ export default function FreehandStudio({
         }
         e.preventDefault();
         setCanvasZenMode((z) => {
-          if (z) {
-            const shell = containerRef.current;
-            scheduleRecenterViewportAfterLayoutChange(shell?.clientWidth ?? 0, shell?.clientHeight ?? 0);
-          }
+          if (z) scheduleFitAllAfterLayout();
           return !z;
         });
         setCtxMenu(null);
@@ -5715,11 +5702,8 @@ export default function FreehandStudio({
       if (e.key === "Escape") {
         e.preventDefault();
         if (canvasZenMode) {
-          const shell = containerRef.current;
-          const bw = shell?.clientWidth ?? 0;
-          const bh = shell?.clientHeight ?? 0;
           setCanvasZenMode(false);
-          scheduleRecenterViewportAfterLayoutChange(bw, bh);
+          scheduleFitAllAfterLayout();
           return;
         }
         if (designerMode && imageFrameContentEditId) {
@@ -5773,7 +5757,7 @@ export default function FreehandStudio({
       undo, redo, pushHistory, deleteSelected, duplicateSelected, groupSelected,
       ungroupSelected, bringForward, sendBackward, finishPenPath, deleteSelectedPoints, exitIsolation,
       copySelectedObjects, cutSelectedObjects, pasteClipboardObjects, pasteInside, quickExportSelectionPng, convertTextToOutlines,
-      designerMode, imageFrameContentEditId, canvasZenMode, scheduleRecenterViewportAfterLayoutChange]);
+      designerMode, imageFrameContentEditId, canvasZenMode, scheduleFitAllAfterLayout]);
 
   // ── Mouse handlers ────────────────────────────────────────────────
 
@@ -7962,7 +7946,7 @@ export default function FreehandStudio({
             {selectionKindLabel(selectedObjects)}
           </span>
           <div className="flex-1 min-w-0" />
-          {selectedIds.size > 0 && isolationDepth === 0 && (
+          {selectedIds.size > 0 && isolationDepth === 0 && !designerMode && (
             <div className="flex items-center gap-0.5 shrink-0">
               <button type="button" title="Bring to front" onClick={() => bringToFront()}
                 className="p-1.5 rounded-md hover:bg-white/10 text-zinc-500 hover:text-white transition-colors">
