@@ -1328,6 +1328,81 @@ function clipMaskPathAnchorsToWorld(c: ClippingContainerObject, p: PathObject): 
   return { ...p, points: pts, x: pb.x, y: pb.y, width: pb.w, height: pb.h };
 }
 
+/** Doble clic (A): ancla bajo el cursor, frente a fondo. Solo `pathId` + índice global en `points`. */
+function findTopAnchorHitForDirectSelectDelete(
+  pos: Point,
+  threshold: number,
+  objects: FreehandObject[],
+): { pathId: string; gIdx: number } | null {
+  for (let i = objects.length - 1; i >= 0; i--) {
+    const obj = objects[i];
+    if (obj.locked || !obj.visible || obj.type !== "path") continue;
+    const p = obj as PathObject;
+    if (!p.points || p.points.length < 2) continue;
+    const rings = getPathRings(p);
+    let gBase = 0;
+    for (const ring of rings) {
+      for (let pi = 0; pi < ring.length; pi++) {
+        const pt = ring[pi]!;
+        const gIdx = gBase + pi;
+        if (dist(pos, pt.anchor) < threshold) return { pathId: p.id, gIdx };
+      }
+      gBase += ring.length;
+    }
+  }
+  for (let i = objects.length - 1; i >= 0; i--) {
+    const obj = objects[i];
+    if (obj.locked || !obj.visible || obj.type !== "clippingContainer") continue;
+    const cc = obj as ClippingContainerObject;
+    if (cc.mask.type !== "path") continue;
+    const raw = cc.mask as PathObject;
+    if (!raw.points || raw.points.length < 2) continue;
+    const pWorld = clipMaskPathAnchorsToWorld(cc, raw);
+    const ringsW = getPathRings(pWorld);
+    let gBase = 0;
+    for (const ringW of ringsW) {
+      for (let pi = 0; pi < ringW.length; pi++) {
+        const ptW = ringW[pi]!;
+        const gIdx = gBase + pi;
+        if (dist(pos, ptW.anchor) < threshold) return { pathId: raw.id, gIdx };
+      }
+      gBase += ringW.length;
+    }
+  }
+  return null;
+}
+
+function applyDeletePathPointIndicesToObjects(
+  prev: FreehandObject[],
+  sp: Map<string, Set<number>>,
+): FreehandObject[] {
+  return prev
+    .map((o) => {
+      if (o.type === "clippingContainer") {
+        const c = o as ClippingContainerObject;
+        if (c.mask.type !== "path") return o;
+        const p = c.mask as PathObject;
+        const ptIdxs = sp.get(p.id);
+        if (!ptIdxs || ptIdxs.size === 0) return o;
+        const newPts = p.points.filter((_, i) => !ptIdxs.has(i));
+        if (newPts.length < 1) return null;
+        const pb = getPathBoundsFromPoints(newPts);
+        return {
+          ...c,
+          mask: { ...p, points: newPts, x: pb.x, y: pb.y, width: pb.w, height: pb.h },
+        };
+      }
+      if (o.type !== "path") return o;
+      const ptIdxs = sp.get(o.id);
+      if (!ptIdxs || ptIdxs.size === 0) return o;
+      const p = o as PathObject;
+      const newPts = p.points.filter((_, i) => !ptIdxs.has(i));
+      if (newPts.length < 1) return null;
+      return { ...p, points: newPts };
+    })
+    .filter(Boolean) as FreehandObject[];
+}
+
 function translateFreehandObject(o: FreehandObject, dx: number, dy: number): FreehandObject {
   if (o.type === "clippingContainer") {
     const c = o as ClippingContainerObject;
@@ -4961,40 +5036,24 @@ export default function FreehandStudio({
 
   // ── Path editing helpers ──────────────────────────────────────────
 
+  const deleteVertexSelectionMap = useCallback(
+    (sp: Map<string, Set<number>>) => {
+      if (sp.size === 0) return;
+      const sel = selectedIdsRef.current;
+      setObjects((prev) => {
+        const next = applyDeletePathPointIndicesToObjects(prev, sp);
+        pushHistory(next, sel);
+        return next;
+      });
+      setSelectedPoints(new Map());
+    },
+    [pushHistory],
+  );
+
   const deleteSelectedPoints = useCallback(() => {
     if (selectedPoints.size === 0) return;
-    const sel = selectedIdsRef.current;
-    setObjects((prev) => {
-      const next = prev
-        .map((o) => {
-          if (o.type === "clippingContainer") {
-            const c = o as ClippingContainerObject;
-            if (c.mask.type !== "path") return o;
-            const p = c.mask as PathObject;
-            const ptIdxs = selectedPoints.get(p.id);
-            if (!ptIdxs || ptIdxs.size === 0) return o;
-            const newPts = p.points.filter((_, i) => !ptIdxs.has(i));
-            if (newPts.length < 1) return null;
-            const pb = getPathBoundsFromPoints(newPts);
-            return {
-              ...c,
-              mask: { ...p, points: newPts, x: pb.x, y: pb.y, width: pb.w, height: pb.h },
-            };
-          }
-          if (o.type !== "path") return o;
-          const ptIdxs = selectedPoints.get(o.id);
-          if (!ptIdxs || ptIdxs.size === 0) return o;
-          const p = o as PathObject;
-          const newPts = p.points.filter((_, i) => !ptIdxs.has(i));
-          if (newPts.length < 1) return null;
-          return { ...p, points: newPts };
-        })
-        .filter(Boolean) as FreehandObject[];
-      pushHistory(next, sel);
-      return next;
-    });
-    setSelectedPoints(new Map());
-  }, [selectedPoints, pushHistory]);
+    deleteVertexSelectionMap(selectedPoints);
+  }, [selectedPoints, deleteVertexSelectionMap]);
 
   const addPointOnSegment = useCallback(
     (objId: string, ringIdx: number, segIdx: number, t: number, clipContainerId?: string) => {
@@ -7982,6 +8041,17 @@ export default function FreehandStudio({
         onContextMenu={handleContextMenu}
         onDoubleClick={(e) => {
           const pos = screenToCanvas(e.clientX, e.clientY);
+          const dsTh = 8 / viewport.zoom;
+          if (activeTool === "directSelect") {
+            const hit = findTopAnchorHitForDirectSelectDelete(pos, dsTh, objects);
+            if (hit) {
+              e.preventDefault();
+              const m = new Map<string, Set<number>>();
+              m.set(hit.pathId, new Set([hit.gIdx]));
+              deleteVertexSelectionMap(m);
+              return;
+            }
+          }
           const threshold = 6 / viewport.zoom;
           if (activeTool === "select" || activeTool === "text" || activeTool === "imageFrame") {
             for (let i = objects.length - 1; i >= 0; i--) {
