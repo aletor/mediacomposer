@@ -1244,12 +1244,10 @@ export default function DesignerStudio({
       console.warn("[Designer] Preview: lienzo de página 1 no listo a tiempo");
       return;
     }
-    try {
-      const url = await studioApiRef.current!.getNodePreviewPngDataUrl!();
-      if (url) onExport(url);
-    } catch (e) {
-      console.error("[Designer] Preview página 1:", e);
-    }
+    const api = studioApiRef.current;
+    if (!api?.getNodePreviewPngDataUrl) return;
+    const url = await api.getNodePreviewPngDataUrl();
+    if (url) onExport(url);
   }, [onExport]);
 
   const handleCloseWithFirstPagePreview = useCallback(async () => {

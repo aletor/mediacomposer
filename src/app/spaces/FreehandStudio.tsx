@@ -2936,7 +2936,8 @@ function escapeXmlAttr(s: string): string {
 }
 
 function escapeXmlText(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const cleaned = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+  return cleaned.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function measureExportLineWidth(s: string, ctx: CanvasRenderingContext2D, letterSpacingPx: number): number {
@@ -3159,11 +3160,16 @@ function substituteNativeTextForRasterExport(svgXml: string, objects: FreehandOb
   for (const t of texts) {
     const g = doc.querySelector(`g[data-fh-text="${t.id}"]`);
     if (!g) continue;
-    g.querySelectorAll("foreignObject").forEach((el) => el.remove());
+    const fragment = textObjectToNativeSvgMarkup(t);
     const wrap = parser.parseFromString(
-      `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">${textObjectToNativeSvgMarkup(t)}</svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">${fragment}</svg>`,
       "image/svg+xml",
     );
+    if (wrap.querySelector("parsererror")) {
+      console.warn("[Freehand] Raster: fragmento de texto nativo inválido, se mantiene foreignObject", t.id);
+      continue;
+    }
+    g.querySelectorAll("foreignObject").forEach((el) => el.remove());
     const root = wrap.documentElement;
     while (root.firstChild) g.appendChild(root.firstChild);
   }
@@ -3630,16 +3636,36 @@ function svgStringToCanvas(svgStr: string, w: number, h: number, bgColor?: strin
     const url = URL.createObjectURL(blob);
     const img = new Image();
     img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(w);
-      canvas.height = Math.round(h);
-      const ctx = canvas.getContext("2d")!;
-      if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, canvas.width, canvas.height); }
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      URL.revokeObjectURL(url);
-      resolve(canvas);
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(w);
+        canvas.height = Math.round(h);
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          URL.revokeObjectURL(url);
+          reject(new Error("svgStringToCanvas: sin 2d context"));
+          return;
+        }
+        if (bgColor) {
+          ctx.fillStyle = bgColor;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        resolve(canvas);
+      } catch (err) {
+        URL.revokeObjectURL(url);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     };
-    img.onerror = reject;
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(
+        new Error(
+          "No se pudo decodificar el SVG como imagen (markup inválido, demasiado grande o no soportado).",
+        ),
+      );
+    };
     img.src = url;
   });
 }
@@ -4232,27 +4258,33 @@ export default function FreehandStudio({
         return strRaw;
       },
       getNodePreviewPngDataUrl: async (opts?: { maxSide?: number }) => {
-        const svg = svgRef.current;
-        if (!svg) return null;
-        const objs = objectsRef.current;
-        const abs = artboardsRef.current;
-        const bounds = resolveSceneExportBounds(objs, abs);
-        if (bounds.w < 1 || bounds.h < 1) return null;
-        const ab = pickPrimaryArtboard(abs, null);
-        const bg: "transparent" | string = ab?.background ?? "transparent";
-        const maxSide = opts?.maxSide ?? 800;
-        const scale = Math.min(1, maxSide / Math.max(bounds.w, bounds.h));
-        const strRaw = buildStandaloneSvgFromCanvasDom(svg, {
-          exportIds: null,
-          bounds,
-          scale,
-          background: bg,
-        });
-        const str = substituteNativeTextForRasterExport(strRaw, objs);
-        const cw = Math.max(1, Math.round(bounds.w * scale));
-        const ch = Math.max(1, Math.round(bounds.h * scale));
-        const canvas = await svgStringToCanvasSafe(str, cw, ch);
-        return canvasToPngDataUrlSafe(canvas);
+        try {
+          const svg = svgRef.current;
+          if (!svg) return null;
+          const objs = objectsRef.current;
+          const abs = artboardsRef.current;
+          const bounds = resolveSceneExportBounds(objs, abs);
+          if (bounds.w < 1 || bounds.h < 1) return null;
+          const ab = pickPrimaryArtboard(abs, null);
+          const bg: "transparent" | string = ab?.background ?? "transparent";
+          const maxSide = opts?.maxSide ?? 800;
+          const scale = Math.min(1, maxSide / Math.max(bounds.w, bounds.h));
+          const strRaw = buildStandaloneSvgFromCanvasDom(svg, {
+            exportIds: null,
+            bounds,
+            scale,
+            background: bg,
+          });
+          const str = substituteNativeTextForRasterExport(strRaw, objs);
+          const cw = Math.max(1, Math.round(bounds.w * scale));
+          const ch = Math.max(1, Math.round(bounds.h * scale));
+          const canvas = await svgStringToCanvasSafe(str, cw, ch);
+          return canvasToPngDataUrlSafe(canvas);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.warn("[Freehand] getNodePreviewPngDataUrl:", msg);
+          return null;
+        }
       },
     };
     return () => {
@@ -6256,11 +6288,27 @@ export default function FreehandStudio({
         e.preventDefault(); setActiveTool("select"); return;
       }
       if (e.key === "a" && !e.metaKey && !e.ctrlKey) { e.preventDefault(); setActiveTool("directSelect"); return; }
-      // P = modo lienzo limpio (sin UI salvo transform en canvas); ⇧P = lápiz
-      if ((e.key === "p" || e.key === "P") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      // Designer: P = marco de texto encadenado; ⌥P = modo lienzo limpio. Fuera de Designer: P = lienzo limpio. ⇧P = lápiz
+      if ((e.key === "p" || e.key === "P") && !e.metaKey && !e.ctrlKey) {
         if (e.shiftKey) {
           e.preventDefault();
           setActiveTool("pen");
+          if (!e.repeat) shapeShortcutKeyDownAtRef.current.KeyP = Date.now();
+          return;
+        }
+        if (designerMode) {
+          if (e.altKey) {
+            e.preventDefault();
+            setClipContentEditId(null);
+            setCanvasZenMode((z) => {
+              if (z) scheduleFitAllAfterLayout();
+              return !z;
+            });
+            setCtxMenu(null);
+            return;
+          }
+          e.preventDefault();
+          setActiveTool("textFrame");
           if (!e.repeat) shapeShortcutKeyDownAtRef.current.KeyP = Date.now();
           return;
         }
@@ -6291,10 +6339,10 @@ export default function FreehandStudio({
         if (!e.repeat) shapeShortcutKeyDownAtRef.current.KeyT = Date.now();
         return;
       }
-      if ((e.key === "o" || e.key === "O") && !e.metaKey && !e.ctrlKey) {
+      if ((e.key === "c" || e.key === "C") && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         setActiveTool("ellipse");
-        if (!e.repeat) shapeShortcutKeyDownAtRef.current.KeyO = Date.now();
+        if (!e.repeat) shapeShortcutKeyDownAtRef.current.KeyC = Date.now();
         return;
       }
 
@@ -6436,11 +6484,12 @@ export default function FreehandStudio({
       const codeToTool: Partial<Record<string, Tool>> = {
         KeyR: "rect",
         KeyE: "ellipse",
-        KeyO: "ellipse",
+        KeyC: "ellipse",
         KeyT: "text",
         KeyP: "pen",
       };
-      const want = codeToTool[e.code];
+      let want = codeToTool[e.code];
+      if (e.code === "KeyP" && activeTool === "textFrame") want = "textFrame";
       if (!want) return;
 
       const t0 = shapeShortcutKeyDownAtRef.current[e.code];
@@ -8661,7 +8710,7 @@ export default function FreehandStudio({
         <ToolBtn active={activeTool === "rect"} onClick={() => setActiveTool("rect")} title="Rectangle (R)">
           <Square size={20} strokeWidth={1.5} />
         </ToolBtn>
-        <ToolBtn active={activeTool === "ellipse"} onClick={() => setActiveTool("ellipse")} title="Ellipse (O)">
+        <ToolBtn active={activeTool === "ellipse"} onClick={() => setActiveTool("ellipse")} title="Ellipse (C o E)">
           <Circle size={20} strokeWidth={1.5} />
         </ToolBtn>
         <ToolBtn active={activeTool === "text"} onClick={() => setActiveTool("text")} title="Text (T)">
@@ -8669,7 +8718,7 @@ export default function FreehandStudio({
         </ToolBtn>
         {designerMode && (
           <>
-            <ToolBtn active={activeTool === "textFrame"} onClick={() => setActiveTool("textFrame")} title="Text Frame — caja de texto encadenada">
+            <ToolBtn active={activeTool === "textFrame"} onClick={() => setActiveTool("textFrame")} title="Text Frame (P) — caja de texto encadenada">
               <svg width={20} height={20} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
                 <rect x="2" y="3" width="16" height="14" rx="1.5" strokeDasharray="3 2" />
                 <path d="M6 7.5h8M6 10h8M6 12.5h4" />
@@ -8918,68 +8967,6 @@ export default function FreehandStudio({
               </g>
             ))}
 
-            {/* Guías de diseño (no exportan con el vector; solo ayuda visual / snap) */}
-            {showLayoutGuides &&
-              layoutGuides.map((g) =>
-                g.orientation === "vertical" ? (
-                  <line
-                    key={g.id}
-                    data-ui="layout-guide"
-                    x1={g.position}
-                    y1={-5e5}
-                    x2={g.position}
-                    y2={5e5}
-                    stroke="rgba(196,181,253,0.92)"
-                    strokeWidth={1 / viewport.zoom}
-                    strokeDasharray={`${6 / viewport.zoom} ${4 / viewport.zoom}`}
-                    pointerEvents="none"
-                  />
-                ) : (
-                  <line
-                    key={g.id}
-                    data-ui="layout-guide"
-                    x1={-5e5}
-                    y1={g.position}
-                    x2={5e5}
-                    y2={g.position}
-                    stroke="rgba(196,181,253,0.92)"
-                    strokeWidth={1 / viewport.zoom}
-                    strokeDasharray={`${6 / viewport.zoom} ${4 / viewport.zoom}`}
-                    pointerEvents="none"
-                  />
-                ),
-              )}
-            {dragState?.type === "guidePull" &&
-              dragState.guideOrientation === "vertical" &&
-              dragState.draftPos != null && (
-                <line
-                  data-ui="layout-guide-draft"
-                  x1={dragState.draftPos}
-                  y1={-5e5}
-                  x2={dragState.draftPos}
-                  y2={5e5}
-                  stroke="rgba(251,191,36,0.9)"
-                  strokeWidth={1 / viewport.zoom}
-                  strokeDasharray={`${5 / viewport.zoom} ${4 / viewport.zoom}`}
-                  pointerEvents="none"
-                />
-              )}
-            {dragState?.type === "guidePull" &&
-              dragState.guideOrientation === "horizontal" &&
-              dragState.draftPos != null && (
-                <line
-                  data-ui="layout-guide-draft"
-                  x1={-5e5}
-                  y1={dragState.draftPos}
-                  x2={5e5}
-                  y2={dragState.draftPos}
-                  stroke="rgba(251,191,36,0.9)"
-                  strokeWidth={1 / viewport.zoom}
-                  strokeDasharray={`${5 / viewport.zoom} ${4 / viewport.zoom}`}
-                  pointerEvents="none"
-                />
-              )}
-
             {/* Aislamiento «pegar dentro»: silueta de la máscara del contenedor (solo guía, no seleccionable) */}
             {!canvasZenMode &&
               isClipContentIsolation &&
@@ -9035,6 +9022,68 @@ export default function FreehandStudio({
                 })}
               </g>
             ))}
+
+            {/* Guías de diseño encima del contenido (no exportan; data-ui se filtra al exportar) */}
+            {showLayoutGuides &&
+              layoutGuides.map((g) =>
+                g.orientation === "vertical" ? (
+                  <line
+                    key={g.id}
+                    data-ui="layout-guide"
+                    x1={g.position}
+                    y1={-5e5}
+                    x2={g.position}
+                    y2={5e5}
+                    stroke="rgba(196,181,253,0.59)"
+                    strokeWidth={0.58 / viewport.zoom}
+                    strokeDasharray={`${5 / viewport.zoom} ${4 / viewport.zoom}`}
+                    pointerEvents="none"
+                  />
+                ) : (
+                  <line
+                    key={g.id}
+                    data-ui="layout-guide"
+                    x1={-5e5}
+                    y1={g.position}
+                    x2={5e5}
+                    y2={g.position}
+                    stroke="rgba(196,181,253,0.59)"
+                    strokeWidth={0.58 / viewport.zoom}
+                    strokeDasharray={`${5 / viewport.zoom} ${4 / viewport.zoom}`}
+                    pointerEvents="none"
+                  />
+                ),
+              )}
+            {dragState?.type === "guidePull" &&
+              dragState.guideOrientation === "vertical" &&
+              dragState.draftPos != null && (
+                <line
+                  data-ui="layout-guide-draft"
+                  x1={dragState.draftPos}
+                  y1={-5e5}
+                  x2={dragState.draftPos}
+                  y2={5e5}
+                  stroke="rgba(251,191,36,0.88)"
+                  strokeWidth={0.62 / viewport.zoom}
+                  strokeDasharray={`${5 / viewport.zoom} ${4 / viewport.zoom}`}
+                  pointerEvents="none"
+                />
+              )}
+            {dragState?.type === "guidePull" &&
+              dragState.guideOrientation === "horizontal" &&
+              dragState.draftPos != null && (
+                <line
+                  data-ui="layout-guide-draft"
+                  x1={-5e5}
+                  y1={dragState.draftPos}
+                  x2={5e5}
+                  y2={dragState.draftPos}
+                  stroke="rgba(251,191,36,0.88)"
+                  strokeWidth={0.62 / viewport.zoom}
+                  strokeDasharray={`${5 / viewport.zoom} ${4 / viewport.zoom}`}
+                  pointerEvents="none"
+                />
+              )}
 
             {/* Hover outline: canvas hover or layers panel hover (sync) */}
             {(hoverCanvasId || layerHoverId) && !canvasZenMode && (activeTool === "select" || activeTool === "directSelect") && (() => {
@@ -11495,7 +11544,7 @@ export default function FreehandStudio({
 
       {canvasZenMode && (
         <div className="pointer-events-none fixed bottom-5 left-1/2 z-[100002] -translate-x-1/2 rounded-md border border-white/[0.08] bg-black/45 px-3 py-1.5 text-[10px] text-zinc-500">
-          P o Esc · salir del modo lienzo
+          {designerMode ? "⌥P o Esc · salir del modo lienzo" : "P o Esc · salir del modo lienzo"}
         </div>
       )}
 
