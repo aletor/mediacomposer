@@ -137,6 +137,34 @@ export default function DesignerStudio({
     setDesignerFitToViewNonce((n) => n + 1);
   }, []);
 
+  /** Dirección de la animación horizontal al cambiar de página (ver `designerPage-slide-in-*` en globals.css). */
+  const [designerPageEnterDirection, setDesignerPageEnterDirection] = useState<"next" | "prev" | null>(null);
+
+  const goToDesignerPage = useCallback(
+    (nextIdx: number, opts?: { animate?: boolean }) => {
+      const cur = activeIdxRef.current;
+      const n = pagesRef.current.length;
+      if (nextIdx < 0 || nextIdx >= n || nextIdx === cur) return;
+      const animate = opts?.animate !== false;
+      setDesignerPageEnterDirection(animate ? (nextIdx > cur ? "next" : "prev") : null);
+      setActivePageIndex(nextIdx);
+      queueMicrotask(() => requestDesignerFitToView());
+    },
+    [requestDesignerFitToView],
+  );
+
+  /** Ctrl/Cmd + ← / → en el lienzo: página anterior / siguiente. */
+  const handleDesignerNavigatePage = useCallback(
+    (delta: -1 | 1) => {
+      const i = activeIdxRef.current;
+      const n = pagesRef.current.length;
+      if (n <= 1) return;
+      const next = Math.max(0, Math.min(n - 1, i + delta));
+      goToDesignerPage(next, { animate: true });
+    },
+    [goToDesignerPage],
+  );
+
   useEffect(() => {
     requestDesignerFitToView();
   }, [requestDesignerFitToView]);
@@ -817,7 +845,10 @@ export default function DesignerStudio({
     };
     commitPages((prev) => {
       const next = [...prev, newPage];
-      queueMicrotask(() => setActivePageIndex(next.length - 1));
+      queueMicrotask(() => {
+        setDesignerPageEnterDirection("next");
+        setActivePageIndex(next.length - 1);
+      });
       return next;
     });
     setFormatModal(null);
@@ -852,6 +883,7 @@ export default function DesignerStudio({
         return next;
       });
     }
+    setDesignerPageEnterDirection(null);
     setPages((prev) => {
       if (prev.length <= 1) return prev;
       const filtered = prev.filter((_, i) => i !== idx);
@@ -870,6 +902,7 @@ export default function DesignerStudio({
       if (fromIndex < 0 || toIndex < 0) return;
       const len = pagesRef.current.length;
       if (fromIndex >= len || toIndex >= len) return;
+      setDesignerPageEnterDirection(null);
       commitPages((prev) => {
         const next = [...prev];
         const [item] = next.splice(fromIndex, 1);
@@ -1204,6 +1237,7 @@ export default function DesignerStudio({
         const pd = getPageDimensions(pg);
         const expectedKey = `${pg.id}_${i}_${Math.round(pd.width)}_${Math.round(pd.height)}`;
         flushSync(() => {
+          setDesignerPageEnterDirection(null);
           setActivePageIndex(i);
         });
         // Tras `flushSync`, dar tiempo a que el lienzo (re)monte y el `useEffect` asigne `studioApiRef`.
@@ -1245,6 +1279,7 @@ export default function DesignerStudio({
       alert(`No se pudo generar el PDF: ${msg}`);
     } finally {
       flushSync(() => {
+        setDesignerPageEnterDirection(null);
         setActivePageIndex(savedIdx);
       });
       multiPdfExportingRef.current = false;
@@ -1262,6 +1297,7 @@ export default function DesignerStudio({
     const expectedKey = `${pg0.id}_0_${Math.round(pd.width)}_${Math.round(pd.height)}`;
 
     flushSync(() => {
+      setDesignerPageEnterDirection(null);
       setActivePageIndex(0);
     });
 
@@ -1294,6 +1330,7 @@ export default function DesignerStudio({
       <FreehandStudio
         key={studioKey}
         nodeId={studioKey}
+        designerPageEnterDirection={designerPageEnterDirection}
         initialObjects={activePage?.objects ?? []}
         initialArtboards={initialArtboards}
         initialLayoutGuides={activePage?.layoutGuides}
@@ -1322,6 +1359,7 @@ export default function DesignerStudio({
         designerClipboardRef={designerClipboardRef}
         designerActivePageId={activePage?.id ?? null}
         designerClipboardSourcePageIdRef={designerClipboardSourcePageIdRef}
+        onDesignerNavigatePage={handleDesignerNavigatePage}
         designerMultipageVectorPdfExport={{
           pageCount: pages.length,
           busy: multiPdfBusy,
@@ -1392,14 +1430,12 @@ export default function DesignerStudio({
                               suppressPageThumbClickRef.current = false;
                               return;
                             }
-                            setActivePageIndex(i);
-                            requestDesignerFitToView();
+                            goToDesignerPage(i);
                           }}
                           onDoubleClick={(e) => {
                             e.preventDefault();
                             suppressPageThumbClickRef.current = false;
-                            setActivePageIndex(i);
-                            requestDesignerFitToView();
+                            goToDesignerPage(i);
                           }}
                         >
                           <div className="flex h-[72px] w-full items-stretch justify-center overflow-hidden rounded-[2px] bg-zinc-950/90 ring-1 ring-inset ring-white/[0.06]">
@@ -1507,8 +1543,7 @@ export default function DesignerStudio({
             key={p.id}
             type="button"
             onClick={() => {
-              setActivePageIndex(i);
-              requestDesignerFitToView();
+              goToDesignerPage(i);
             }}
             className={`min-w-[1.75rem] rounded-md px-2 py-1 text-[10px] font-bold tabular-nums transition ${
               i === activePageIndex

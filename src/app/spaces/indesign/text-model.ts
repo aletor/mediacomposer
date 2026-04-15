@@ -3,6 +3,8 @@
  * Cada SpanNode puede tener overrides de estilo para rich text (negrita, cursiva, etc.).
  */
 
+import { DEFAULT_DOCUMENT_FONT_FAMILY, DEFAULT_DOCUMENT_FONT_WEIGHT } from "../freehand/google-fonts";
+
 export type Typography = {
   fontFamily: string;
   fontSize: number;
@@ -21,13 +23,13 @@ export type Typography = {
 };
 
 export const DEFAULT_TYPOGRAPHY: Typography = {
-  fontFamily: "Inter, system-ui, sans-serif",
+  fontFamily: DEFAULT_DOCUMENT_FONT_FAMILY,
   fontSize: 16,
   lineHeight: 1.25,
   letterSpacing: 0,
   align: "left",
   color: "#111827",
-  fontWeight: "normal",
+  fontWeight: String(DEFAULT_DOCUMENT_FONT_WEIGHT),
   fontStyle: "normal",
   paragraphIndent: 0,
   fontKerning: "auto",

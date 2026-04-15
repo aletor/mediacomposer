@@ -17,20 +17,26 @@ export const GOOGLE_FONTS_POPULAR: { family: string; category: string }[] = [
   { family: "Nunito", category: "Sans" },
 ];
 
+/** Familia y peso por defecto (Helvetica Book); debe coincidir con el preset `h-book` para el `<select>`. */
+export const DEFAULT_DOCUMENT_FONT_FAMILY = 'Helvetica, "Helvetica Neue", Arial, sans-serif';
+/** Peso numérico (Book) alineado con CSS `font-weight: 450`. */
+export const DEFAULT_DOCUMENT_FONT_WEIGHT = 450;
+
 /**
  * Helvetica / Helvetica Neue vía fuentes del sistema (no se embeben .woff: licencia).
  * En macOS/iOS suelen resolverse bien; en Windows/Linux puede hacerse fallback a Arial.
  * Cada opción fija `font-weight` al elegirla (Light 300, Book 450, Regular 400, Black 900).
+ * Orden: **Helvetica** primero (Book por defecto del documento), luego Helvetica Neue.
  */
 export const DESIGNER_SYSTEM_FONT_PRESETS: { id: string; label: string; family: string; weight: number }[] = [
+  { id: "h-book", label: "Helvetica · Book", family: DEFAULT_DOCUMENT_FONT_FAMILY, weight: 450 },
+  { id: "h-light", label: "Helvetica · Light", family: DEFAULT_DOCUMENT_FONT_FAMILY, weight: 300 },
+  { id: "h-regular", label: "Helvetica · Regular", family: DEFAULT_DOCUMENT_FONT_FAMILY, weight: 400 },
+  { id: "h-black", label: "Helvetica · Black", family: DEFAULT_DOCUMENT_FONT_FAMILY, weight: 900 },
   { id: "hn-light", label: "Helvetica Neue · Light", family: '"Helvetica Neue", "Helvetica Neue LT Pro", Helvetica, Arial, sans-serif', weight: 300 },
   { id: "hn-book", label: "Helvetica Neue · Book", family: '"Helvetica Neue", "Helvetica Neue LT Pro", Helvetica, Arial, sans-serif', weight: 450 },
   { id: "hn-regular", label: "Helvetica Neue · Regular", family: '"Helvetica Neue", "Helvetica Neue LT Pro", Helvetica, Arial, sans-serif', weight: 400 },
   { id: "hn-black", label: "Helvetica Neue · Black", family: '"Helvetica Neue", "Helvetica Neue LT Pro", Helvetica, Arial, sans-serif', weight: 900 },
-  { id: "h-light", label: "Helvetica · Light", family: 'Helvetica, "Helvetica Neue", Arial, sans-serif', weight: 300 },
-  { id: "h-book", label: "Helvetica · Book", family: 'Helvetica, "Helvetica Neue", Arial, sans-serif', weight: 450 },
-  { id: "h-regular", label: "Helvetica · Regular", family: 'Helvetica, "Helvetica Neue", Arial, sans-serif', weight: 400 },
-  { id: "h-black", label: "Helvetica · Black", family: 'Helvetica, "Helvetica Neue", Arial, sans-serif', weight: 900 },
 ];
 
 export const DESIGNER_FONT_PRESET_VALUE_PREFIX = "__preset:";

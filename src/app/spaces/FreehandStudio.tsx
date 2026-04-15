@@ -76,6 +76,7 @@ import {
   IndentIncrease,
   List,
   ListOrdered,
+  ArrowLeftRight,
 } from "lucide-react";
 import { ScrubNumberInput } from "./ScrubNumberInput";
 import { FreehandExportModal, type ProfessionalExportOptions } from "./freehand/FreehandExportModal";
@@ -119,6 +120,8 @@ import {
   type VectorPdfExportOptions,
 } from "./freehand/text-outline";
 import {
+  DEFAULT_DOCUMENT_FONT_FAMILY,
+  DEFAULT_DOCUMENT_FONT_WEIGHT,
   DESIGNER_FONT_PRESET_VALUE_PREFIX,
   DESIGNER_SYSTEM_FONT_PRESETS,
   designerFontSelectControlValue,
@@ -302,6 +305,8 @@ function normalizeBezierPointForVertexMode(pt: BezierPoint, mode: VertexMode): B
   };
 }
 
+type StrokeMarkerKind = "none" | "arrow" | "dot";
+
 interface FreehandObjectBase {
   id: string;
   type: string;
@@ -315,6 +320,20 @@ interface FreehandObjectBase {
   strokeLinecap: "butt" | "round" | "square";
   strokeLinejoin: "miter" | "round" | "bevel";
   strokeDasharray: string;
+  /** Límite de inglete SVG (≥1). Solo aplica con join miter. */
+  strokeMiterlimit?: number;
+  /** Desfase del patrón de guiones (unidades de usuario SVG). */
+  strokeDashoffset?: number;
+  /** Preferencia de alineación del trazo (SVG 1.1 pinta como “centro”; inside/outside reservado). */
+  strokeAlignment?: "center" | "inside" | "outside";
+  /** Marcadores en trazos abiertos (path). */
+  strokeMarkerStart?: StrokeMarkerKind;
+  strokeMarkerEnd?: StrokeMarkerKind;
+  /** Escala del marcador en % (25–400). */
+  strokeMarkerStartScale?: number;
+  strokeMarkerEndScale?: number;
+  /** Si ambas escalas de marcador se editan a la vez. */
+  strokeMarkerScaleLinked?: boolean;
   opacity: number;
   rotation: number;
   /** Espejo horizontal/vertical (escala −1 en el eje local respecto al centro del recto de selección). */
@@ -521,6 +540,10 @@ interface FreehandStudioProps {
   designerClipboardSourcePageIdRef?: React.MutableRefObject<string | null>;
   /** Designer: narrow page rail (~110px) rendered to the right of the properties panel. */
   designerPagesRail?: React.ReactNode;
+  /** Designer: Ctrl/Cmd + ← / → para cambiar de página del documento. */
+  onDesignerNavigatePage?: (delta: -1 | 1) => void;
+  /** Designer: dirección de la animación horizontal al mostrar otra página (multipágina). */
+  designerPageEnterDirection?: "next" | "prev" | null;
   /** Designer: bump to request fit-to-viewport after the active page canvas is shown (e.g. user picked a page). */
   designerFitToViewNonce?: number;
   /** Designer: multipage vector PDF export (shown in Export modal). */
@@ -1279,11 +1302,57 @@ function linkTextToPath(objects: FreehandObject[], selectedIds: Set<string>): Fr
 
 // ── Geometry ────────────────────────────────────────────────────────────
 
-/** Dimensiones del `foreignObject` del texto (coinciden con `renderObj` / export). */
-function textLayoutDims(t: TextObject): { w: number; h: number } {
-  const w = t.textMode === "point" ? Math.max(t.width, 32) : t.width;
-  const h = t.textMode === "point" ? Math.max(t.height, t.fontSize * t.lineHeight + 4) : t.height;
+/** Cadena a medir para texto point (incluye rich spans; tamaños mixtos se aproximan con la fuente base). */
+function textContentForLayoutMeasure(t: TextObject): string {
+  if (t._designerRichSpans && t._designerRichSpans.length > 0) {
+    return t._designerRichSpans.map((s) => s.text).join("");
+  }
+  return t.text ?? "";
+}
+
+/**
+ * Texto point: el modelo guarda `width`/`height` del último resize; si cambia `fontSize` o el copy,
+ * hay que derivar el rect desde medición (misma base que el `foreignObject` en pantalla).
+ */
+function measurePointTextLayoutDims(t: TextObject): { w: number; h: number } {
+  if (typeof document === "undefined") {
+    return {
+      w: Math.max(t.width, 32),
+      h: Math.max(t.height, t.fontSize * t.lineHeight + 4),
+    };
+  }
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    return {
+      w: Math.max(t.width, 32),
+      h: Math.max(t.height, t.fontSize * t.lineHeight + 4),
+    };
+  }
+  const fst = t.fontStyle && t.fontStyle !== "normal" ? `${t.fontStyle} ` : "";
+  ctx.font = `${fst}${t.fontWeight} ${t.fontSize}px ${t.fontFamily}`;
+  const letterSpacing = t.letterSpacing ?? 0;
+  const raw = textContentForLayoutMeasure(t);
+  const lines = raw.length === 0 ? ["\u00a0"] : raw.split("\n");
+  const lh = t.fontSize * t.lineHeight;
+  let maxW = 32;
+  for (const line of lines) {
+    const lineW = measureExportLineWidth(line || " ", ctx, letterSpacing);
+    maxW = Math.max(maxW, lineW);
+  }
+  const padX = 4;
+  const padY = 4;
+  const w = Math.max(Math.ceil(maxW + padX * 2), 32);
+  const h = Math.max(Math.ceil(lines.length * lh + padY * 2), t.fontSize * t.lineHeight + 4);
   return { w, h };
+}
+
+/** Dimensiones del `foreignObject` del texto (coinciden con `renderObj` / export / marco de selección). */
+function textLayoutDims(t: TextObject): { w: number; h: number } {
+  if (t.textMode === "area") {
+    return { w: t.width, h: t.height };
+  }
+  return measurePointTextLayoutDims(t);
 }
 
 /** Entrada para PDF/SVG vectorial: incluye `richRuns` si el texto viene de Designer. */
@@ -2448,6 +2517,15 @@ function snapDeltaTo45(dx: number, dy: number): { x: number; y: number } {
   return { x: Math.cos(snapped) * len, y: Math.sin(snapped) * len };
 }
 
+/** Pluma: siguiente ancla en múltiplos de 45° respecto al anterior (misma longitud que el vector cursor). Solo con Mayús pulsada. */
+function snapCanvasPointTo45From(from: Point, to: Point): Point {
+  const d = snapDeltaTo45(to.x - from.x, to.y - from.y);
+  const nx = from.x + d.x;
+  const ny = from.y + d.y;
+  if (Math.hypot(nx - from.x, ny - from.y) < 1e-6) return { ...to };
+  return { x: nx, y: ny };
+}
+
 function computeSnap(
   movingBounds: Rect,
   allObjects: FreehandObject[],
@@ -2873,6 +2951,138 @@ function svgStrokeDashArray(raw: string | undefined): string | undefined {
   return parts.join(" ");
 }
 
+function buildSvgStrokePaintProps(obj: {
+  stroke: string;
+  strokeWidth: number;
+  strokeLinecap: FreehandObjectBase["strokeLinecap"];
+  strokeLinejoin: FreehandObjectBase["strokeLinejoin"];
+  strokeDasharray: string;
+  strokeMiterlimit?: number;
+  strokeDashoffset?: number;
+}): {
+  stroke: string;
+  strokeWidth: number;
+  strokeLinecap: FreehandObjectBase["strokeLinecap"];
+  strokeLinejoin: FreehandObjectBase["strokeLinejoin"];
+  strokeDasharray?: string;
+  strokeDashoffset?: number;
+  strokeMiterlimit?: number;
+} {
+  const dash = svgStrokeDashArray(obj.strokeDasharray);
+  const ml = obj.strokeLinejoin === "miter" ? (obj.strokeMiterlimit ?? 4) : undefined;
+  const off = obj.strokeDashoffset;
+  return {
+    stroke: obj.stroke,
+    strokeWidth: obj.strokeWidth,
+    strokeLinecap: obj.strokeLinecap,
+    strokeLinejoin: obj.strokeLinejoin,
+    ...(dash ? { strokeDasharray: dash } : {}),
+    ...(off != null && Math.abs(Number(off)) > 1e-9 ? { strokeDashoffset: off } : {}),
+    ...(ml != null && obj.strokeLinejoin === "miter" ? { strokeMiterlimit: ml } : {}),
+  };
+}
+
+/** Defs + refs de marcadores para trazos abiertos. */
+function parseStrokeDashSix(raw: string | undefined): string[] {
+  const parts = String(raw ?? "")
+    .trim()
+    .replace(/,/g, " ")
+    .split(/\s+/)
+    .filter((x) => x !== "");
+  const out = ["", "", "", "", "", ""];
+  for (let i = 0; i < 6; i++) out[i] = parts[i] ?? "";
+  return out;
+}
+
+function joinStrokeDashSix(parts: string[]): string {
+  const nums = parts.map((p) => p.trim()).filter((p) => p !== "" && !Number.isNaN(Number(p)));
+  return nums.join(" ");
+}
+
+function pathMarkerDefsAndAttrs(
+  p: PathObject,
+  strokeColor: string,
+): { defs: React.ReactNode | null; markerStart?: string; markerEnd?: string } {
+  if (p.closed) return { defs: null };
+  const s = p.strokeMarkerStart ?? "none";
+  const e = p.strokeMarkerEnd ?? "none";
+  if (s === "none" && e === "none") return { defs: null };
+  const linked = p.strokeMarkerScaleLinked !== false;
+  const sPct = Math.max(25, Math.min(400, p.strokeMarkerStartScale ?? 100));
+  const ePct = Math.max(25, Math.min(400, p.strokeMarkerEndScale ?? 100));
+  const su = linked ? sPct / 100 : sPct / 100;
+  const eu = linked ? sPct / 100 : ePct / 100;
+  const bid = `fhmk-${p.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  const sw = Math.max(0.5, p.strokeWidth);
+  const arrWs = 10 * sw * su;
+  const arrHs = 6 * sw * su;
+  const arrWe = 10 * sw * eu;
+  const arrHe = 6 * sw * eu;
+  const dotS = 8 * sw * Math.max(su, eu);
+
+  const mkArrowEnd = (
+    <marker
+      id={`${bid}-ae`}
+      markerUnits="userSpaceOnUse"
+      markerWidth={arrWe}
+      markerHeight={arrHe}
+      refX={arrWe}
+      refY={arrHe / 2}
+      orient="auto"
+    >
+      <path d={`M0 0 L${arrWe} ${arrHe / 2} L0 ${arrHe} Z`} fill={strokeColor} />
+    </marker>
+  );
+  const mkArrowStart = (
+    <marker
+      id={`${bid}-as`}
+      markerUnits="userSpaceOnUse"
+      markerWidth={arrWs}
+      markerHeight={arrHs}
+      refX={0}
+      refY={arrHs / 2}
+      orient="auto"
+    >
+      <path d={`M${arrWs} 0 L0 ${arrHs / 2} L${arrWs} ${arrHs} Z`} fill={strokeColor} />
+    </marker>
+  );
+  const mkDot = (
+    <marker
+      id={`${bid}-dot`}
+      markerUnits="userSpaceOnUse"
+      markerWidth={dotS}
+      markerHeight={dotS}
+      refX={dotS / 2}
+      refY={dotS / 2}
+      orient="auto"
+    >
+      <circle cx={dotS / 2} cy={dotS / 2} r={dotS * 0.28} fill={strokeColor} />
+    </marker>
+  );
+
+  const needArrowE = e === "arrow";
+  const needArrowS = s === "arrow";
+  const needDot = s === "dot" || e === "dot";
+
+  const defs = (
+    <defs>
+      {needArrowE ? mkArrowEnd : null}
+      {needArrowS ? mkArrowStart : null}
+      {needDot ? mkDot : null}
+    </defs>
+  );
+
+  const url = (id: string) => `url(#${id})`;
+  let markerStart: string | undefined;
+  let markerEnd: string | undefined;
+  if (s === "arrow") markerStart = url(`${bid}-as`);
+  else if (s === "dot") markerStart = url(`${bid}-dot`);
+  if (e === "arrow") markerEnd = url(`${bid}-ae`);
+  else if (e === "dot") markerEnd = url(`${bid}-dot`);
+
+  return { defs, markerStart, markerEnd };
+}
+
 // ── Render SVG object ───────────────────────────────────────────────────
 
 type RenderObjOpts = {
@@ -2880,6 +3090,8 @@ type RenderObjOpts = {
   canvasZenMode?: boolean;
   /** Designer: el texto de marcos encadenados no se edita en el lienzo (solo modal / panel). */
   designerMode?: boolean;
+  /** Edición en canvas: ocultar el texto duplicado en SVG para que el textarea muestre selección visible. */
+  textEditingId?: string | null;
 };
 
 function renderObj(
@@ -2893,14 +3105,8 @@ function renderObj(
   const fill = migrateFill(obj.fill);
   const gid = gradientDefId(obj.id);
   const fillAttr = fillPaintValue(fill, gid);
-  const strokeProps = {
-    stroke: obj.stroke,
-    strokeWidth: obj.strokeWidth,
-    strokeLinecap: obj.strokeLinecap,
-    strokeLinejoin: obj.strokeLinejoin,
-    strokeDasharray: svgStrokeDashArray(obj.strokeDasharray),
-    opacity: obj.opacity,
-  };
+  const strokePaint = buildSvgStrokePaintProps(obj);
+  const strokeProps = { ...strokePaint, opacity: obj.opacity };
 
   switch (obj.type) {
     case "rect": {
@@ -2956,6 +3162,13 @@ function renderObj(
       const p = obj as PathObject;
       const fp = p.closed && fillHasPaint(fill) ? fillAttr : "none";
       const d = pathObjToD(p);
+      const strokeHex = p.stroke && p.stroke !== "none" ? p.stroke : "#94a3b8";
+      const mk = pathMarkerDefsAndAttrs(p, strokeHex);
+      const mProps =
+        mk.markerStart || mk.markerEnd
+          ? { markerStart: mk.markerStart, markerEnd: mk.markerEnd }
+          : {};
+      const pathProps = { ...strokeProps, ...mProps };
       const hasIntrinsic =
         p.svgPathIntrinsicW != null &&
         p.svgPathIntrinsicH != null &&
@@ -2969,7 +3182,8 @@ function renderObj(
         return (
           <g key={obj.id} transform={transform}>
             <g transform={`translate(${obj.x} ${obj.y}) scale(${sx} ${sy})`}>
-              <path d={d} fill={fp} {...strokeProps} />
+              {mk.defs}
+              <path d={d} fill={fp} {...pathProps} />
             </g>
           </g>
         );
@@ -2982,17 +3196,24 @@ function renderObj(
         return (
           <g key={obj.id} transform={transform}>
             <g transform={innerM}>
-              <path d={d} fill={fp} {...strokeProps} />
+              {mk.defs}
+              <path d={d} fill={fp} {...pathProps} />
             </g>
           </g>
         );
       }
-      return <path key={obj.id} d={d} fill={fp} transform={transform} {...strokeProps} />;
+      return mk.defs ? (
+        <g key={obj.id} transform={transform}>
+          {mk.defs}
+          <path d={d} fill={fp} {...pathProps} />
+        </g>
+      ) : (
+        <path key={obj.id} d={d} fill={fp} transform={transform} {...pathProps} />
+      );
     }
     case "text": {
       const t = obj as TextObject;
-      const foW = t.textMode === "point" ? Math.max(t.width, 32) : t.width;
-      const foH = t.textMode === "point" ? Math.max(t.height, t.fontSize * t.lineHeight + 4) : t.height;
+      const { w: foW, h: foH } = textLayoutDims(t);
       const ta = t.textAlign === "justify" ? "justify" : t.textAlign;
       const pad = t.textMode === "area" ? 4 : 0;
       const padL = pad + (t.paragraphIndent ?? 0);
@@ -3132,6 +3353,7 @@ function renderObj(
         );
       }
       const textT = textSvgTransform(t);
+      const hideSvgTextWhileEditing = opts?.textEditingId === t.id;
       return (
         <g key={obj.id} data-fh-text={t.id} transform={textT}>
           {t.isTextFrame && !opts?.canvasZenMode && (
@@ -3142,7 +3364,17 @@ function renderObj(
               pointerEvents="none"
             />
           )}
-          <foreignObject x={t.x} y={t.y} width={foW} height={foH} style={{ overflow: t.isTextFrame ? "hidden" : "visible" }}>
+          <foreignObject
+            x={t.x}
+            y={t.y}
+            width={foW}
+            height={foH}
+            style={{
+              overflow: t.isTextFrame ? "hidden" : "visible",
+              opacity: hideSvgTextWhileEditing ? 0 : 1,
+              pointerEvents: hideSvgTextWhileEditing ? "none" : undefined,
+            }}
+          >
             {inner}
           </foreignObject>
           {/* Text frame ports rendered in overlay layer above selection box */}
@@ -3385,7 +3617,7 @@ function textObjectToNativeSvgMarkup(t: TextObject): string {
   const raw = t.text || "\u00a0";
   const pad = t.textMode === "area" ? 4 : 0;
   const indent = t.paragraphIndent ?? 0;
-  const boxW = t.textMode === "point" ? Math.max(t.width, 32) : t.width;
+  const boxW = textLayoutDims(t).w;
 
   let lines: string[];
   if (t.textMode === "area" && typeof document !== "undefined") {
@@ -3530,7 +3762,11 @@ function objToSvgStringStatic(obj: FreehandObject, w: number, h: number, ox: num
   const transform = tf ? ` transform="${escapeXmlAttr(tf)}"` : "";
   const dash = svgStrokeDashArray(obj.strokeDasharray);
   const dashAttr = dash ? ` stroke-dasharray="${dash}"` : "";
-  const capJoin = ` stroke-linecap="${obj.strokeLinecap}" stroke-linejoin="${obj.strokeLinejoin}"`;
+  const off = obj.strokeDashoffset;
+  const dashOffAttr = off != null && Math.abs(Number(off)) > 1e-9 ? ` stroke-dashoffset="${off}"` : "";
+  const ml = obj.strokeLinejoin === "miter" ? (obj.strokeMiterlimit ?? 4) : undefined;
+  const mlAttr = ml != null && obj.strokeLinejoin === "miter" ? ` stroke-miterlimit="${ml}"` : "";
+  const capJoin = ` stroke-linecap="${obj.strokeLinecap}" stroke-linejoin="${obj.strokeLinejoin}"${mlAttr}${dashOffAttr}`;
   switch (obj.type) {
     case "rect":
       parts.push(`<rect x="${obj.x}" y="${obj.y}" width="${obj.width}" height="${obj.height}" rx="${(obj as RectObject).rx}" fill="${escapeXmlAttr(fillAttr)}" stroke="${obj.stroke}" stroke-width="${obj.strokeWidth}"${capJoin}${dashAttr} ${transform}/>`);
@@ -3563,8 +3799,7 @@ function objToSvgStringStatic(obj: FreehandObject, w: number, h: number, ox: num
     }
     case "text": {
       const t = obj as TextObject;
-      const foW = t.textMode === "point" ? Math.max(t.width, 32) : t.width;
-      const foH = t.textMode === "point" ? Math.max(t.height, t.fontSize * t.lineHeight + 4) : t.height;
+      const { w: foW, h: foH } = textLayoutDims(t);
       const innerFo = textForeignObjectStaticInnerXml(t, fill);
       const tt = textSvgTransform(t);
       const gtr = tt ? ` transform="${escapeXmlAttr(tt)}"` : "";
@@ -4170,9 +4405,9 @@ interface TextCreationTypography {
 }
 
 const DEFAULT_TEXT_CREATION_TYPOGRAPHY: TextCreationTypography = {
-  fontFamily: "Inter, system-ui, sans-serif",
+  fontFamily: DEFAULT_DOCUMENT_FONT_FAMILY,
   fontSize: 18,
-  fontWeight: 400,
+  fontWeight: DEFAULT_DOCUMENT_FONT_WEIGHT,
   fontStyle: "normal",
   lineHeight: 1.35,
   letterSpacing: 0,
@@ -4259,6 +4494,8 @@ export default function FreehandStudio({
   designerActivePageId = null,
   designerClipboardSourcePageIdRef,
   designerPagesRail,
+  onDesignerNavigatePage,
+  designerPageEnterDirection = null,
   designerMultipageVectorPdfExport,
   designerFitToViewNonce = 0,
   designerSkipAutoNodeExportOnClose = false,
@@ -4295,13 +4532,15 @@ export default function FreehandStudio({
   const [penPoints, setPenPoints] = useState<BezierPoint[]>([]);
   const [isPenDrawing, setIsPenDrawing] = useState(false);
   const [penDragging, setPenDragging] = useState(false);
-  /** Posición en lienzo del cursor para la línea guía (tramo siguiente antes de clic). */
+  /** Posición en lienzo del cursor para la línea guía (tramo siguiente antes de clic; con Mayús puede estar snapada). */
   const [penHoverCanvas, setPenHoverCanvas] = useState<Point | null>(null);
-  /** Cursor dentro del radio de cierre sobre el primer ancla (mismo criterio que el clic). */
+  /** Posición cruda del cursor (para detectar cerca del primer punto aunque el snap aleje la guía). */
+  const [penHoverCanvasRaw, setPenHoverCanvasRaw] = useState<Point | null>(null);
+  /** Cursor dentro del radio de cierre sobre el primer ancla (usa posición cruda, no la snapada). */
   const penHoverNearPathStart = useMemo(() => {
-    if (!penHoverCanvas || penDragging || !isPenDrawing || penPoints.length < 2) return false;
-    return dist(penHoverCanvas, penPoints[0]!.anchor) < PEN_CLOSE_TO_START_PX / viewport.zoom;
-  }, [penHoverCanvas, penDragging, isPenDrawing, penPoints, viewport.zoom]);
+    if (!penHoverCanvasRaw || penDragging || !isPenDrawing || penPoints.length < 2) return false;
+    return dist(penHoverCanvasRaw, penPoints[0]!.anchor) < PEN_CLOSE_TO_START_PX / viewport.zoom;
+  }, [penHoverCanvasRaw, penDragging, isPenDrawing, penPoints, viewport.zoom]);
 
   /** Modal ampliado para editar historia del marco de texto (oculta el panel Propiedades mientras está abierto). */
   const [designerStoryModalOpen, setDesignerStoryModalOpen] = useState(false);
@@ -5598,6 +5837,7 @@ export default function FreehandStudio({
 
   const finishPenPath = useCallback((closed: boolean) => {
     setPenHoverCanvas(null);
+    setPenHoverCanvasRaw(null);
     if (penPoints.length < 2) { setPenPoints([]); setIsPenDrawing(false); return; }
     const bounds = getPathBoundsFromPoints(penPoints);
     const pathObj: PathObject = {
@@ -7224,6 +7464,31 @@ export default function FreehandStudio({
       if ((e.metaKey || e.ctrlKey) && (e.key === "[" || e.key === "{")) { e.preventDefault(); sendBackward(); return; }
 
       if (
+        designerMode &&
+        onDesignerNavigatePage &&
+        (e.ctrlKey || e.metaKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        (e.key === "ArrowLeft" || e.key === "ArrowRight")
+      ) {
+        const ae = document.activeElement as HTMLElement | null;
+        if (
+          ae &&
+          (ae.tagName === "INPUT" ||
+            ae.tagName === "TEXTAREA" ||
+            ae.tagName === "SELECT" ||
+            ae.isContentEditable ||
+            ae.closest?.("[contenteditable='true']"))
+        ) {
+          return;
+        }
+        if (textEditingId || designerStoryModalOpen) return;
+        e.preventDefault();
+        onDesignerNavigatePage(e.key === "ArrowLeft" ? -1 : 1);
+        return;
+      }
+
+      if (
         (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") &&
         !e.metaKey && !e.ctrlKey && !e.altKey
       ) {
@@ -7355,7 +7620,7 @@ export default function FreehandStudio({
       undo, redo, pushHistory, deleteSelected, duplicateSelected, groupSelected,
       ungroupSelected, bringForward, sendBackward, finishPenPath, deleteSelectedPoints, exitIsolation,
       copySelectedObjects, cutSelectedObjects, pasteClipboardObjects, pasteInside, quickExportSelectionPng, convertTextToOutlines,
-      designerMode, imageFrameContentEditId, clipContentEditId, canvasZenMode, scheduleFitAllAfterLayout]);
+      designerMode, onDesignerNavigatePage, designerStoryModalOpen, imageFrameContentEditId, clipContentEditId, canvasZenMode, scheduleFitAllAfterLayout]);
 
   // ── Mouse handlers ────────────────────────────────────────────────
 
@@ -7375,6 +7640,12 @@ export default function FreehandStudio({
         }
       }
       setCtxMenu({ x: e.clientX, y: e.clientY, canvas: pos });
+      return;
+    }
+
+    // Edición de texto: no iniciar pan / marquee / move del lienzo (el burbujeo robaba la selección de texto).
+    const _fhTgt = e.target as HTMLElement | null;
+    if (_fhTgt?.closest?.("[data-fh-text-editor]")) {
       return;
     }
 
@@ -7494,7 +7765,17 @@ export default function FreehandStudio({
 
     // ── Pen tool ──────────────────────────────────────────────────
     if (activeTool === "pen") {
-      const newPt: BezierPoint = { anchor: { ...pos }, handleIn: { ...pos }, handleOut: { ...pos }, vertexMode: "smooth" };
+      if (e.button === 0) e.preventDefault();
+      let anchorPos = pos;
+      if (isPenDrawing && penPoints.length >= 1 && isShiftHeld(e)) {
+        anchorPos = snapCanvasPointTo45From(penPoints[penPoints.length - 1]!.anchor, pos);
+      }
+      const newPt: BezierPoint = {
+        anchor: { ...anchorPos },
+        handleIn: { ...anchorPos },
+        handleOut: { ...anchorPos },
+        vertexMode: "smooth",
+      };
 
       if (!isPenDrawing) {
         setPenPoints([newPt]);
@@ -7662,9 +7943,9 @@ export default function FreehandStudio({
         }
       }
 
-      // Transform handles (same as selection tool) so rect/ellipse scale from corners in Direct Selection
-      const shiftHeldDS = e.shiftKey || (typeof e.nativeEvent.getModifierState === "function" && e.nativeEvent.getModifierState("Shift"));
-      if (selectedObjects.length > 0 && selectionFrame && !shiftHeldDS) {
+      // Transform handles (same as selection tool) so rect/ellipse scale from corners in Direct Selection.
+      // Mayús no debe bloquear asas: la ampliación de selección aplica a clics en el cuerpo del objeto, no en handles.
+      if (selectedObjects.length > 0 && selectionFrame) {
         const f = selectionFrame;
         const handleSize = 8 / viewport.zoom;
         const rotOffset = 14 / viewport.zoom;
@@ -7797,8 +8078,7 @@ export default function FreehandStudio({
       designerMode &&
       imageFrameContentEditId &&
       activeTool === "select" &&
-      e.button === 0 &&
-      !extendSel
+      e.button === 0
     ) {
       const edObj = objects.find((o) => o.id === imageFrameContentEditId);
       if (edObj?.isImageFrame && edObj.imageFrameContent?.src && selectedIds.has(edObj.id) && selectedIds.size === 1) {
@@ -7834,8 +8114,7 @@ export default function FreehandStudio({
       isClipContentIsolation &&
       clipContentEditId &&
       activeTool === "select" &&
-      e.button === 0 &&
-      !extendSel
+      e.button === 0
     ) {
       const edObj = objects.find((o) => o.id === clipContentEditId);
       if (edObj && !edObj.locked && edObj.visible && selectedIds.has(clipContentEditId) && selectedIds.size === 1) {
@@ -7894,8 +8173,8 @@ export default function FreehandStudio({
         selectedIds.size === 1 &&
         selectedIds.has(clipContentEditId));
 
-    // Resize/rotate handles (omitir si se amplía selección: el clic debe llegar al objeto bajo el marco)
-    if (selectedObjects.length > 0 && selectionFrame && !extendSel && !hideFrameHandlesForInnerContent) {
+    // Resize/rotate handles. Mayús no bloquea asas (proporciones al arrastrar); extendSel solo afecta a clics fuera de handles.
+    if (selectedObjects.length > 0 && selectionFrame && !hideFrameHandlesForInnerContent) {
       const f = selectionFrame;
       const handleSize = 8 / viewport.zoom;
       const rotOffset = 14 / viewport.zoom;
@@ -8066,9 +8345,12 @@ export default function FreehandStudio({
         setHoverCanvasId((prev) => (prev === found ? prev : found));
       }
       if (activeTool === "pen" && isPenDrawing && penPoints.length >= 1 && !penDragging) {
-        setPenHoverCanvas(pos);
+        const lastA = penPoints[penPoints.length - 1]!.anchor;
+        setPenHoverCanvasRaw(pos);
+        setPenHoverCanvas(isShiftHeld(e) ? snapCanvasPointTo45From(lastA, pos) : pos);
       } else {
         setPenHoverCanvas((h) => (h == null ? h : null));
+        setPenHoverCanvasRaw(null);
       }
       return;
     }
@@ -8197,6 +8479,7 @@ export default function FreehandStudio({
 
     if (dragState.type === "penHandle" && penPoints.length > 0) {
       setPenHoverCanvas(null);
+      setPenHoverCanvasRaw(null);
       const pos = screenToCanvas(e.clientX, e.clientY);
       setPenPoints((prev) => {
         const pts = [...prev];
@@ -8648,7 +8931,7 @@ export default function FreehandStudio({
       );
       return;
     }
-  }, [dragState, viewport, objects, artboards, selectedIds, snapEnabled, screenToCanvas, penPoints.length, activeTool, isPenDrawing, penDragging]);
+  }, [dragState, viewport, objects, artboards, selectedIds, snapEnabled, screenToCanvas, penPoints, activeTool, isPenDrawing, penDragging]);
 
   const handleMouseUp = useCallback((e: ReactMouseEvent) => {
     const dsUp = dragStateRef.current;
@@ -8970,6 +9253,9 @@ export default function FreehandStudio({
   ]);
 
   const handleWheel = useCallback((e: ReactWheelEvent) => {
+    if ((e.target as HTMLElement).closest?.("[data-fh-text-editor]")) {
+      return;
+    }
     e.preventDefault();
     const r = containerRef.current?.getBoundingClientRect();
     if (!r) return;
@@ -9770,7 +10056,13 @@ export default function FreehandStudio({
         )}
 
       <div
-        className="flex min-h-0 flex-1 flex-col"
+        className={`flex min-h-0 flex-1 flex-col min-w-0${
+          designerMode && designerPageEnterDirection === "next"
+            ? " designer-page-slide-in-next"
+            : designerMode && designerPageEnterDirection === "prev"
+              ? " designer-page-slide-in-prev"
+              : ""
+        }`}
         style={{ cursor }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
@@ -9781,6 +10073,7 @@ export default function FreehandStudio({
         onWheel={handleWheel}
         onContextMenu={handleContextMenu}
         onDoubleClick={(e) => {
+          if ((e.target as HTMLElement).closest?.("[data-fh-text-editor]")) return;
           const pos = screenToCanvas(e.clientX, e.clientY);
           const dsTh = 8 / viewport.zoom;
           if (activeTool === "directSelect") {
@@ -9981,7 +10274,7 @@ export default function FreehandStudio({
                 const op = multi && inSel && !isPrimary ? 0.62 : 1;
                 return (
                   <g key={obj.id} opacity={op} data-fh-obj={obj.id}>
-                    {renderObj(obj, objects, selectedIds, { canvasZenMode, designerMode })}
+                    {renderObj(obj, objects, selectedIds, { canvasZenMode, designerMode, textEditingId })}
                   </g>
                 );
               })}
@@ -9996,7 +10289,7 @@ export default function FreehandStudio({
                     const op = multi && inSel && !isPrimary ? 0.62 : 1;
                     return (
                       <g key={m.id} data-fh-obj={m.id} opacity={op}>
-                        {renderObj(m, objects, selectedIds, { canvasZenMode, designerMode })}
+                        {renderObj(m, objects, selectedIds, { canvasZenMode, designerMode, textEditingId })}
                       </g>
                     );
                   })}
@@ -10077,20 +10370,28 @@ export default function FreehandStudio({
                     data-ui="pen-rubber-guide"
                   />
                 )}
-                <path d={bezierToSvgD(penPoints, false)} fill="none" stroke={strokeColor} strokeWidth={strokeWidth}
-                  strokeDasharray="4 2" opacity={0.7} data-ui="pen-wip" />
+                <path
+                  d={bezierToSvgD(penPoints, false)}
+                  fill="none"
+                  stroke={strokeColor}
+                  strokeWidth={strokeWidth}
+                  strokeDasharray="4 2"
+                  opacity={0.7}
+                  pointerEvents="none"
+                  data-ui="pen-wip"
+                />
                 {penPoints.map((pt, i) => (
                   <React.Fragment key={`pp-${i}`}>
                     {(dist(pt.handleIn, pt.anchor) > 1 || dist(pt.handleOut, pt.anchor) > 1) && (
                       <>
                         <line x1={pt.handleIn.x} y1={pt.handleIn.y} x2={pt.anchor.x} y2={pt.anchor.y}
-                          stroke="rgba(99,102,241,0.5)" strokeWidth={1 / viewport.zoom} data-ui="pen" />
+                          stroke="rgba(99,102,241,0.5)" strokeWidth={1 / viewport.zoom} pointerEvents="none" data-ui="pen" />
                         <line x1={pt.anchor.x} y1={pt.anchor.y} x2={pt.handleOut.x} y2={pt.handleOut.y}
-                          stroke="rgba(99,102,241,0.5)" strokeWidth={1 / viewport.zoom} data-ui="pen" />
+                          stroke="rgba(99,102,241,0.5)" strokeWidth={1 / viewport.zoom} pointerEvents="none" data-ui="pen" />
                         <circle cx={pt.handleIn.x} cy={pt.handleIn.y} r={3 / viewport.zoom}
-                          fill="#fff" stroke="#6366f1" strokeWidth={1 / viewport.zoom} data-ui="pen" />
+                          fill="#fff" stroke="#6366f1" strokeWidth={1 / viewport.zoom} pointerEvents="none" data-ui="pen" />
                         <circle cx={pt.handleOut.x} cy={pt.handleOut.y} r={3 / viewport.zoom}
-                          fill="#fff" stroke="#6366f1" strokeWidth={1 / viewport.zoom} data-ui="pen" />
+                          fill="#fff" stroke="#6366f1" strokeWidth={1 / viewport.zoom} pointerEvents="none" data-ui="pen" />
                       </>
                     )}
                     {i === 0 && penPoints.length > 1 && penHoverNearPathStart && (
@@ -10112,6 +10413,7 @@ export default function FreehandStudio({
                       fill={i === 0 && penHoverNearPathStart ? "#5b6fd4" : "#6366f1"}
                       stroke="#fff"
                       strokeWidth={1.5 / viewport.zoom}
+                      pointerEvents="none"
                       data-ui="pen"
                     />
                   </React.Fragment>
@@ -10553,10 +10855,9 @@ export default function FreehandStudio({
           if (!to) return null;
           if (designerMode && to.isTextFrame) return null;
           if (!containerRef.current) return null;
-          const foW = to.textMode === "point" ? Math.max(to.width, 32) : to.width;
-          const foH = to.textMode === "point" ? Math.max(to.height, to.fontSize * to.lineHeight + 4) : to.height;
-          const rcx = to.x + to.width / 2;
-          const rcy = to.y + to.height / 2;
+          const { w: foW, h: foH } = textLayoutDims(to);
+          const rcx = to.x + foW / 2;
+          const rcy = to.y + foH / 2;
           const rot = to.rotation ?? 0;
           const tl = rotatePointAround({ x: to.x, y: to.y }, { x: rcx, y: rcy }, rot);
           const left = viewport.x + tl.x * viewport.zoom;
@@ -10588,19 +10889,25 @@ export default function FreehandStudio({
             paddingBottom: (to.textMode === "area" ? 4 : 0) * z,
             paddingLeft: padSide * z,
             boxSizing: "border-box",
-            color: "transparent",
-            WebkitTextFillColor: "transparent",
+            color: caretColor,
+            WebkitTextFillColor: caretColor,
             caretColor,
             transform: rot ? `rotate(${rot}deg)` : undefined,
-            transformOrigin: `${(to.width / 2) * z}px ${(to.height / 2) * z}px`,
+            transformOrigin: `${(foW / 2) * z}px ${(foH / 2) * z}px`,
           };
 
           return (
             <textarea
               data-fh-text-editor
-              className="absolute z-[10001] resize-none border-0 bg-transparent p-0 shadow-none outline-none ring-0 placeholder:text-transparent [&::selection]:bg-white/15 [&::selection]:text-transparent"
+              className="absolute z-[10001] resize-none border-0 bg-transparent p-0 shadow-none outline-none ring-0 placeholder:text-zinc-500 [&::selection]:bg-sky-500/35"
               style={editorStyle}
               value={to.text}
+              onMouseDown={(ev) => {
+                ev.stopPropagation();
+              }}
+              onPointerDown={(ev) => {
+                ev.stopPropagation();
+              }}
               onChange={(e) => {
                 const v = e.target.value;
                 setObjects((prev) =>
@@ -10647,7 +10954,7 @@ export default function FreehandStudio({
                   return f.parentObjects
                     .filter((o) => o.id !== hid)
                     .map((o) => (
-                      <g key={o.id}>{renderObj(o, f.parentObjects, undefined, { canvasZenMode, designerMode })}</g>
+                      <g key={o.id}>{renderObj(o, f.parentObjects, undefined, { canvasZenMode, designerMode, textEditingId })}</g>
                     ));
                 })()}
               </g>
@@ -11107,10 +11414,32 @@ export default function FreehandStudio({
                       </div>
                     </div>
                   </div>
-                  {!noStroke ? (
+                  {!noStroke ? (() => {
+                    const dashStr = firstSelected.strokeDasharray ?? "";
+                    const dashParts = parseStrokeDashSix(dashStr);
+                    const hasDash = !!dashStr.trim();
+                    const alignStroke = firstSelected.strokeAlignment ?? "center";
+                    const jn = firstSelected.strokeLinejoin;
+                    const pathSel = firstSelected.type === "path" ? (firstSelected as PathObject) : null;
+                    const mkLinked = firstSelected.strokeMarkerScaleLinked !== false;
+                    const dashPhaseAlt = () => {
+                      const nums = dashStr.trim().split(/[\s,]+/).map(Number).filter((n) => !Number.isNaN(n));
+                      const period = nums.length ? nums.reduce((a, b) => a + b, 0) : 0;
+                      const cur = firstSelected.strokeDashoffset ?? 0;
+                      const next = period > 0 && Math.abs(cur) < 1e-6 ? period / 2 : 0;
+                      updateSelectedProp("strokeDashoffset", next);
+                    };
+                    const setDashPart = (idx: number, val: string) => {
+                      const next = [...dashParts];
+                      next[idx] = val;
+                      const joined = joinStrokeDashSix(next);
+                      updateSelectedProp("strokeDasharray", joined);
+                      setStrokeDasharray(joined);
+                    };
+                    return (
                     <>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="w-14 shrink-0 text-[10px] text-zinc-500 uppercase tracking-wider">Weight</span>
+                  <div className="flex items-center gap-2">
+                    <span className="w-[52px] shrink-0 text-[10px] text-zinc-500 uppercase tracking-wider">Peso</span>
                     <ScrubNumberInput
                       value={firstSelected.strokeWidth}
                       onKeyboardCommit={(n) => updateSelectedProp("strokeWidth", clamp(n, 0, 50))}
@@ -11121,13 +11450,16 @@ export default function FreehandStudio({
                       min={0}
                       max={50}
                       title="Arrastra horizontalmente · Mayús = ×10"
-                      className="min-w-[3rem] flex-1 cursor-ew-resize rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1 font-mono text-[12px] text-zinc-100"
+                      className="min-w-0 flex-1 cursor-ew-resize rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1 font-mono text-[12px] text-zinc-100"
                     />
-                    <div className="flex items-center gap-1.5" title="Cap">
+                  </div>
+                  <div className="space-y-1">
+                    <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Extremos</span>
+                    <div className="flex overflow-hidden rounded-[5px] border border-white/[0.08] divide-x divide-white/[0.08]">
                       {([
-                        { v: "butt" as const, Icon: Minus, label: "Butt cap" },
-                        { v: "round" as const, Icon: Circle, label: "Round cap" },
-                        { v: "square" as const, Icon: RectangleHorizontal, label: "Square cap" },
+                        { v: "butt" as const, Icon: Minus, label: "Tope" },
+                        { v: "round" as const, Icon: Circle, label: "Redondo" },
+                        { v: "square" as const, Icon: RectangleHorizontal, label: "Proyectado" },
                       ]).map(({ v, Icon, label }) => (
                         <button
                           key={v}
@@ -11137,7 +11469,7 @@ export default function FreehandStudio({
                             updateSelectedProp("strokeLinecap", v);
                             setStrokeLinecap(v);
                           }}
-                          className={`rounded-[5px] border p-1.5 transition-colors ${firstSelected.strokeLinecap === v ? "border-[#534AB7] bg-[#534AB7] text-white" : "border-white/[0.08] bg-transparent text-zinc-400 hover:text-zinc-200"}`}
+                          className={`flex flex-1 items-center justify-center py-1.5 transition-colors ${firstSelected.strokeLinecap === v ? "bg-[#534AB7] text-white" : "bg-transparent text-zinc-400 hover:text-zinc-200"}`}
                         >
                           <Icon size={13} strokeWidth={2} />
                         </button>
@@ -11145,12 +11477,12 @@ export default function FreehandStudio({
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="w-14 shrink-0 text-[10px] text-zinc-500 uppercase tracking-wider">Join</span>
-                    <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1.5" title="Join">
+                    <span className="w-[52px] shrink-0 text-[10px] text-zinc-500 uppercase tracking-wider">Inglete</span>
+                    <div className="flex min-w-0 flex-1 overflow-hidden rounded-[5px] border border-white/[0.08] divide-x divide-white/[0.08]">
                       {([
-                        { v: "miter" as const, Icon: Triangle, label: "Miter join" },
-                        { v: "round" as const, Icon: Circle, label: "Round join" },
-                        { v: "bevel" as const, Icon: Diamond, label: "Bevel join" },
+                        { v: "miter" as const, Icon: Triangle, label: "Inglete" },
+                        { v: "round" as const, Icon: Circle, label: "Redondo" },
+                        { v: "bevel" as const, Icon: Diamond, label: "Bisel" },
                       ]).map(({ v, Icon, label }) => (
                         <button
                           key={v}
@@ -11160,28 +11492,225 @@ export default function FreehandStudio({
                             updateSelectedProp("strokeLinejoin", v);
                             setStrokeLinejoin(v);
                           }}
-                          className={`rounded-[5px] border p-1.5 transition-colors ${firstSelected.strokeLinejoin === v ? "border-[#534AB7] bg-[#534AB7] text-white" : "border-white/[0.08] bg-transparent text-zinc-400 hover:text-zinc-200"}`}
+                          className={`flex flex-1 items-center justify-center py-1.5 transition-colors ${firstSelected.strokeLinejoin === v ? "bg-[#534AB7] text-white" : "bg-transparent text-zinc-400 hover:text-zinc-200"}`}
                         >
                           <Icon size={13} strokeWidth={2} />
                         </button>
                       ))}
                     </div>
+                    {jn === "miter" ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[9px] text-zinc-500 whitespace-nowrap">Lím.</span>
+                        <ScrubNumberInput
+                          value={firstSelected.strokeMiterlimit ?? 4}
+                          onKeyboardCommit={(n) => updateSelectedProp("strokeMiterlimit", clamp(n, 1, 180))}
+                          onScrubLive={(n) => updateSelectedPropSilent("strokeMiterlimit", clamp(n, 1, 180))}
+                          onScrubEnd={commitHistoryAfterScrub}
+                          step={0.5}
+                          roundFn={(n) => Math.round(clamp(n, 1, 180) * 2) / 2}
+                          min={1}
+                          max={180}
+                          title="stroke-miterlimit"
+                          className="w-14 cursor-ew-resize rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-1.5 py-1 font-mono text-[11px] text-zinc-100"
+                        />
+                      </div>
+                    ) : null}
                   </div>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="w-14 shrink-0 text-[10px] text-zinc-500 uppercase tracking-wider">Dash</span>
-                    <input
-                      type="text"
-                      value={firstSelected.strokeDasharray ?? ""}
-                      placeholder="—"
-                      onChange={(e) => {
-                        const v = e.target.value.replace(/,/g, " ");
-                        updateSelectedProp("strokeDasharray", v);
-                        setStrokeDasharray(v);
-                      }}
-                      className="min-w-0 flex-1 rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1 font-mono text-[12px] text-zinc-100"
-                      title="Dash gap (e.g. 8 4)"
-                    />
+                  <div className="space-y-1">
+                    <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Alinear trazo</span>
+                    <div className="flex overflow-hidden rounded-[5px] border border-white/[0.08] divide-x divide-white/[0.08]">
+                      {([
+                        { id: "center" as const, label: "Centro" },
+                        { id: "inside" as const, label: "Interior" },
+                        { id: "outside" as const, label: "Exterior" },
+                      ]).map(({ id, label }) => (
+                        <button
+                          key={id}
+                          type="button"
+                          title={label}
+                          onClick={() => updateSelectedProp("strokeAlignment", id)}
+                          className={`flex flex-1 items-center justify-center px-1 py-1.5 text-[10px] font-medium transition-colors ${alignStroke === id ? "bg-[#534AB7] text-white" : "bg-transparent text-zinc-400 hover:text-zinc-200"}`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
+
+                  <div className="border-t border-white/[0.08] pt-2.5 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="flex cursor-pointer items-center gap-2 text-[10px] text-zinc-500">
+                        <input
+                          type="checkbox"
+                          className="rounded border-white/20 bg-white/[0.06]"
+                          checked={hasDash}
+                          onChange={(e) => {
+                            const on = e.target.checked;
+                            const v = on ? (dashStr.trim() || "8 4") : "";
+                            updateSelectedProp("strokeDasharray", v);
+                            setStrokeDasharray(v);
+                            if (!on) updateSelectedProp("strokeDashoffset", 0);
+                          }}
+                        />
+                        Línea discontinua
+                      </label>
+                      <div className="flex gap-0.5">
+                        <button
+                          type="button"
+                          title="Fase 0"
+                          disabled={!hasDash}
+                          onClick={() => updateSelectedProp("strokeDashoffset", 0)}
+                          className="rounded-[5px] border border-white/[0.08] px-1.5 py-0.5 text-[9px] text-zinc-400 hover:bg-white/[0.06] disabled:opacity-40"
+                        >
+                          0
+                        </button>
+                        <button
+                          type="button"
+                          title="Alternar fase del patrón"
+                          disabled={!hasDash}
+                          onClick={dashPhaseAlt}
+                          className="rounded-[5px] border border-white/[0.08] px-1.5 py-0.5 text-[9px] text-zinc-400 hover:bg-white/[0.06] disabled:opacity-40"
+                        >
+                          ½
+                        </button>
+                      </div>
+                    </div>
+                    {hasDash ? (
+                      <div className="space-y-1">
+                        <div className="grid grid-cols-3 gap-1">
+                          {dashParts.map((val, idx) => (
+                            <div key={idx} className="space-y-0.5">
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={val}
+                                placeholder="—"
+                                onChange={(e) => setDashPart(idx, e.target.value)}
+                                className="w-full rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-1 py-0.5 text-center font-mono text-[10px] text-zinc-100"
+                              />
+                              <span className="block text-center text-[7px] text-zinc-600">
+                                {idx % 2 === 0 ? "raya" : "hueco"}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {pathSel ? (
+                    <div className="border-t border-white/[0.08] pt-2.5 space-y-2">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Extremos línea</span>
+                        <button
+                          type="button"
+                          title="Intercambiar inicio y fin"
+                          onClick={() => {
+                            const a = pathSel.strokeMarkerStart ?? "none";
+                            const b = pathSel.strokeMarkerEnd ?? "none";
+                            const sa = pathSel.strokeMarkerStartScale ?? 100;
+                            const sb = pathSel.strokeMarkerEndScale ?? 100;
+                            updateSelectedProp("strokeMarkerStart", b);
+                            updateSelectedProp("strokeMarkerEnd", a);
+                            if (!mkLinked) {
+                              updateSelectedProp("strokeMarkerStartScale", sb);
+                              updateSelectedProp("strokeMarkerEndScale", sa);
+                            }
+                          }}
+                          className="rounded-[5px] border border-white/[0.08] p-1 text-zinc-400 hover:bg-white/[0.06]"
+                        >
+                          <ArrowLeftRight size={14} strokeWidth={2} aria-hidden />
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <div className="space-y-0.5">
+                          <span className="text-[8px] text-zinc-600">Inicio</span>
+                          <select
+                            value={pathSel.strokeMarkerStart ?? "none"}
+                            onChange={(e) => updateSelectedProp("strokeMarkerStart", e.target.value as StrokeMarkerKind)}
+                            className="w-full rounded-[5px] border border-white/[0.08] bg-[#1e2024] px-1.5 py-1 text-[10px] text-zinc-100"
+                          >
+                            <option value="none">Ninguno</option>
+                            <option value="arrow">Flecha</option>
+                            <option value="dot">Bola</option>
+                          </select>
+                        </div>
+                        <div className="space-y-0.5">
+                          <span className="text-[8px] text-zinc-600">Final</span>
+                          <select
+                            value={pathSel.strokeMarkerEnd ?? "none"}
+                            onChange={(e) => updateSelectedProp("strokeMarkerEnd", e.target.value as StrokeMarkerKind)}
+                            className="w-full rounded-[5px] border border-white/[0.08] bg-[#1e2024] px-1.5 py-1 text-[10px] text-zinc-100"
+                          >
+                            <option value="none">Ninguno</option>
+                            <option value="arrow">Flecha</option>
+                            <option value="dot">Bola</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div className="flex items-end gap-1.5">
+                        <div className="grid flex-1 grid-cols-2 gap-1.5">
+                          <div className="space-y-0.5">
+                            <span className="text-[8px] text-zinc-600">Escala inicio %</span>
+                            <ScrubNumberInput
+                              value={pathSel.strokeMarkerStartScale ?? 100}
+                              onKeyboardCommit={(n) => {
+                                const v = clamp(Math.round(n), 25, 400);
+                                updateSelectedProp("strokeMarkerStartScale", v);
+                                if (mkLinked) updateSelectedProp("strokeMarkerEndScale", v);
+                              }}
+                              onScrubLive={(n) => {
+                                const v = clamp(Math.round(n), 25, 400);
+                                updateSelectedPropSilent("strokeMarkerStartScale", v);
+                                if (mkLinked) updateSelectedPropSilent("strokeMarkerEndScale", v);
+                              }}
+                              onScrubEnd={commitHistoryAfterScrub}
+                              step={5}
+                              roundFn={(n) => clamp(Math.round(n), 25, 400)}
+                              min={25}
+                              max={400}
+                              title="%"
+                              className="w-full cursor-ew-resize rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-1 py-0.5 text-[10px] text-zinc-100"
+                            />
+                          </div>
+                          <div className="space-y-0.5">
+                            <span className="text-[8px] text-zinc-600">Escala fin %</span>
+                            <ScrubNumberInput
+                              value={pathSel.strokeMarkerEndScale ?? 100}
+                              disabled={mkLinked}
+                              onKeyboardCommit={(n) => {
+                                const v = clamp(Math.round(n), 25, 400);
+                                updateSelectedProp("strokeMarkerEndScale", v);
+                              }}
+                              onScrubLive={(n) => {
+                                const v = clamp(Math.round(n), 25, 400);
+                                updateSelectedPropSilent("strokeMarkerEndScale", v);
+                              }}
+                              onScrubEnd={commitHistoryAfterScrub}
+                              step={5}
+                              roundFn={(n) => clamp(Math.round(n), 25, 400)}
+                              min={25}
+                              max={400}
+                              title="%"
+                              className="w-full cursor-ew-resize rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-1 py-0.5 text-[10px] text-zinc-100 disabled:opacity-40"
+                            />
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          title={mkLinked ? "Desvincular escalas" : "Vincular escalas"}
+                          onClick={() => updateSelectedProp("strokeMarkerScaleLinked", !mkLinked)}
+                          className={`mb-0.5 rounded-[5px] border p-1.5 transition-colors ${mkLinked ? "border-[#534AB7] bg-[#534AB7] text-white" : "border-white/[0.08] text-zinc-400 hover:bg-white/[0.06]"}`}
+                        >
+                          <Link2 size={14} strokeWidth={2} aria-hidden />
+                        </button>
+                      </div>
+                      {pathSel.closed ? (
+                        <p className="text-[8px] text-zinc-600 leading-snug">Los marcadores solo se muestran en trazos abiertos.</p>
+                      ) : null}
+                    </div>
+                  ) : null}
+
                   {firstSelected.type === "text" && firstSelected.strokeWidth > 0 ? (
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="w-14 shrink-0 text-[10px] text-zinc-500 uppercase tracking-wider">Posición</span>
@@ -11208,7 +11737,8 @@ export default function FreehandStudio({
                     </div>
                   ) : null}
                     </>
-                  ) : null}
+                    );
+                  })() : null}
                 </div>
                   );
                 })()}
@@ -11357,23 +11887,23 @@ export default function FreehandStudio({
                   };
 
                   return (
-                    <div ref={designerImageFramePropsRef} className="border-b border-white/[0.08] px-[14px] py-3 space-y-2.5">
+                    <div ref={designerImageFramePropsRef} className="border-b border-white/[0.08] px-[14px] py-2 space-y-2">
                       <p className="text-[10px] font-bold uppercase tracking-widest text-amber-200/80">Marco de imagen</p>
 
                       <button
                         type="button"
                         onClick={() => onDesignerImageFramePlace?.(firstSelected.id)}
-                        className="w-full rounded-lg border border-amber-400/35 bg-amber-500/15 py-2 text-[11px] font-semibold text-amber-50 transition hover:bg-amber-500/25"
+                        className="flex h-8 w-full items-center justify-center rounded-[6px] border border-amber-400/35 bg-amber-500/15 text-[11px] font-semibold text-amber-50 transition hover:bg-amber-500/25"
                       >
                         Colocar imagen dentro
                       </button>
 
-                      <div className="flex items-center justify-between gap-2">
+                      <div className="flex h-8 items-center justify-between gap-2">
                         <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Auto-Fit</span>
                         <button
                           type="button"
                           onClick={() => updateSelectedProp("imageFrameAutoFit", !autoFit)}
-                          className={`rounded-md border px-2 py-1 text-[10px] font-bold uppercase transition ${
+                          className={`inline-flex h-8 min-w-[52px] items-center justify-center rounded-[6px] border px-2.5 text-[10px] font-bold uppercase transition ${
                             autoFit
                               ? "border-violet-400/50 bg-violet-500/25 text-violet-200"
                               : "border-white/[0.08] bg-white/[0.04] text-zinc-500"
@@ -11385,9 +11915,9 @@ export default function FreehandStudio({
 
                       {hasImg && (
                         <>
-                          <div className="space-y-1.5">
+                          <div className="space-y-1">
                             <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Ajuste (fitting)</span>
-                            <div className="grid grid-cols-3 gap-1">
+                            <div className="grid grid-cols-3 gap-1.5">
                               {IMG_FIT_OPTIONS.map((o) => {
                                 const active = fitting === o.value;
                                 return (
@@ -11398,7 +11928,7 @@ export default function FreehandStudio({
                                     aria-label={o.label}
                                     aria-pressed={active}
                                     onClick={() => applyFitting(o.value)}
-                                    className={`flex h-9 items-center justify-center rounded-md border transition ${
+                                    className={`flex h-8 items-center justify-center rounded-[6px] border transition ${
                                       active
                                         ? "border-violet-400/50 bg-violet-500/25 text-violet-200"
                                         : "border-white/[0.08] bg-white/[0.04] text-zinc-400 hover:bg-white/[0.08] hover:text-zinc-200"
@@ -11419,7 +11949,7 @@ export default function FreehandStudio({
                           onClick={() => {
                             updateSelectedProp("imageFrameContent", null);
                           }}
-                          className="w-full rounded-lg border border-rose-500/25 bg-rose-500/10 py-1.5 text-[10px] font-medium text-rose-300 transition hover:bg-rose-500/20"
+                          className="flex h-8 w-full items-center justify-center rounded-[6px] border border-rose-500/25 bg-rose-500/10 text-[10px] font-medium text-rose-300 transition hover:bg-rose-500/20"
                         >
                           Eliminar imagen
                         </button>
@@ -11477,30 +12007,30 @@ export default function FreehandStudio({
 
                 {firstSelected.type === "text" && (() => {
                   const tx = firstSelected as TextObject;
-                  /** Misma línea visual que el bloque Transform (#121417 panel / inputs #1e2024). */
+                  /** Misma línea visual que el bloque Transform (#121417 panel / inputs #1e2024), compacto en altura. */
                   const tfInp =
-                    "w-full cursor-ew-resize rounded-[7px] border border-[#2d2f34] bg-[#1e2024] px-3 py-2 font-mono text-[12px] text-zinc-100";
-                  const tfLbl = "text-[10px] text-[#71717a] uppercase tracking-wider";
-                  const tfSec = "text-[10px] text-[#71717a] uppercase tracking-wider";
-                  const tfField = "space-y-1";
+                    "h-7 min-h-0 w-full cursor-ew-resize rounded-[6px] border border-[#2d2f34] bg-[#1e2024] px-2 py-0 font-mono text-[11px] leading-none text-zinc-100";
+                  const tfLbl = "text-[9px] text-[#71717a] uppercase tracking-wider leading-none";
+                  const tfSec = "text-[9px] text-[#71717a] uppercase tracking-wider leading-none";
+                  const tfField = "space-y-0.5";
                   const tfIconMuted = "text-[#71717a]";
                   const pillOn = "border-[#534AB7] bg-[#534AB7] text-white";
                   const pillOff =
                     "border-[#2d2f34] bg-[#1e2024] text-[#71717a] hover:border-[#3f4249] hover:text-zinc-200";
-                  const iconToolBtn = `inline-flex h-10 min-w-0 flex-1 items-center justify-center rounded-[7px] border text-[#a1a1aa] transition-colors ${pillOff}`;
-                  const iconToolBtnOn = `inline-flex h-10 min-w-0 flex-1 items-center justify-center rounded-[7px] border text-white transition-colors ${pillOn}`;
+                  const iconToolBtn = `inline-flex h-7 min-w-0 flex-1 items-center justify-center rounded-[6px] border text-[#a1a1aa] transition-colors ${pillOff}`;
+                  const iconToolBtnOn = `inline-flex h-7 min-w-0 flex-1 items-center justify-center rounded-[6px] border text-white transition-colors ${pillOn}`;
                   const kernOn = (tx.fontKerning ?? "auto") !== "none";
                   return (
-                    <div className="-mx-[14px] space-y-4 border-b border-white/[0.08] px-[14px] py-3">
+                    <div className="-mx-[14px] space-y-2.5 border-b border-white/[0.08] px-[14px] py-2">
                       <div className={tfSec}>Typography</div>
 
-                      <div className="flex gap-3">
+                      <div className="flex gap-2">
                         <select
                           value={designerFontSelectControlValue(tx.fontFamily, tx.fontWeight)}
                           onChange={(e) => {
                             applyDesignerFontDropdown(e.target.value);
                           }}
-                          className="min-h-[40px] min-w-0 flex-1 rounded-[7px] border border-[#2d2f34] bg-[#1e2024] px-3 py-2 text-[12px] text-zinc-100"
+                          className="h-8 min-h-0 min-w-0 flex-1 rounded-[6px] border border-[#2d2f34] bg-[#1e2024] px-2 py-0 text-[11px] text-zinc-100"
                         >
                           <option value="">— Font —</option>
                           <optgroup label="Google Fonts">
@@ -11522,9 +12052,9 @@ export default function FreehandStudio({
                           type="button"
                           title="Importar .ttf · .otf · woff"
                           onClick={() => customFontInputRef.current?.click()}
-                          className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[7px] border border-[#2d2f34] bg-[#1e2024] text-[#71717a] transition hover:border-[#3f4249] hover:text-zinc-200"
+                          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] border border-[#2d2f34] bg-[#1e2024] text-[#71717a] transition hover:border-[#3f4249] hover:text-zinc-200"
                         >
-                          <Upload size={16} strokeWidth={2} aria-hidden />
+                          <Upload size={14} strokeWidth={2} aria-hidden />
                         </button>
                         <input
                           ref={customFontInputRef}
@@ -11552,10 +12082,10 @@ export default function FreehandStudio({
                         />
                       </div>
 
-                      <div className="grid grid-cols-2 gap-3">
+                      <div className="grid grid-cols-2 gap-2">
                         <div className={tfField}>
                           <label className={`flex items-center gap-1.5 ${tfLbl}`} title="Size (px)">
-                            <Type size={11} strokeWidth={2} className={tfIconMuted} aria-hidden />
+                            <Type size={10} strokeWidth={2} className={tfIconMuted} aria-hidden />
                             Size
                           </label>
                           <ScrubNumberInput
@@ -11573,7 +12103,7 @@ export default function FreehandStudio({
                         </div>
                         <div className={tfField}>
                           <label className={`flex items-center gap-1.5 ${tfLbl}`} title="Weight">
-                            <Weight size={11} strokeWidth={2} className={tfIconMuted} aria-hidden />
+                            <Weight size={10} strokeWidth={2} className={tfIconMuted} aria-hidden />
                             Wgt
                           </label>
                           <ScrubNumberInput
@@ -11591,7 +12121,7 @@ export default function FreehandStudio({
                         </div>
                         <div className={tfField}>
                           <label className={`flex items-center gap-1.5 ${tfLbl}`} title="Line height">
-                            <BetweenVerticalStart size={11} strokeWidth={2} className={tfIconMuted} aria-hidden />
+                            <BetweenVerticalStart size={10} strokeWidth={2} className={tfIconMuted} aria-hidden />
                             Lead
                           </label>
                           <ScrubNumberInput
@@ -11609,7 +12139,7 @@ export default function FreehandStudio({
                         </div>
                         <div className={tfField}>
                           <label className={`flex items-center gap-1.5 ${tfLbl}`} title="Letter-spacing (px)">
-                            <BetweenHorizontalStart size={11} strokeWidth={2} className={tfIconMuted} aria-hidden />
+                            <BetweenHorizontalStart size={10} strokeWidth={2} className={tfIconMuted} aria-hidden />
                             Trk
                           </label>
                           <ScrubNumberInput
@@ -11625,7 +12155,7 @@ export default function FreehandStudio({
                         </div>
                         <div className={tfField}>
                           <label className={`flex items-center gap-1.5 ${tfLbl}`} title="Paragraph indent (px)">
-                            <IndentIncrease size={11} strokeWidth={2} className={tfIconMuted} aria-hidden />
+                            <IndentIncrease size={10} strokeWidth={2} className={tfIconMuted} aria-hidden />
                             Ind
                           </label>
                           <ScrubNumberInput
@@ -11643,11 +12173,11 @@ export default function FreehandStudio({
                         </div>
                         <div className={tfField}>
                           <label className={`flex items-center gap-1.5 ${tfLbl}`} title="font-kerning: auto aplica pares en la fuente; none los apaga.">
-                            <Link2 size={11} strokeWidth={2} className={tfIconMuted} aria-hidden />
+                            <Link2 size={10} strokeWidth={2} className={tfIconMuted} aria-hidden />
                             Kern
                           </label>
                           <div
-                            className="flex h-10 overflow-hidden rounded-[7px] border border-[#2d2f34] bg-[#1e2024]"
+                            className="flex h-7 overflow-hidden rounded-[6px] border border-[#2d2f34] bg-[#1e2024]"
                             role="group"
                             aria-label="Kerning de pares"
                           >
@@ -11659,7 +12189,7 @@ export default function FreehandStudio({
                                 kernOn ? "bg-[#534AB7] text-white" : "bg-transparent text-[#71717a] hover:bg-[#252830] hover:text-zinc-200"
                               }`}
                             >
-                              <Link2 size={15} strokeWidth={2} aria-hidden />
+                              <Link2 size={13} strokeWidth={2} aria-hidden />
                             </button>
                             <button
                               type="button"
@@ -11669,18 +12199,18 @@ export default function FreehandStudio({
                                 !kernOn ? "bg-[#534AB7] text-white" : "bg-transparent text-[#71717a] hover:bg-[#252830] hover:text-zinc-200"
                               }`}
                             >
-                              <Unlink2 size={15} strokeWidth={2} aria-hidden />
+                              <Unlink2 size={13} strokeWidth={2} aria-hidden />
                             </button>
                           </div>
                         </div>
                       </div>
 
-                      <div className="space-y-2">
+                      <div className="space-y-1.5">
                         <div className={`flex items-center gap-1.5 ${tfLbl}`}>
-                          <AlignStartHorizontal size={11} strokeWidth={2} className={tfIconMuted} aria-hidden />
+                          <AlignStartHorizontal size={10} strokeWidth={2} className={tfIconMuted} aria-hidden />
                           Align
                         </div>
-                        <div className="grid grid-cols-4 gap-3">
+                        <div className="grid grid-cols-4 gap-1.5">
                           {(
                             [
                               ["left", AlignLeft, "Left"],
@@ -11696,18 +12226,18 @@ export default function FreehandStudio({
                               onClick={() => updateSelectedProp("textAlign", al)}
                               className={tx.textAlign === al ? iconToolBtnOn : iconToolBtn}
                             >
-                              <Icon size={16} strokeWidth={2} aria-hidden />
+                              <Icon size={14} strokeWidth={2} aria-hidden />
                             </button>
                           ))}
                         </div>
                       </div>
 
-                      <div className="space-y-2">
+                      <div className="space-y-1.5">
                         <div className={`flex items-center gap-1.5 ${tfLbl}`}>
-                          <Type size={11} strokeWidth={2} className={tfIconMuted} aria-hidden />
+                          <Type size={10} strokeWidth={2} className={tfIconMuted} aria-hidden />
                           Style
                         </div>
-                        <div className="grid grid-cols-5 gap-3">
+                        <div className="grid grid-cols-5 gap-1.5">
                           <button
                             type="button"
                             title="Small caps"
@@ -11716,7 +12246,7 @@ export default function FreehandStudio({
                             }
                             className={tx.fontVariantCaps === "small-caps" ? iconToolBtnOn : iconToolBtn}
                           >
-                            <CaseSensitive size={16} strokeWidth={2} aria-hidden />
+                            <CaseSensitive size={14} strokeWidth={2} aria-hidden />
                           </button>
                           <button
                             type="button"
@@ -11724,7 +12254,7 @@ export default function FreehandStudio({
                             onClick={() => updateSelectedProp("fontWeight", tx.fontWeight >= 600 ? 400 : 700)}
                             className={tx.fontWeight >= 600 ? iconToolBtnOn : iconToolBtn}
                           >
-                            <Bold size={16} strokeWidth={2} aria-hidden />
+                            <Bold size={14} strokeWidth={2} aria-hidden />
                           </button>
                           <button
                             type="button"
@@ -11734,7 +12264,7 @@ export default function FreehandStudio({
                             }
                             className={tx.fontStyle === "italic" ? iconToolBtnOn : iconToolBtn}
                           >
-                            <Italic size={16} strokeWidth={2} aria-hidden />
+                            <Italic size={14} strokeWidth={2} aria-hidden />
                           </button>
                           <button
                             type="button"
@@ -11742,7 +12272,7 @@ export default function FreehandStudio({
                             onClick={() => updateSelectedProp("textUnderline", !tx.textUnderline)}
                             className={tx.textUnderline ? iconToolBtnOn : iconToolBtn}
                           >
-                            <Underline size={16} strokeWidth={2} aria-hidden />
+                            <Underline size={14} strokeWidth={2} aria-hidden />
                           </button>
                           <button
                             type="button"
@@ -11750,7 +12280,7 @@ export default function FreehandStudio({
                             onClick={() => updateSelectedProp("textStrikethrough", !tx.textStrikethrough)}
                             className={tx.textStrikethrough ? iconToolBtnOn : iconToolBtn}
                           >
-                            <Strikethrough size={16} strokeWidth={2} aria-hidden />
+                            <Strikethrough size={14} strokeWidth={2} aria-hidden />
                           </button>
                         </div>
                       </div>
@@ -11760,7 +12290,7 @@ export default function FreehandStudio({
                         onClick={() => {
                           if (window.confirm("Convert to outlines will make text non-editable. Continue?")) void convertTextToOutlines();
                         }}
-                        className="w-full rounded-[7px] border border-[#2d2f34] bg-[#1e2024] py-2.5 text-[12px] font-medium text-zinc-100 transition hover:border-[#3f4249] hover:bg-[#252830]"
+                        className="w-full rounded-[6px] border border-[#2d2f34] bg-[#1e2024] py-1.5 text-[11px] font-medium text-zinc-100 transition hover:border-[#3f4249] hover:bg-[#252830]"
                       >
                         Convert to outlines
                       </button>
