@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
   Plus,
@@ -179,6 +179,25 @@ export default function DesignerStudio({
     const d = ap ? getPageDimensions(ap) : { width: 0, height: 0 };
     return `${ap?.id ?? "none"}_${activePageIndex}_${Math.round(d.width)}_${Math.round(d.height)}`;
   }, [pages, activePageIndex]);
+
+  /** Persiste el scroll del listado de páginas: FreehandStudio se remonta con `key={studioKey}` y sin esto el rail vuelve arriba. */
+  const designerPagesRailScrollTopRef = useRef(0);
+  const designerPagesRailScrollElRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const el = designerPagesRailScrollElRef.current;
+    if (!el || pages.length === 0) return;
+    el.scrollTop = designerPagesRailScrollTopRef.current;
+    const row = el.querySelector(`[data-designer-rail-index="${activePageIndex}"]`);
+    (row as HTMLElement | null)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    designerPagesRailScrollTopRef.current = el.scrollTop;
+    return () => {
+      const cur = designerPagesRailScrollElRef.current;
+      if (cur) {
+        designerPagesRailScrollTopRef.current = cur.scrollTop;
+      }
+    };
+  }, [studioKey, activePageIndex, pages.length]);
 
   const captureRailThumbnailForActivePage = useCallback(async () => {
     const api = studioApiRef.current;
@@ -1314,7 +1333,13 @@ export default function DesignerStudio({
             <div className="flex shrink-0 items-center justify-center border-b border-white/[0.08] py-2">
               <Layers className="h-3.5 w-3.5 text-violet-300/70" strokeWidth={2} />
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 py-1.5">
+            <div
+              ref={designerPagesRailScrollElRef}
+              className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 py-1.5"
+              onScroll={(e) => {
+                designerPagesRailScrollTopRef.current = e.currentTarget.scrollTop;
+              }}
+            >
               <div className="flex flex-col gap-2">
                 {pages.map((p, i) => {
                   const pd = getPageDimensions(p);
@@ -1325,6 +1350,7 @@ export default function DesignerStudio({
                   return (
                     <div
                       key={p.id}
+                      data-designer-rail-index={i}
                       className="rounded-[2px] border border-white/[0.08] bg-black/15 px-0.5 py-1"
                       onDragOver={(e) => {
                         e.preventDefault();
