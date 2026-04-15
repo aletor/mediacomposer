@@ -10,6 +10,8 @@ export type VectorPdfExportOptions = {
   makeUrlsClickable?: boolean;
   /** Dibuja un borde fino alrededor del rectángulo de clic de cada enlace (depuración / claridad). */
   outlineLinkRects?: boolean;
+  /** Recomprime mapas de bits como JPEG (~72) para PDF más ligero (no afecta SVG embebido como imagen). */
+  optimizeImages?: boolean;
 };
 
 export const FONT_CONVERSION_UNAVAILABLE = "Fuente no disponible para conversión";

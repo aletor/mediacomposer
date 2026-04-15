@@ -16,6 +16,8 @@ export type ProfessionalExportOptions = {
   merged: boolean;
   /** Si se define y tiene longitud > 0, exporta cada artboard indicado (vista completa). */
   batchArtboardIds?: string[] | null;
+  /** Solo PDF: recomprime imágenes raster como JPEG (~72) para archivo más pequeño. */
+  optimizeImages?: boolean;
 };
 
 type Props = {
@@ -62,6 +64,7 @@ export function FreehandExportModal({
   const [batchSelected, setBatchSelected] = useState<Record<string, boolean>>({});
   const [pdfMakeUrlsClickable, setPdfMakeUrlsClickable] = useState(false);
   const [pdfOutlineLinkRects, setPdfOutlineLinkRects] = useState(false);
+  const [pdfOptimizeImages, setPdfOptimizeImages] = useState(false);
 
   useEffect(() => {
     if (open) setFilename(defaultFilename.replace(/[^a-z0-9-_]/gi, "_").slice(0, 80));
@@ -101,6 +104,7 @@ export function FreehandExportModal({
       filename: safe,
       merged,
       batchArtboardIds: batchIds && batchIds.length > 0 ? batchIds : undefined,
+      optimizeImages: format === "pdf" ? pdfOptimizeImages : undefined,
     });
   };
 
@@ -148,9 +152,25 @@ export function FreehandExportModal({
               ))}
             </div>
             {format === "pdf" && (
-              <p className="text-[10px] leading-snug text-zinc-500">
-                El PDF exporta el texto como trazados para máxima compatibilidad. Vectorial: mismas primitivas que el SVG.
-              </p>
+              <>
+                <p className="text-[10px] leading-snug text-zinc-500">
+                  El PDF exporta el texto como trazados para máxima compatibilidad. Vectorial: mismas primitivas que el SVG.
+                </p>
+                <label className="mt-2 flex cursor-pointer items-start gap-2 text-[11px] text-zinc-300">
+                  <input
+                    type="checkbox"
+                    checked={pdfOptimizeImages}
+                    onChange={(e) => setPdfOptimizeImages(e.target.checked)}
+                    className="accent-sky-500 mt-0.5"
+                  />
+                  <span>
+                    Optimizar imágenes (JPEG ~72%)
+                    <span className="mt-0.5 block text-[10px] font-normal text-zinc-500">
+                      Reduce mucho el peso del PDF. La transparencia se aplana sobre blanco; los SVG incrustados como imagen no se convierten.
+                    </span>
+                  </span>
+                </label>
+              </>
             )}
           </div>
 
@@ -251,6 +271,22 @@ export function FreehandExportModal({
                   </span>
                 </span>
               </label>
+              {format !== "pdf" && (
+                <label className="flex cursor-pointer items-start gap-2 text-[11px] text-zinc-300">
+                  <input
+                    type="checkbox"
+                    checked={pdfOptimizeImages}
+                    onChange={(e) => setPdfOptimizeImages(e.target.checked)}
+                    className="accent-violet-500 mt-0.5"
+                  />
+                  <span>
+                    Optimizar imágenes (JPEG ~72%)
+                    <span className="mt-0.5 block text-[10px] font-normal text-zinc-500">
+                      PDF multipágina más ligero; si exportas PDF de una página, usa la casilla bajo el formato PDF.
+                    </span>
+                  </span>
+                </label>
+              )}
               <button
                 type="button"
                 disabled={designerMultipageVectorPdf.busy}
@@ -261,6 +297,7 @@ export function FreehandExportModal({
                     designerMultipageVectorPdf.onExport({
                       makeUrlsClickable: pdfMakeUrlsClickable,
                       outlineLinkRects: pdfOutlineLinkRects,
+                      optimizeImages: pdfOptimizeImages,
                     }),
                   ).catch((err: unknown) => {
                     console.error("[Export] PDF multipágina Designer:", err);

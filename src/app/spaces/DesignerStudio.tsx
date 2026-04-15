@@ -146,6 +146,8 @@ export default function DesignerStudio({
 
   const studioApiRef = useRef<DesignerStudioApi | null>(null);
   const designerClipboardRef = useRef<FreehandObject[] | null>(null);
+  /** Página donde se hizo la última copia (⌘C) al portapapeles Designer; sirve para pegar sin desplazar entre páginas. */
+  const designerClipboardSourcePageIdRef = useRef<string | null>(null);
 
   const designerHistoryBridge = useMemo(
     () => ({
@@ -1215,7 +1217,9 @@ export default function DesignerStudio({
         alert("No se pudo preparar ninguna página para el PDF (el lienzo no estaba listo). Cierra el diálogo de exportación e inténtalo de nuevo.");
         return;
       }
-      await downloadMultiPageVectorPdf(markups, `diseno-${Date.now()}.pdf`);
+      await downloadMultiPageVectorPdf(markups, `diseno-${Date.now()}.pdf`, {
+        optimizeImages: pdfOpts.optimizeImages === true,
+      });
     } catch (e) {
       console.error("[Designer] PDF multipágina:", e);
       const msg = e instanceof Error ? e.message : String(e);
@@ -1297,6 +1301,8 @@ export default function DesignerStudio({
         onDesignerTypographyChange={handleDesignerTypographyChange}
         designerHistoryBridge={designerHistoryBridge}
         designerClipboardRef={designerClipboardRef}
+        designerActivePageId={activePage?.id ?? null}
+        designerClipboardSourcePageIdRef={designerClipboardSourcePageIdRef}
         designerMultipageVectorPdfExport={{
           pageCount: pages.length,
           busy: multiPdfBusy,

@@ -7,6 +7,8 @@ import React, {
   useCallback,
   useRef,
   useMemo,
+  forwardRef,
+  useImperativeHandle,
   type MouseEvent as ReactMouseEvent,
   type WheelEvent as ReactWheelEvent,
   type DragEvent as ReactDragEvent,
@@ -72,6 +74,8 @@ import {
   BetweenVerticalStart,
   BetweenHorizontalStart,
   IndentIncrease,
+  List,
+  ListOrdered,
 } from "lucide-react";
 import { ScrubNumberInput } from "./ScrubNumberInput";
 import { FreehandExportModal, type ProfessionalExportOptions } from "./freehand/FreehandExportModal";
@@ -511,6 +515,10 @@ interface FreehandStudioProps {
   };
   /** Designer: shared clipboard across page switches (same ref for all FreehandStudio mounts). */
   designerClipboardRef?: React.MutableRefObject<FreehandObject[] | null>;
+  /** Designer: página activa (para pegar en la misma posición al cambiar de página). */
+  designerActivePageId?: string | null;
+  /** Designer: id de la página donde se copió al portapapeles compartido (lo escribe FreehandStudio). */
+  designerClipboardSourcePageIdRef?: React.MutableRefObject<string | null>;
   /** Designer: narrow page rail (~110px) rendered to the right of the properties panel. */
   designerPagesRail?: React.ReactNode;
   /** Designer: bump to request fit-to-viewport after the active page canvas is shown (e.g. user picked a page). */
@@ -616,6 +624,61 @@ const LAYOUT_GUIDE_DRAFT_STROKE_WORLD = 0.62;
 function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
 function escapeHtmlStr(s: string): string { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>"); }
 
+/** Texto copiado (ChatGPT, Word, etc.): espacios raros y caracteres invisibles / de formato. */
+function normalizeClipboardPlainText(raw: string): string {
+  let t = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  t = t.replace(/\u00a0/g, " ");
+  t = t.replace(/[\u200b-\u200d\ufeff\u2060\u00ad]/g, "");
+  return t;
+}
+
+/**
+ * Solo caracteres visibles / saltos: nunca HTML ni estilos. Si hay `text/plain` se usa tal cual;
+ * si solo viene `text/html`, se extrae texto (como verías al copiar a Notas).
+ */
+function clipboardToPlainString(dt: DataTransfer): string {
+  const plain = dt.getData("text/plain") ?? "";
+  if (plain.length > 0) {
+    return normalizeClipboardPlainText(plain);
+  }
+  const html = dt.getData("text/html") ?? "";
+  if (html.trim().length === 0) return "";
+  const tmp = document.createElement("div");
+  tmp.innerHTML = html;
+  const t = (tmp.innerText ?? tmp.textContent ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  return normalizeClipboardPlainText(t);
+}
+
+/**
+ * Pega varias líneas como un `<div>` por línea (mismo efecto que pulsar Enter en el editor).
+ * `insertText` con `\n` suele dejar **un solo** bloque; al aplicar lista el navegador genera **un solo** `<li>`
+ * y el guardado no refleja ítems (o el layout pierde viñetas).
+ */
+function insertPlainTextAsEditorBlocks(editableRoot: HTMLElement, text: string): void {
+  const doc = editableRoot.ownerDocument;
+  const lines = text.split("\n");
+  const frag = doc.createDocumentFragment();
+  let lastBlock: HTMLElement | null = null;
+  for (const line of lines) {
+    const div = doc.createElement("div");
+    if (line.length === 0) div.appendChild(doc.createElement("br"));
+    else div.textContent = line;
+    frag.appendChild(div);
+    lastBlock = div;
+  }
+  const sel = doc.getSelection();
+  if (!sel?.rangeCount || !lastBlock) return;
+  const range = sel.getRangeAt(0);
+  if (!editableRoot.contains(range.commonAncestorContainer)) return;
+  range.deleteContents();
+  range.insertNode(frag);
+  const nr = doc.createRange();
+  nr.setStartAfter(lastBlock);
+  nr.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(nr);
+}
+
 /** Lista `<a href>` en orden de documento (para gestor de enlaces en el modal de marco de texto). */
 function extractStoryLinksFromHtml(html: string): { text: string; href: string }[] {
   const trimmed = html?.trim() ?? "";
@@ -649,17 +712,12 @@ function unwrapAnchorElement(a: HTMLAnchorElement) {
   parent.removeChild(a);
 }
 
-/** Barra + contentEditable compartidos entre el panel de propiedades y el modal ampliado (marco de texto). */
-function DesignerStoryRichEditorBlock({
-  storyId,
-  storyText,
-  storyHtml,
-  onRichChange,
-  editorClassName,
-  compactMaxLines,
-  onRequestOpenFull,
-  enableHyperlink,
-}: {
+export type DesignerStoryRichEditorHandle = {
+  /** Envía el HTML actual del contentEditable al padre (`onDesignerStoryRichChange` → historia + lienzo). Llamar antes de cerrar el modal. */
+  flush: () => void;
+};
+
+interface DesignerStoryRichEditorBlockProps {
   storyId: string;
   storyText: string;
   storyHtml: string;
@@ -670,7 +728,14 @@ function DesignerStoryRichEditorBlock({
   onRequestOpenFull?: () => void;
   /** Solo en el modal ampliado: insertar / quitar hipervínculos. */
   enableHyperlink?: boolean;
-}) {
+}
+
+/** Barra + contentEditable compartidos entre el panel de propiedades y el modal ampliado (marco de texto). */
+const DesignerStoryRichEditorBlock = forwardRef<DesignerStoryRichEditorHandle, DesignerStoryRichEditorBlockProps>(
+  function DesignerStoryRichEditorBlock(
+    { storyId, storyText, storyHtml, onRichChange, editorClassName, compactMaxLines, onRequestOpenFull, enableHyperlink },
+    ref,
+  ) {
   const richEditorRef = useRef<HTMLDivElement | null>(null);
   const [showOpenFull, setShowOpenFull] = useState(false);
   const [htmlSnapshot, setHtmlSnapshot] = useState(() => storyHtml || "");
@@ -695,6 +760,25 @@ function DesignerStoryRichEditorBlock({
     remeasureOverflow();
   }, [storyHtml, storyText, compactMaxLines, remeasureOverflow]);
 
+  useImperativeHandle(
+    ref,
+    () => ({
+      flush: () => {
+        const el = richEditorRef.current;
+        if (!el || !onRichChange) return;
+        const sync = () => {
+          const html = el.innerHTML;
+          onRichChange(storyId, html);
+          setHtmlSnapshot(html);
+        };
+        sync();
+        /** Listas: asegurar un frame tras el último cambio del DOM. */
+        requestAnimationFrame(sync);
+      },
+    }),
+    [storyId, onRichChange],
+  );
+
   useLayoutEffect(() => {
     const el = richEditorRef.current;
     if (!el || !compactMaxLines) return;
@@ -708,9 +792,17 @@ function DesignerStoryRichEditorBlock({
     if (!el) return;
     el.focus();
     document.execCommand(cmd, false);
-    if (onRichChange) onRichChange(storyId, el.innerHTML);
-    setHtmlSnapshot(el.innerHTML);
-    queueMicrotask(remeasureOverflow);
+    const sync = () => {
+      if (onRichChange) onRichChange(storyId, el.innerHTML);
+      setHtmlSnapshot(el.innerHTML);
+      queueMicrotask(remeasureOverflow);
+    };
+    /** Listas: el DOM a veces se actualiza en el siguiente frame. */
+    if (cmd === "insertUnorderedList" || cmd === "insertOrderedList") {
+      requestAnimationFrame(sync);
+    } else {
+      sync();
+    }
   };
 
   const applyStoryHyperlink = () => {
@@ -804,6 +896,31 @@ function DesignerStoryRichEditorBlock({
         <button type="button" title="Italic (Ctrl+I)" className="rounded px-1.5 py-0.5 text-[11px] italic text-zinc-400 hover:bg-white/10 hover:text-white" onMouseDown={(e) => { e.preventDefault(); applyRichCmd("italic"); }}><i>I</i></button>
         <button type="button" title="Underline (Ctrl+U)" className="rounded px-1.5 py-0.5 text-[11px] underline text-zinc-400 hover:bg-white/10 hover:text-white" onMouseDown={(e) => { e.preventDefault(); applyRichCmd("underline"); }}><u>U</u></button>
         <button type="button" title="Strikethrough" className="rounded px-1.5 py-0.5 text-[11px] line-through text-zinc-400 hover:bg-white/10 hover:text-white" onMouseDown={(e) => { e.preventDefault(); applyRichCmd("strikeThrough"); }}><s>S</s></button>
+        <div className="mx-1 h-4 w-px bg-white/10" />
+        <button
+          type="button"
+          title="Lista con viñetas"
+          className="rounded px-1.5 py-0.5 text-zinc-400 hover:bg-white/10 hover:text-white"
+          aria-label="Lista con viñetas"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            applyRichCmd("insertUnorderedList");
+          }}
+        >
+          <List size={14} strokeWidth={2} aria-hidden />
+        </button>
+        <button
+          type="button"
+          title="Lista numerada"
+          className="rounded px-1.5 py-0.5 text-zinc-400 hover:bg-white/10 hover:text-white"
+          aria-label="Lista numerada"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            applyRichCmd("insertOrderedList");
+          }}
+        >
+          <ListOrdered size={14} strokeWidth={2} aria-hidden />
+        </button>
         {enableHyperlink && (
           <>
             <div className="mx-1 h-4 w-px bg-white/10" />
@@ -908,6 +1025,47 @@ function DesignerStoryRichEditorBlock({
           if (onRichChange) onRichChange(storyId, h);
           queueMicrotask(remeasureOverflow);
         }}
+        onBlur={(e) => {
+          const h = (e.target as HTMLElement).innerHTML;
+          setHtmlSnapshot(h);
+          if (onRichChange) onRichChange(storyId, h);
+        }}
+        onPaste={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const cd = e.clipboardData;
+          if (!cd) return;
+          const text = clipboardToPlainString(cd);
+          if (text.length === 0) return;
+          const el = richEditorRef.current;
+          if (!el) return;
+          const lines = text.split("\n");
+          if (lines.length > 1) {
+            insertPlainTextAsEditorBlocks(el, text);
+            const h = el.innerHTML;
+            setHtmlSnapshot(h);
+            if (onRichChange) onRichChange(storyId, h);
+            queueMicrotask(remeasureOverflow);
+            return;
+          }
+          const line = lines[0] ?? "";
+          const doc = el.ownerDocument;
+          const sel = doc.getSelection();
+          if (!sel?.rangeCount) return;
+          const range = sel.getRangeAt(0);
+          if (!el.contains(range.commonAncestorContainer)) return;
+          range.deleteContents();
+          const tn = doc.createTextNode(line);
+          range.insertNode(tn);
+          range.setStartAfter(tn);
+          range.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          const h = el.innerHTML;
+          setHtmlSnapshot(h);
+          if (onRichChange) onRichChange(storyId, h);
+          queueMicrotask(remeasureOverflow);
+        }}
         onKeyDown={(e) => e.stopPropagation()}
         spellCheck={false}
       />
@@ -922,7 +1080,10 @@ function DesignerStoryRichEditorBlock({
       )}
     </div>
   );
-}
+  },
+);
+
+DesignerStoryRichEditorBlock.displayName = "DesignerStoryRichEditorBlock";
 
 function dist(a: Point, b: Point) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
@@ -1136,10 +1297,17 @@ function textObjectToVectorPdfOutlineItem(tx: TextObject) {
           style: s.style as SpanStyle | undefined,
         }))
       : undefined;
+  /**
+   * `tx.text` es `serializeStoryContent` (sin viñetas). El lienzo usa `flattenStoryContent` vía
+   * `_designerRichSpans` (incluye "• "). El PDF debe medir y trazar con la misma cadena que los runs
+   * o las viñetas no aparecen en el vectorial.
+   */
+  const textForPdf =
+    richRuns && richRuns.length > 0 ? richRuns.map((r) => r.text).join("") : tx.text;
   return {
     id: tx.id,
     name: tx.name,
-    text: tx.text,
+    text: textForPdf,
     textMode: tx.textMode,
     x: tx.x,
     y: tx.y,
@@ -2859,7 +3027,8 @@ function renderObj(
         userSelect: "none",
       };
       const richSpans = t._designerRichSpans;
-      const hasRich = richSpans && richSpans.length > 0 && richSpans.some(s => s.style && Object.keys(s.style).length > 0);
+      /** Incluye listas con viñetas: `flattenStoryContent` añade "• " sin estilos inline; antes `hasRich` era false y el lienzo ignoraba `_designerRichSpans` y solo pintaba `t.text` (sin viñetas). */
+      const hasRich = !!(richSpans && richSpans.length > 0);
       const renderRichContent = (): React.ReactNode => {
         if (!richSpans || richSpans.length === 0) return t.text || "\u00a0";
         return richSpans.map((span, si) => {
@@ -3982,6 +4151,83 @@ function creationStyleSnapshotFromObject(o: FreehandObject): {
   };
 }
 
+/** Tipografía para nuevos textos / marcos (sincronizada con texto seleccionado). */
+interface TextCreationTypography {
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: number;
+  fontStyle: "normal" | "italic";
+  lineHeight: number;
+  letterSpacing: number;
+  fontKerning: "auto" | "none";
+  fontFeatureSettings: string;
+  fontVariantLigatures: string;
+  paragraphIndent: number;
+  textAlign: "left" | "center" | "right" | "justify";
+  fontVariantCaps: "normal" | "small-caps";
+  textUnderline: boolean;
+  textStrikethrough: boolean;
+}
+
+const DEFAULT_TEXT_CREATION_TYPOGRAPHY: TextCreationTypography = {
+  fontFamily: "Inter, system-ui, sans-serif",
+  fontSize: 18,
+  fontWeight: 400,
+  fontStyle: "normal",
+  lineHeight: 1.35,
+  letterSpacing: 0,
+  fontKerning: "auto",
+  fontFeatureSettings: '"kern" 1, "liga" 1, "calt" 1',
+  fontVariantLigatures: "common-ligatures",
+  paragraphIndent: 0,
+  textAlign: "left",
+  fontVariantCaps: "normal",
+  textUnderline: false,
+  textStrikethrough: false,
+};
+
+function textTypographyCreationFromObject(o: FreehandObject): TextCreationTypography | null {
+  if (o.type === "text") {
+    const t = o as TextObject;
+    return {
+      fontFamily: t.fontFamily,
+      fontSize: t.fontSize,
+      fontWeight: t.fontWeight,
+      fontStyle: t.fontStyle === "italic" ? "italic" : "normal",
+      lineHeight: t.lineHeight,
+      letterSpacing: t.letterSpacing,
+      fontKerning: t.fontKerning === "none" ? "none" : "auto",
+      fontFeatureSettings: t.fontFeatureSettings ?? DEFAULT_TEXT_CREATION_TYPOGRAPHY.fontFeatureSettings,
+      fontVariantLigatures: t.fontVariantLigatures ?? DEFAULT_TEXT_CREATION_TYPOGRAPHY.fontVariantLigatures,
+      paragraphIndent: t.paragraphIndent ?? 0,
+      textAlign: t.textAlign,
+      fontVariantCaps: t.fontVariantCaps === "small-caps" ? "small-caps" : "normal",
+      textUnderline: !!t.textUnderline,
+      textStrikethrough: !!t.textStrikethrough,
+    };
+  }
+  if (o.type === "textOnPath") {
+    const tp = o as TextOnPathObject;
+    return {
+      fontFamily: tp.fontFamily,
+      fontSize: tp.fontSize,
+      fontWeight: tp.fontWeight,
+      fontStyle: tp.fontStyle === "italic" ? "italic" : "normal",
+      lineHeight: 1.25,
+      letterSpacing: tp.letterSpacing,
+      fontKerning: "auto",
+      fontFeatureSettings: DEFAULT_TEXT_CREATION_TYPOGRAPHY.fontFeatureSettings,
+      fontVariantLigatures: DEFAULT_TEXT_CREATION_TYPOGRAPHY.fontVariantLigatures,
+      paragraphIndent: 0,
+      textAlign: "left",
+      fontVariantCaps: "normal",
+      textUnderline: false,
+      textStrikethrough: false,
+    };
+  }
+  return null;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════
@@ -4010,6 +4256,8 @@ export default function FreehandStudio({
   onDesignerTypographyChange,
   designerHistoryBridge,
   designerClipboardRef,
+  designerActivePageId = null,
+  designerClipboardSourcePageIdRef,
   designerPagesRail,
   designerMultipageVectorPdfExport,
   designerFitToViewNonce = 0,
@@ -4030,6 +4278,13 @@ export default function FreehandStudio({
     }
     return raw.map((a) => createArtboard(a));
   }, [initialArtboards]);
+
+  /** Contenido fuera del pliego no se pinta; la selección y tiradores van en capas posteriores sin recorte. */
+  const pageContentClipRect = useMemo(() => {
+    if (artboards.length === 0) return null;
+    return unionRects(artboards.map(artboardToRect));
+  }, [artboards]);
+
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [activeTool, setActiveTool] = useState<Tool>("select");
   const [viewport, setViewport] = useState({ x: 0, y: 0, zoom: 1 });
@@ -4062,6 +4317,15 @@ export default function FreehandStudio({
     setDesignerStoryModalRect({ x, y, w, h });
     setDesignerStoryModalObjectId(frameObjectId);
     setDesignerStoryModalOpen(true);
+  }, []);
+
+  /** Ref al editor del modal: `flush()` envía el HTML al documento antes de desmontar (cerrar no debe “cancelar”). */
+  const designerStoryModalEditorRef = useRef<DesignerStoryRichEditorHandle | null>(null);
+
+  const closeDesignerStoryModal = useCallback(() => {
+    designerStoryModalEditorRef.current?.flush();
+    setDesignerStoryModalOpen(false);
+    setDesignerStoryModalObjectId(null);
   }, []);
 
   // Drag state
@@ -4208,6 +4472,11 @@ export default function FreehandStudio({
   const [strokeLinecap, setStrokeLinecap] = useState<"butt" | "round" | "square">("round");
   const [strokeLinejoin, setStrokeLinejoin] = useState<"miter" | "round" | "bevel">("round");
   const [strokeDasharray, setStrokeDasharray] = useState("");
+
+  /** Tipografía para nuevos textos / marcos de texto (sincronizada con texto seleccionado). */
+  const [creationTextTypography, setCreationTextTypography] = useState<TextCreationTypography>(
+    () => ({ ...DEFAULT_TEXT_CREATION_TYPOGRAPHY }),
+  );
 
   const [paletteTarget, setPaletteTarget] = useState<"fill" | "stroke">("fill");
   const [savedPaletteColors, setSavedPaletteColors] = useState<string[]>([]);
@@ -4814,6 +5083,8 @@ export default function FreehandStudio({
     setStrokeLinecap(snap.strokeLinecap);
     setStrokeLinejoin(snap.strokeLinejoin);
     setStrokeDasharray(snap.strokeDasharray);
+    const typo = textTypographyCreationFromObject(o);
+    if (typo) setCreationTextTypography(typo);
   }, [styleSourceForCreation]);
 
   const canLinkTextToPath = useMemo(
@@ -4866,22 +5137,21 @@ export default function FreehandStudio({
   useEffect(() => {
     if (!designerStoryModalOpen || !designerStoryModalObjectId) return;
     if (!firstSelected || firstSelected.id !== designerStoryModalObjectId) {
-      setDesignerStoryModalOpen(false);
-      setDesignerStoryModalObjectId(null);
+      closeDesignerStoryModal();
     }
-  }, [designerStoryModalOpen, designerStoryModalObjectId, firstSelected]);
+  }, [designerStoryModalOpen, designerStoryModalObjectId, firstSelected, closeDesignerStoryModal]);
 
   useEffect(() => {
     if (!designerStoryModalOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        setDesignerStoryModalOpen(false);
-        setDesignerStoryModalObjectId(null);
+        e.preventDefault();
+        closeDesignerStoryModal();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [designerStoryModalOpen]);
+  }, [designerStoryModalOpen, closeDesignerStoryModal]);
 
   const groupBounds = useMemo(() => getGroupBounds(selectedObjects), [selectedObjects]);
   const selectionFrame = useMemo(() => computeOrientedSelectionFrame(selectedObjects), [selectedObjects]);
@@ -5608,24 +5878,46 @@ export default function FreehandStudio({
     objectClipboardRef.current = cloned;
     if (designerMode && designerClipboardRef) {
       designerClipboardRef.current = cloned;
+      if (designerClipboardSourcePageIdRef && designerActivePageId != null) {
+        designerClipboardSourcePageIdRef.current = designerActivePageId;
+      }
     }
-  }, [designerMode, designerClipboardRef]);
+  }, [designerMode, designerClipboardRef, designerClipboardSourcePageIdRef, designerActivePageId]);
 
   const pasteClipboardObjects = useCallback(() => {
     const designerClip = designerClipboardRef?.current;
-    const clip =
-      designerMode && designerClip && designerClip.length > 0 ? designerClip : objectClipboardRef.current;
+    const usedDesignerClip = !!(designerMode && designerClip && designerClip.length > 0);
+    const clip = usedDesignerClip ? designerClip : objectClipboardRef.current;
     if (!clip || clip.length === 0) return;
+    /** Entre páginas del Designer: misma x/y que en el origen; en la misma página, pequeño offset para distinguir duplicados. */
+    const srcPage = designerClipboardSourcePageIdRef?.current ?? null;
+    const crossPageDesignerPaste =
+      usedDesignerClip &&
+      designerClipboardSourcePageIdRef != null &&
+      designerActivePageId != null &&
+      srcPage != null &&
+      srcPage !== designerActivePageId;
+    const dx = crossPageDesignerPaste ? 0 : 24;
+    const dy = crossPageDesignerPaste ? 0 : 24;
     const dupes = clip.map((o) => {
       const c = deepCloneFreehandObject(o, uid);
-      return translateFreehandObject(c, 24, 24);
+      return translateFreehandObject(c, dx, dy);
     });
     const next = [...objectsRef.current, ...dupes];
     const ns = new Set(dupes.map((d) => d.id));
     setObjects(next);
     setSelectedIds(ns);
     pushHistory(next, ns);
-  }, [pushHistory]);
+    if (usedDesignerClip && designerClipboardSourcePageIdRef && designerActivePageId != null) {
+      designerClipboardSourcePageIdRef.current = designerActivePageId;
+    }
+  }, [
+    pushHistory,
+    designerMode,
+    designerClipboardRef,
+    designerClipboardSourcePageIdRef,
+    designerActivePageId,
+  ]);
 
   const convertTextToOutlines = useCallback(async () => {
     const sel = selectedIdsRef.current;
@@ -6713,7 +7005,7 @@ export default function FreehandStudio({
               textObjs.map(textObjectToVectorPdfOutlineItem),
             );
           }
-          await downloadSvgAsVectorPdf(pdfMarkup, name);
+          await downloadSvgAsVectorPdf(pdfMarkup, name, { optimizeImages: opts.optimizeImages === true });
         } else {
           await rasterize(str, pw, ph, name);
         }
@@ -6756,7 +7048,10 @@ export default function FreehandStudio({
               if (textObjs.length > 0) {
                 pdfMarkup = await substituteTextWithOutlinedPathsInSvg(strRaw, textObjs.map(mapTextForPdf));
               }
-              entries.push({ fname, blob: await svgMarkupToPdfBlob(pdfMarkup) });
+              entries.push({
+                fname,
+                blob: await svgMarkupToPdfBlob(pdfMarkup, { optimizeImages: opts.optimizeImages === true }),
+              });
             } else {
               const str = substituteNativeTextForRasterExport(strRaw, objs);
               const pw = Math.max(1, Math.round(b.w * opts.scale));
@@ -8443,6 +8738,7 @@ export default function FreehandStudio({
 
     if (dragState.type === "createText" && dragState.createOrigin && dragState.currentCanvas) {
       const o = dragState.createOrigin, c = dragState.currentCanvas;
+      const tc = creationTextTypography;
       const dx = c.x - o.x, dy = c.y - o.y;
       const dragLen = Math.hypot(dx, dy);
       const pointClick = dragLen * viewport.zoom < 6;
@@ -8456,16 +8752,20 @@ export default function FreehandStudio({
           y: o.y,
           width: 200,
           height: 32,
-          fontFamily: "Inter, system-ui, sans-serif",
-          fontSize: 18,
-          fontWeight: 400,
-          lineHeight: 1.35,
-          letterSpacing: 0,
-          fontKerning: "auto",
-          fontFeatureSettings: '"kern" 1, "liga" 1, "calt" 1',
-          fontVariantLigatures: "common-ligatures",
-          paragraphIndent: 0,
-          textAlign: "left" as const,
+          fontFamily: tc.fontFamily,
+          fontSize: tc.fontSize,
+          fontWeight: tc.fontWeight,
+          fontStyle: tc.fontStyle,
+          lineHeight: tc.lineHeight,
+          letterSpacing: tc.letterSpacing,
+          fontKerning: tc.fontKerning,
+          fontFeatureSettings: tc.fontFeatureSettings,
+          fontVariantLigatures: tc.fontVariantLigatures,
+          paragraphIndent: tc.paragraphIndent,
+          textAlign: tc.textAlign,
+          fontVariantCaps: tc.fontVariantCaps,
+          textUnderline: tc.textUnderline,
+          textStrikethrough: tc.textStrikethrough,
           fill: solidFill(fillColor),
           stroke: "none",
           strokeWidth: 0,
@@ -8490,16 +8790,20 @@ export default function FreehandStudio({
           x, y,
           width: w,
           height: h,
-          fontFamily: "Inter, system-ui, sans-serif",
-          fontSize: 18,
-          fontWeight: 400,
-          lineHeight: 1.35,
-          letterSpacing: 0,
-          fontKerning: "auto",
-          fontFeatureSettings: '"kern" 1, "liga" 1, "calt" 1',
-          fontVariantLigatures: "common-ligatures",
-          paragraphIndent: 0,
-          textAlign: "left" as const,
+          fontFamily: tc.fontFamily,
+          fontSize: tc.fontSize,
+          fontWeight: tc.fontWeight,
+          fontStyle: tc.fontStyle,
+          lineHeight: tc.lineHeight,
+          letterSpacing: tc.letterSpacing,
+          fontKerning: tc.fontKerning,
+          fontFeatureSettings: tc.fontFeatureSettings,
+          fontVariantLigatures: tc.fontVariantLigatures,
+          paragraphIndent: tc.paragraphIndent,
+          textAlign: tc.textAlign,
+          fontVariantCaps: tc.fontVariantCaps,
+          textUnderline: tc.textUnderline,
+          textStrikethrough: tc.textStrikethrough,
           fill: solidFill(fillColor),
           stroke: "none",
           strokeWidth: 0,
@@ -8520,6 +8824,7 @@ export default function FreehandStudio({
     // ── Designer: Text Frame creation ────────────────────────────
     if (dragState.type === "createTextFrame" && dragState.createOrigin && dragState.currentCanvas) {
       const o = dragState.createOrigin, c = dragState.currentCanvas;
+      const tc = creationTextTypography;
       const x = Math.min(o.x, c.x), y = Math.min(o.y, c.y);
       const w = Math.max(Math.abs(c.x - o.x), 80), h = Math.max(Math.abs(c.y - o.y), 40);
       const frameId = uid();
@@ -8532,16 +8837,20 @@ export default function FreehandStudio({
         x, y,
         width: w,
         height: h,
-        fontFamily: "Inter, system-ui, sans-serif",
-        fontSize: 16,
-        fontWeight: 400,
-        lineHeight: 1.4,
-        letterSpacing: 0,
-        fontKerning: "auto" as const,
-        fontFeatureSettings: '"kern" 1, "liga" 1, "calt" 1',
-        fontVariantLigatures: "common-ligatures",
-        paragraphIndent: 0,
-        textAlign: "left" as const,
+        fontFamily: tc.fontFamily,
+        fontSize: tc.fontSize,
+        fontWeight: tc.fontWeight,
+        fontStyle: tc.fontStyle,
+        lineHeight: tc.lineHeight,
+        letterSpacing: tc.letterSpacing,
+        fontKerning: tc.fontKerning,
+        fontFeatureSettings: tc.fontFeatureSettings,
+        fontVariantLigatures: tc.fontVariantLigatures,
+        paragraphIndent: tc.paragraphIndent,
+        textAlign: tc.textAlign,
+        fontVariantCaps: tc.fontVariantCaps,
+        textUnderline: tc.textUnderline,
+        textStrikethrough: tc.textStrikethrough,
         fill: solidFill("#000000"),
         stroke: "none",
         strokeWidth: 0,
@@ -8652,6 +8961,7 @@ export default function FreehandStudio({
     strokeLinecap,
     strokeLinejoin,
     strokeDasharray,
+    creationTextTypography,
     activeTool,
     pushHistory,
     screenToCanvas,
@@ -9593,6 +9903,16 @@ export default function FreehandStudio({
               return f.type === "solid" ? null : renderFillDef(f, gradientDefId(o.id));
             })}
             {clipObjects.map((co) => renderClipDef(co))}
+            {pageContentClipRect && (
+              <clipPath id="fh-page-content-clip" clipPathUnits="userSpaceOnUse">
+                <rect
+                  x={pageContentClipRect.x}
+                  y={pageContentClipRect.y}
+                  width={pageContentClipRect.w}
+                  height={pageContentClipRect.h}
+                />
+              </clipPath>
+            )}
             <filter id="fh-selection-shadow" x="-40%" y="-40%" width="180%" height="180%">
               <feDropShadow dx="0" dy="2" stdDeviation="3" floodColor="#000" floodOpacity="0.35" />
             </filter>
@@ -9647,37 +9967,42 @@ export default function FreehandStudio({
                 );
               })()}
 
-            {/* Render objects (multi-select: non-primary slightly faded) */}
-            {objects.map((obj) => {
-              if (obj.isClipMask) return null;
-              if (obj.clipMaskId) return null;
-              const inSel = selectedIds.has(obj.id);
-              const multi = selectedIds.size > 1;
-              const isPrimary = !multi || !inSel || primarySelectedId === obj.id || primarySelectedId == null;
-              const op = multi && inSel && !isPrimary ? 0.62 : 1;
-              return (
-                <g key={obj.id} opacity={op} data-fh-obj={obj.id}>
-                  {renderObj(obj, objects, selectedIds, { canvasZenMode, designerMode })}
-                </g>
-              );
-            })}
+            <g
+              clipPath={pageContentClipRect ? "url(#fh-page-content-clip)" : undefined}
+              data-fh-page-content="1"
+            >
+              {/* Render objects (multi-select: non-primary slightly faded) */}
+              {objects.map((obj) => {
+                if (obj.isClipMask) return null;
+                if (obj.clipMaskId) return null;
+                const inSel = selectedIds.has(obj.id);
+                const multi = selectedIds.size > 1;
+                const isPrimary = !multi || !inSel || primarySelectedId === obj.id || primarySelectedId == null;
+                const op = multi && inSel && !isPrimary ? 0.62 : 1;
+                return (
+                  <g key={obj.id} opacity={op} data-fh-obj={obj.id}>
+                    {renderObj(obj, objects, selectedIds, { canvasZenMode, designerMode })}
+                  </g>
+                );
+              })}
 
-            {/* Render clipped groups */}
-            {Array.from(clippedGroups.entries()).map(([clipId, members]) => (
-              <g key={`cg-${clipId}`} data-fh-clip-root={clipId} clipPath={`url(#clip-${clipId})`}>
-                {members.map((m) => {
-                  const inSel = selectedIds.has(m.id);
-                  const multi = selectedIds.size > 1;
-                  const isPrimary = !multi || !inSel || primarySelectedId === m.id || primarySelectedId == null;
-                  const op = multi && inSel && !isPrimary ? 0.62 : 1;
-                  return (
-                    <g key={m.id} data-fh-obj={m.id} opacity={op}>
-                      {renderObj(m, objects, selectedIds, { canvasZenMode, designerMode })}
-                    </g>
-                  );
-                })}
-              </g>
-            ))}
+              {/* Render clipped groups */}
+              {Array.from(clippedGroups.entries()).map(([clipId, members]) => (
+                <g key={`cg-${clipId}`} data-fh-clip-root={clipId} clipPath={`url(#clip-${clipId})`}>
+                  {members.map((m) => {
+                    const inSel = selectedIds.has(m.id);
+                    const multi = selectedIds.size > 1;
+                    const isPrimary = !multi || !inSel || primarySelectedId === m.id || primarySelectedId == null;
+                    const op = multi && inSel && !isPrimary ? 0.62 : 1;
+                    return (
+                      <g key={m.id} data-fh-obj={m.id} opacity={op}>
+                        {renderObj(m, objects, selectedIds, { canvasZenMode, designerMode })}
+                      </g>
+                    );
+                  })}
+                </g>
+              ))}
+            </g>
 
             {/* Guías de diseño encima del contenido (no exportan; data-ui se filtra al exportar) */}
             {showLayoutGuides &&
@@ -11130,7 +11455,7 @@ export default function FreehandStudio({
                           onRichChange={onDesignerStoryRichChange}
                           compactMaxLines={4}
                           onRequestOpenFull={openDesignerStoryModal}
-                          editorClassName="mt-0 min-h-0 w-full rounded-b-[5px] border border-white/[0.08] bg-white/[0.06] px-2.5 py-2 text-xs leading-relaxed text-zinc-100 outline-none focus:ring-1 focus:ring-sky-500/40 [&_b]:font-bold [&_i]:italic [&_u]:underline [&_s]:line-through"
+                          editorClassName="mt-0 min-h-0 w-full rounded-b-[5px] border border-white/[0.08] bg-white/[0.06] px-2.5 py-2 text-xs font-light leading-relaxed text-zinc-100 outline-none focus:ring-1 focus:ring-sky-500/40 [&_b]:font-bold [&_strong]:font-bold [&_i]:italic [&_u]:underline [&_s]:line-through [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:marker:text-zinc-400 [&_li]:my-0.5"
                         />
                       )}
 
@@ -12054,9 +12379,9 @@ export default function FreehandStudio({
               <div
                 className="absolute inset-0 bg-black/45"
                 aria-hidden
-                onMouseDown={() => {
-                  setDesignerStoryModalOpen(false);
-                  setDesignerStoryModalObjectId(null);
+                onPointerDown={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  closeDesignerStoryModal();
                 }}
               />
               <div
@@ -12103,11 +12428,10 @@ export default function FreehandStudio({
                   <span className="text-[11px] font-bold uppercase tracking-widest text-sky-200/85">Marco de texto · editor ampliado</span>
                   <button
                     type="button"
-                    title="Cerrar (Esc)"
+                    title="Guardar y cerrar (Esc)"
                     className="rounded-md p-1.5 text-zinc-400 transition hover:bg-white/10 hover:text-white"
                     onClick={() => {
-                      setDesignerStoryModalOpen(false);
-                      setDesignerStoryModalObjectId(null);
+                      closeDesignerStoryModal();
                     }}
                   >
                     <X size={16} strokeWidth={2} />
@@ -12133,14 +12457,27 @@ export default function FreehandStudio({
                   )}
                   <label className="mb-1.5 block text-[10px] font-medium text-zinc-500">Contenido</label>
                   <DesignerStoryRichEditorBlock
+                    ref={designerStoryModalEditorRef}
                     key={`re-modal-${sid}`}
                     storyId={sid}
                     storyText={st}
                     storyHtml={sh}
                     onRichChange={onDesignerStoryRichChange}
                     enableHyperlink
-                    editorClassName="min-h-[min(400px,calc(100vh-220px))] w-full overflow-y-auto rounded-b-[5px] border border-white/[0.08] bg-white/[0.06] px-3 py-2.5 text-sm leading-relaxed text-zinc-100 outline-none focus:ring-1 focus:ring-sky-500/40 [&_b]:font-bold [&_i]:italic [&_u]:underline [&_s]:line-through [&_a]:text-sky-400 [&_a]:underline"
+                    editorClassName="min-h-[min(400px,calc(100vh-220px))] w-full overflow-y-auto rounded-b-[5px] border border-white/[0.08] bg-white/[0.06] px-3 py-2.5 text-sm font-light leading-relaxed text-zinc-100 outline-none focus:ring-1 focus:ring-sky-500/40 [&_b]:font-bold [&_strong]:font-bold [&_i]:italic [&_u]:underline [&_s]:line-through [&_a]:text-sky-400 [&_a]:underline [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:marker:text-zinc-400 [&_li]:my-0.5"
                   />
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-white/[0.08] bg-[#161a22] px-3 py-2.5">
+                  <p className="min-w-0 flex-1 text-[10px] leading-snug text-zinc-500">
+                    El texto del marco se guarda en el documento al pulsar <span className="text-zinc-400">Guardar</span>, al cerrar esta ventana o con Esc (mismo efecto).
+                  </p>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-lg border border-sky-500/35 bg-sky-600/25 px-3 py-1.5 text-[11px] font-semibold text-sky-100 transition hover:bg-sky-600/40"
+                    onClick={() => closeDesignerStoryModal()}
+                  >
+                    Guardar y cerrar
+                  </button>
                 </div>
                 <div
                   className="pointer-events-auto absolute bottom-1.5 right-1.5 h-5 w-5 cursor-nwse-resize rounded border border-white/15 bg-[#1a1f28] hover:bg-white/10"

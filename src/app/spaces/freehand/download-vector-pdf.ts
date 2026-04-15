@@ -30,13 +30,17 @@ async function runSvg2pdf(
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  let binary = "";
   const bytes = new Uint8Array(buffer);
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.byteLength; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  const parts: string[] = [];
+  const step = 8192;
+  /** Sin `fromCharCode(...subarray)`: miles de argumentos al spread agotan la pila (p. ej. fotos grandes en el PDF). */
+  for (let i = 0; i < bytes.byteLength; i += step) {
+    const end = Math.min(i + step, bytes.byteLength);
+    let block = "";
+    for (let j = i; j < end; j++) block += String.fromCharCode(bytes[j]!);
+    parts.push(block);
   }
-  return btoa(binary);
+  return btoa(parts.join(""));
 }
 
 /**
@@ -89,56 +93,189 @@ function guessMimeFromUrl(url: string): string {
 }
 
 /**
+ * svg2pdf.js aplica un `RegExp` al data URL completo (grupo con cuantificador sobre el payload). En imágenes grandes
+ * eso puede provocar RangeError (pila) en el motor. Sustituir por `blob:` cortos hace que la librería
+ * cargue vía XHR y evita ese `String.match` sobre megabytes.
+ */
+const LARGE_DATA_URL_FOR_SVG2PDF = 32 * 1024;
+
+/** Calidad JPEG al optimizar (0–1). ~0.72 suele dar buen equilibrio peso/calidad en documentos. */
+const PDF_OPTIMIZE_JPEG_QUALITY = 0.72;
+
+export type VectorPdfPipelineOptions = {
+  /** Convierte PNG/WebP/GIF/JPEG raster a JPEG con `PDF_OPTIMIZE_JPEG_QUALITY`; no toca `image/svg+xml`. */
+  optimizeImages?: boolean;
+};
+
+async function rasterBlobToJpegDataUrl(blob: Blob, quality: number): Promise<string | null> {
+  if (blob.type === "image/svg+xml") return null;
+  try {
+    const bmp = await createImageBitmap(blob);
+    try {
+      const w = bmp.width;
+      const h = bmp.height;
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(bmp, 0, 0);
+      const out = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob((b) => resolve(b), "image/jpeg", quality);
+      });
+      if (!out) return null;
+      const buf = await out.arrayBuffer();
+      return `data:image/jpeg;base64,${arrayBufferToBase64(buf)}`;
+    } finally {
+      bmp.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Recomprime cada `<image>` raster como JPEG para reducir tamaño en el PDF.
+ * Procesa en serie para limitar picos de memoria.
+ */
+async function recompressRasterImagesForPdf(svgMarkup: string, quality: number): Promise<string> {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgMarkup, "image/svg+xml");
+  if (doc.querySelector("parsererror")) return svgMarkup;
+
+  const images = doc.querySelectorAll("image");
+  for (const img of images) {
+    const href = img.getAttribute("href") || img.getAttribute("xlink:href");
+    if (!href || href.startsWith("#")) continue;
+    try {
+      const res = await fetch(href);
+      if (!res.ok) continue;
+      const blob = await res.blob();
+      const jpegDataUrl = await rasterBlobToJpegDataUrl(blob, quality);
+      if (!jpegDataUrl) continue;
+      img.setAttribute("href", jpegDataUrl);
+      img.removeAttribute("xlink:href");
+    } catch {
+      /* mantener href original */
+    }
+  }
+  return new XMLSerializer().serializeToString(doc.documentElement);
+}
+
+async function prepareSvgMarkupForVectorPdf(
+  svgMarkup: string,
+  opts?: VectorPdfPipelineOptions,
+): Promise<{ markup: string; cleanup: () => void }> {
+  let m = await inlineRemoteSvgImagesForPdf(svgMarkup);
+  if (opts?.optimizeImages) {
+    m = await recompressRasterImagesForPdf(m, PDF_OPTIMIZE_JPEG_QUALITY);
+  }
+  return rewriteLargeDataUrlImagesForSvg2pdf(m);
+}
+
+async function rewriteLargeDataUrlImagesForSvg2pdf(svgMarkup: string): Promise<{
+  markup: string;
+  cleanup: () => void;
+}> {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgMarkup, "image/svg+xml");
+  if (doc.querySelector("parsererror")) {
+    return { markup: svgMarkup, cleanup: () => {} };
+  }
+
+  const blobUrls: string[] = [];
+  const images = doc.querySelectorAll("image");
+
+  for (const img of images) {
+    const href = img.getAttribute("href") || img.getAttribute("xlink:href") || "";
+    if (!href.startsWith("data:") || href.length <= LARGE_DATA_URL_FOR_SVG2PDF) continue;
+
+    try {
+      const res = await fetch(href);
+      if (!res.ok) continue;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      blobUrls.push(url);
+      img.setAttribute("href", url);
+      img.removeAttribute("xlink:href");
+    } catch {
+      /* mantener data: — puede seguir fallando en svg2pdf */
+    }
+  }
+
+  return {
+    markup: new XMLSerializer().serializeToString(doc.documentElement),
+    cleanup: () => {
+      for (const u of blobUrls) URL.revokeObjectURL(u);
+    },
+  };
+}
+
+/**
  * Genera un PDF vectorial a partir del markup SVG ya preparado para export
  * (mismo string que se usa para descargar .svg).
  */
-export async function downloadSvgAsVectorPdf(svgMarkup: string, filename: string): Promise<void> {
-  const inlined = await inlineRemoteSvgImagesForPdf(svgMarkup);
-  const parser = new DOMParser();
-  const parsed = parser.parseFromString(inlined, "image/svg+xml");
-  if (parsed.querySelector("parsererror")) {
-    throw new Error("SVG inválido para export PDF");
+export async function downloadSvgAsVectorPdf(
+  svgMarkup: string,
+  filename: string,
+  opts?: VectorPdfPipelineOptions,
+): Promise<void> {
+  const { markup, cleanup } = await prepareSvgMarkupForVectorPdf(svgMarkup, opts);
+  try {
+    const parser = new DOMParser();
+    const parsed = parser.parseFromString(markup, "image/svg+xml");
+    if (parsed.querySelector("parsererror")) {
+      throw new Error("SVG inválido para export PDF");
+    }
+    const svgRoot = parsed.documentElement;
+    const w = Math.max(1, parseFloat(svgRoot.getAttribute("width") || "1"));
+    const h = Math.max(1, parseFloat(svgRoot.getAttribute("height") || "1"));
+    const wPt = (w * 72) / 96;
+    const hPt = (h * 72) / 96;
+
+    const pdf = new jsPDF({
+      unit: "pt",
+      format: [wPt, hPt],
+      orientation: wPt >= hPt ? "landscape" : "portrait",
+      compress: true,
+    });
+
+    await runSvg2pdf(svgRoot, pdf, { x: 0, y: 0, width: wPt, height: hPt });
+    pdf.save(filename);
+  } finally {
+    cleanup();
   }
-  const svgRoot = parsed.documentElement;
-  const w = Math.max(1, parseFloat(svgRoot.getAttribute("width") || "1"));
-  const h = Math.max(1, parseFloat(svgRoot.getAttribute("height") || "1"));
-  const wPt = (w * 72) / 96;
-  const hPt = (h * 72) / 96;
-
-  const pdf = new jsPDF({
-    unit: "pt",
-    format: [wPt, hPt],
-    orientation: wPt >= hPt ? "landscape" : "portrait",
-    compress: true,
-  });
-
-  await runSvg2pdf(svgRoot, pdf, { x: 0, y: 0, width: wPt, height: hPt });
-  pdf.save(filename);
 }
 
 /** Misma pipeline que `downloadSvgAsVectorPdf` pero devuelve el PDF como Blob (ZIP / lote). */
-export async function svgMarkupToPdfBlob(svgMarkup: string): Promise<Blob> {
-  const inlined = await inlineRemoteSvgImagesForPdf(svgMarkup);
-  const parser = new DOMParser();
-  const parsed = parser.parseFromString(inlined, "image/svg+xml");
-  if (parsed.querySelector("parsererror")) {
-    throw new Error("SVG inválido para export PDF");
+export async function svgMarkupToPdfBlob(svgMarkup: string, opts?: VectorPdfPipelineOptions): Promise<Blob> {
+  const { markup, cleanup } = await prepareSvgMarkupForVectorPdf(svgMarkup, opts);
+  try {
+    const parser = new DOMParser();
+    const parsed = parser.parseFromString(markup, "image/svg+xml");
+    if (parsed.querySelector("parsererror")) {
+      throw new Error("SVG inválido para export PDF");
+    }
+    const svgRoot = parsed.documentElement;
+    const w = Math.max(1, parseFloat(svgRoot.getAttribute("width") || "1"));
+    const h = Math.max(1, parseFloat(svgRoot.getAttribute("height") || "1"));
+    const wPt = (w * 72) / 96;
+    const hPt = (h * 72) / 96;
+
+    const pdf = new jsPDF({
+      unit: "pt",
+      format: [wPt, hPt],
+      orientation: wPt >= hPt ? "landscape" : "portrait",
+      compress: true,
+    });
+
+    await runSvg2pdf(svgRoot, pdf, { x: 0, y: 0, width: wPt, height: hPt });
+    return pdf.output("blob") as Blob;
+  } finally {
+    cleanup();
   }
-  const svgRoot = parsed.documentElement;
-  const w = Math.max(1, parseFloat(svgRoot.getAttribute("width") || "1"));
-  const h = Math.max(1, parseFloat(svgRoot.getAttribute("height") || "1"));
-  const wPt = (w * 72) / 96;
-  const hPt = (h * 72) / 96;
-
-  const pdf = new jsPDF({
-    unit: "pt",
-    format: [wPt, hPt],
-    orientation: wPt >= hPt ? "landscape" : "portrait",
-    compress: true,
-  });
-
-  await runSvg2pdf(svgRoot, pdf, { x: 0, y: 0, width: wPt, height: hPt });
-  return pdf.output("blob") as Blob;
 }
 
 /**
@@ -147,33 +284,38 @@ export async function svgMarkupToPdfBlob(svgMarkup: string): Promise<Blob> {
 export async function downloadMultiPageVectorPdf(
   svgMarkups: string[],
   filename: string,
+  opts?: VectorPdfPipelineOptions,
 ): Promise<void> {
   if (svgMarkups.length === 0) return;
   let pdf: InstanceType<typeof jsPDF> | null = null;
   for (let i = 0; i < svgMarkups.length; i++) {
     const svgMarkup = svgMarkups[i]!;
-    const inlined = await inlineRemoteSvgImagesForPdf(svgMarkup);
-    const parser = new DOMParser();
-    const parsed = parser.parseFromString(inlined, "image/svg+xml");
-    if (parsed.querySelector("parsererror")) continue;
-    const svgRoot = parsed.documentElement;
-    const w = Math.max(1, parseFloat(svgRoot.getAttribute("width") || "1"));
-    const h = Math.max(1, parseFloat(svgRoot.getAttribute("height") || "1"));
-    const wPt = (w * 72) / 96;
-    const hPt = (h * 72) / 96;
-    const orientation = wPt >= hPt ? "landscape" : "portrait";
-    // Primera página *válida* crea el doc; si las anteriores fallaron el parse, i>0 pero pdf sigue null.
-    if (pdf === null) {
-      pdf = new jsPDF({
-        unit: "pt",
-        format: [wPt, hPt],
-        orientation,
-        compress: true,
-      });
-    } else {
-      pdf.addPage([wPt, hPt], orientation);
+    const { markup, cleanup } = await prepareSvgMarkupForVectorPdf(svgMarkup, opts);
+    try {
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(markup, "image/svg+xml");
+      if (parsed.querySelector("parsererror")) continue;
+      const svgRoot = parsed.documentElement;
+      const w = Math.max(1, parseFloat(svgRoot.getAttribute("width") || "1"));
+      const h = Math.max(1, parseFloat(svgRoot.getAttribute("height") || "1"));
+      const wPt = (w * 72) / 96;
+      const hPt = (h * 72) / 96;
+      const orientation = wPt >= hPt ? "landscape" : "portrait";
+      // Primera página *válida* crea el doc; si las anteriores fallaron el parse, i>0 pero pdf sigue null.
+      if (pdf === null) {
+        pdf = new jsPDF({
+          unit: "pt",
+          format: [wPt, hPt],
+          orientation,
+          compress: true,
+        });
+      } else {
+        pdf.addPage([wPt, hPt], orientation);
+      }
+      await runSvg2pdf(svgRoot, pdf, { x: 0, y: 0, width: wPt, height: hPt });
+    } finally {
+      cleanup();
     }
-    await runSvg2pdf(svgRoot, pdf, { x: 0, y: 0, width: wPt, height: hPt });
   }
   if (pdf) pdf.save(filename);
 }

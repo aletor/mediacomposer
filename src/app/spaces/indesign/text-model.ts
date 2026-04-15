@@ -57,10 +57,14 @@ export type SpanNode = {
   style?: SpanStyle;
 };
 
+export type ListStyleKind = "disc" | "decimal";
+
 export type ParagraphNode = {
   type: "paragraph";
   id: string;
   spans: SpanNode[];
+  /** `<ul><li>` viñetas o `<ol><li>` numeración. */
+  listStyle?: ListStyleKind;
 };
 
 export type StoryNode = ParagraphNode;
@@ -120,7 +124,16 @@ export function flattenStoryContent(nodes: StoryNode[]): FlatRun[] {
   const paragraphs = nodes.filter((n): n is ParagraphNode => n.type === "paragraph");
   for (let pi = 0; pi < paragraphs.length; pi++) {
     if (pi > 0) runs.push({ text: "\n" });
-    for (const span of paragraphs[pi]!.spans) {
+    const p = paragraphs[pi]!;
+    if (p.listStyle === "disc") {
+      runs.push({ text: "\u2022 " });
+    } else if (p.listStyle === "decimal") {
+      let start = pi;
+      while (start > 0 && paragraphs[start - 1]!.listStyle === "decimal") start--;
+      const n = pi - start + 1;
+      runs.push({ text: `${n}. ` });
+    }
+    for (const span of p.spans) {
       if (span.text.length > 0) {
         runs.push({ text: span.text, style: span.style });
       }
@@ -139,6 +152,42 @@ export function plainTextToStoryNodes(plain: string): StoryNode[] {
 }
 
 /**
+ * Chrome (y otros) envuelven el HTML del contentEditable en un `<div>` que contiene varios bloques,
+ * p. ej. `<div>intro</div><ul><li>…</ul>`. Si solo vemos el `div` exterior y hacemos `processBlock` +
+ * `extractSpans` sobre él, el `<ul>` se recorre como nodos genéricos y **no** se asigna `listStyle`:
+ * al guardar la historia pierde el listado (una sola línea en el lienzo / al reabrir).
+ */
+function unwrapEditorContentEditableBlocks(topLevel: Node[]): Node[] {
+  let nodes = topLevel;
+  for (let depth = 0; depth < 12; depth++) {
+    if (nodes.length !== 1) break;
+    const one = nodes[0];
+    if (!one || one.nodeType !== Node.ELEMENT_NODE) break;
+    const el = one as HTMLElement;
+    if (el.tagName.toLowerCase() !== "div") break;
+    const kids = Array.from(el.childNodes);
+    if (kids.length === 0) break;
+    const hasDirectList = Array.from(el.children).some((c) => {
+      const t = c.tagName.toLowerCase();
+      return t === "ul" || t === "ol";
+    });
+    const meaningfulElements = kids.filter((k) => k.nodeType === Node.ELEMENT_NODE);
+    const multipleBlocks = meaningfulElements.length >= 2;
+    if (hasDirectList || multipleBlocks) {
+      nodes = kids;
+      continue;
+    }
+    /** Un solo hijo elemento `<div>`: envoltorio redundante (p. ej. `<div><div><ul>…</ul></div></div>`). */
+    if (el.children.length === 1 && el.children[0].tagName.toLowerCase() === "div") {
+      nodes = Array.from(el.children[0].childNodes);
+      continue;
+    }
+    break;
+  }
+  return nodes;
+}
+
+/**
  * Convert HTML from a contentEditable to StoryNodes preserving inline styles.
  * Handles <b>, <strong>, <i>, <em>, <u>, <s>, <a href>, <span style="...">.
  */
@@ -148,9 +197,9 @@ export function htmlToStoryNodes(html: string): StoryNode[] {
   container.innerHTML = html;
 
   const paragraphs: ParagraphNode[] = [];
-  const blocks = container.childNodes.length === 0
-    ? [container]
-    : Array.from(container.childNodes);
+  const blocksRaw =
+    container.childNodes.length === 0 ? [container] : Array.from(container.childNodes);
+  const blocks = unwrapEditorContentEditableBlocks(blocksRaw);
 
   function extractSpans(node: Node): SpanNode[] {
     const spans: SpanNode[] = [];
@@ -187,6 +236,15 @@ export function htmlToStoryNodes(html: string): StoryNode[] {
         const px = parseFloat(el.style.fontSize);
         if (Number.isFinite(px) && px > 0) style.fontSize = px;
       }
+      /** Enter dentro de un bloque → `<br>`; sin esto se pierden saltos y solo se ve un renglón. */
+      if (tag === "br") {
+        spans.push({
+          id: uid("s"),
+          text: "\n",
+          ...(Object.keys(style).length > 0 ? { style: { ...style } } : {}),
+        });
+        return;
+      }
       for (const child of Array.from(n.childNodes)) walk(child, style);
     }
     walk(node, {});
@@ -201,6 +259,37 @@ export function htmlToStoryNodes(html: string): StoryNode[] {
       id: uid("p"),
       spans,
     });
+  }
+
+  /** Ítems desde `<ul>` o `<ol>` (misma lógica que el bloque `tag === ul|ol` del bucle principal). */
+  function appendItemsFromListElement(listEl: HTMLElement, listStyle: ListStyleKind) {
+    for (const li of Array.from(listEl.querySelectorAll(":scope > li"))) {
+      const blockKids = Array.from(li.children).filter((c) => {
+        const n = c.nodeName.toLowerCase();
+        return n === "div" || n === "p";
+      });
+      if (blockKids.length > 1) {
+        for (const blk of blockKids) {
+          let spans = extractSpans(blk);
+          if (spans.length === 0) spans.push({ id: uid("s"), text: "" });
+          paragraphs.push({
+            type: "paragraph",
+            id: uid("p"),
+            spans,
+            listStyle,
+          });
+        }
+      } else {
+        let spans = extractSpans(li);
+        if (spans.length === 0) spans.push({ id: uid("s"), text: "" });
+        paragraphs.push({
+          type: "paragraph",
+          id: uid("p"),
+          spans,
+          listStyle,
+        });
+      }
+    }
   }
 
   for (const block of blocks) {
@@ -226,7 +315,31 @@ export function htmlToStoryNodes(html: string): StoryNode[] {
       });
       continue;
     }
+    if (tag === "ul") {
+      appendItemsFromListElement(el, "disc");
+      continue;
+    }
+    if (tag === "ol") {
+      appendItemsFromListElement(el, "decimal");
+      continue;
+    }
     if (tag === "div" || tag === "p") {
+      /**
+       * Muy frecuente: `<div>intro</div><div><ul>…</ul></div>`. El segundo bloque no es `<ul>` en la raíz;
+       * si hacemos `processBlock` sobre el `div`, el `<ul>` se aplana y se pierde `listStyle`.
+       */
+      if (el.children.length === 1) {
+        const only = el.children[0]!;
+        const onlyTag = only.tagName.toLowerCase();
+        if (onlyTag === "ul") {
+          appendItemsFromListElement(only as HTMLElement, "disc");
+          continue;
+        }
+        if (onlyTag === "ol") {
+          appendItemsFromListElement(only as HTMLElement, "decimal");
+          continue;
+        }
+      }
       processBlock(el);
     } else {
       processBlock(el);
@@ -244,61 +357,96 @@ export function htmlToStoryNodes(html: string): StoryNode[] {
   return paragraphs;
 }
 
-/** Convert StoryNodes to HTML string for contentEditable. */
-export function storyNodesToHtml(nodes: StoryNode[], baseTypo: Typography): string {
-  return nodes
-    .filter((n): n is ParagraphNode => n.type === "paragraph")
-    .map((p) => {
-      const inner = p.spans
-        .map((span) => {
-          const text = escapeHtml(span.text);
-          if (!span.style) return text;
-          const s = span.style;
-          const tags: string[] = [];
-          const closeTags: string[] = [];
-          if (s.fontWeight === "bold" || s.fontWeight === "700") {
-            tags.push("<b>");
-            closeTags.unshift("</b>");
-          }
-          if (s.fontStyle === "italic") {
-            tags.push("<i>");
-            closeTags.unshift("</i>");
-          }
-          if (s.textUnderline) {
-            tags.push("<u>");
-            closeTags.unshift("</u>");
-          }
-          if (s.textStrikethrough) {
-            tags.push("<s>");
-            closeTags.unshift("</s>");
-          }
-          const inlineStyles: string[] = [];
-          if (s.fontSize != null && s.fontSize !== baseTypo.fontSize) {
-            inlineStyles.push(`font-size:${s.fontSize}px`);
-          }
-          if (s.color != null && s.color !== baseTypo.color) {
-            inlineStyles.push(`color:${s.color}`);
-          }
-          if (s.fontFamily != null && s.fontFamily !== baseTypo.fontFamily) {
-            inlineStyles.push(`font-family:${s.fontFamily}`);
-          }
-          if (inlineStyles.length > 0) {
-            tags.push(`<span style="${inlineStyles.join(";")}">`);
-            closeTags.unshift("</span>");
-          }
-          let piece = tags.join("") + text + closeTags.join("");
-          if (s.linkHref) {
-            const href = sanitizeStoryLinkHref(s.linkHref);
-            if (href) {
-              piece = `<a href="${escapeHtmlAttr(href)}" target="_blank" rel="noopener noreferrer">${piece}</a>`;
-            }
-          }
-          return piece;
-        })
-        .join("");
-      return `<div>${inner || "<br>"}</div>`;
+/**
+ * Un fragmento ya escapado con los mismos envoltorios que el span (negrita, enlace, etc.).
+ * Los saltos de línea van en `<br>` para que el contentEditable los respete al reabrir.
+ */
+function renderEscapedChunkWithSpanStyle(escapedChunk: string, span: SpanNode, baseTypo: Typography): string {
+  if (!span.style) return escapedChunk;
+  const s = span.style;
+  const tags: string[] = [];
+  const closeTags: string[] = [];
+  if (s.fontWeight === "bold" || s.fontWeight === "700") {
+    tags.push("<b>");
+    closeTags.unshift("</b>");
+  }
+  if (s.fontStyle === "italic") {
+    tags.push("<i>");
+    closeTags.unshift("</i>");
+  }
+  if (s.textUnderline) {
+    tags.push("<u>");
+    closeTags.unshift("</u>");
+  }
+  if (s.textStrikethrough) {
+    tags.push("<s>");
+    closeTags.unshift("</s>");
+  }
+  const inlineStyles: string[] = [];
+  if (s.fontSize != null && s.fontSize !== baseTypo.fontSize) {
+    inlineStyles.push(`font-size:${s.fontSize}px`);
+  }
+  if (s.color != null && s.color !== baseTypo.color) {
+    inlineStyles.push(`color:${s.color}`);
+  }
+  if (s.fontFamily != null && s.fontFamily !== baseTypo.fontFamily) {
+    inlineStyles.push(`font-family:${s.fontFamily}`);
+  }
+  if (inlineStyles.length > 0) {
+    tags.push(`<span style="${inlineStyles.join(";")}">`);
+    closeTags.unshift("</span>");
+  }
+  let piece = tags.join("") + escapedChunk + closeTags.join("");
+  if (s.linkHref) {
+    const href = sanitizeStoryLinkHref(s.linkHref);
+    if (href) {
+      piece = `<a href="${escapeHtmlAttr(href)}" target="_blank" rel="noopener noreferrer">${piece}</a>`;
+    }
+  }
+  return piece;
+}
+
+function renderSpansToHtml(spans: SpanNode[], baseTypo: Typography): string {
+  return spans
+    .map((span) => {
+      const chunks = span.text.split("\n");
+      return chunks
+        .map((chunk) => renderEscapedChunkWithSpanStyle(escapeHtml(chunk), span, baseTypo))
+        .join("<br>");
     })
     .join("");
+}
+
+/** Convert StoryNodes to HTML string for contentEditable. */
+export function storyNodesToHtml(nodes: StoryNode[], baseTypo: Typography): string {
+  const pars = nodes.filter((n): n is ParagraphNode => n.type === "paragraph");
+  const parts: string[] = [];
+  let i = 0;
+  while (i < pars.length) {
+    const p = pars[i]!;
+    if (p.listStyle === "disc") {
+      const items: string[] = [];
+      while (i < pars.length && pars[i]!.listStyle === "disc") {
+        const inner = renderSpansToHtml(pars[i]!.spans, baseTypo);
+        items.push(`<li>${inner || "<br>"}</li>`);
+        i++;
+      }
+      parts.push(`<ul>${items.join("")}</ul>`);
+    } else if (p.listStyle === "decimal") {
+      const items: string[] = [];
+      while (i < pars.length && pars[i]!.listStyle === "decimal") {
+        const inner = renderSpansToHtml(pars[i]!.spans, baseTypo);
+        items.push(`<li>${inner || "<br>"}</li>`);
+        i++;
+      }
+      parts.push(`<ol>${items.join("")}</ol>`);
+    } else {
+      const inner = renderSpansToHtml(p.spans, baseTypo);
+      parts.push(`<div>${inner || "<br>"}</div>`);
+      i++;
+    }
+  }
+  return parts.join("");
 }
 
 function escapeHtml(s: string): string {
@@ -320,47 +468,125 @@ export function sanitizeStoryLinkHref(raw: string): string {
   return t;
 }
 
+/** Índice 1-based del ítem dentro de un bloque contiguo de párrafos `listStyle === "decimal"`. */
+function orderedItemIndex1Based(paragraphs: ParagraphNode[], pi: number): number {
+  let start = pi;
+  while (start > 0 && paragraphs[start - 1]!.listStyle === "decimal") start--;
+  return pi - start + 1;
+}
+
+/** Longitud en caracteres del prefijo de lista en el plano `flattenStoryContent` (viñeta o `n. `). */
+function listPrefixFlatLength(paragraphs: ParagraphNode[], pi: number): number {
+  const p = paragraphs[pi]!;
+  if (p.listStyle === "disc") return 2;
+  if (p.listStyle === "decimal") return `${orderedItemIndex1Based(paragraphs, pi)}. `.length;
+  return 0;
+}
+
 /**
- * Slice story content by character range, preserving span styles.
- * Used by the threading/layout system to assign content ranges to frames.
+ * Recorta un párrafo según índices en el mismo espacio que `flattenStoryContent`:
+ * prefijo de lista (viñeta o numeración) no forma parte de `p.spans`.
  */
-export function sliceStoryContent(nodes: StoryNode[], start: number, end: number): StoryNode[] {
-  const flat = flattenStoryContent(nodes);
-  let pos = 0;
-  const result: { text: string; style?: SpanStyle }[] = [];
-  for (const run of flat) {
-    const runEnd = pos + run.text.length;
-    if (runEnd <= start) { pos = runEnd; continue; }
-    if (pos >= end) break;
-    const sliceStart = Math.max(0, start - pos);
-    const sliceEnd = Math.min(run.text.length, end - pos);
-    result.push({ text: run.text.slice(sliceStart, sliceEnd), style: run.style });
-    pos = runEnd;
+function sliceParagraphNodeByLocalRange(p: ParagraphNode, localFrom: number, localTo: number, prefixLen: number): ParagraphNode {
+  if (localFrom >= localTo) {
+    return { type: "paragraph", id: uid("p"), spans: [{ id: uid("s"), text: "" }] };
   }
 
-  const paragraphs: ParagraphNode[] = [];
-  let currentSpans: SpanNode[] = [];
-  for (const r of result) {
-    if (r.text === "\n") {
-      paragraphs.push({ type: "paragraph", id: uid("p"), spans: currentSpans.length > 0 ? currentSpans : [{ id: uid("s"), text: "" }] });
-      currentSpans = [];
-      continue;
+  const listKind =
+    (p.listStyle === "disc" || p.listStyle === "decimal") && localFrom === 0 && localTo > 0 ? p.listStyle : undefined;
+
+  const spanOut: SpanNode[] = [];
+  let pos = prefixLen;
+  for (const sp of p.spans) {
+    const spStart = pos;
+    const spEnd = pos + sp.text.length;
+    const lo = Math.max(localFrom, spStart);
+    const hi = Math.min(localTo, spEnd);
+    if (lo < hi) {
+      spanOut.push({
+        id: uid("s"),
+        text: sp.text.slice(lo - spStart, hi - spStart),
+        ...(sp.style ? { style: { ...sp.style } } : {}),
+      });
     }
-    const lines = r.text.split("\n");
-    for (let li = 0; li < lines.length; li++) {
-      if (li > 0) {
-        paragraphs.push({ type: "paragraph", id: uid("p"), spans: currentSpans.length > 0 ? currentSpans : [{ id: uid("s"), text: "" }] });
-        currentSpans = [];
-      }
-      if (lines[li]!.length > 0) {
-        currentSpans.push({ id: uid("s"), text: lines[li]!, ...(r.style ? { style: r.style } : {}) });
-      }
-    }
+    pos = spEnd;
   }
-  if (currentSpans.length > 0 || paragraphs.length === 0) {
-    paragraphs.push({ type: "paragraph", id: uid("p"), spans: currentSpans.length > 0 ? currentSpans : [{ id: uid("s"), text: "" }] });
+
+  if (listKind && localTo <= prefixLen) {
+    return {
+      type: "paragraph",
+      id: uid("p"),
+      spans: [{ id: uid("s"), text: "" }],
+      listStyle: listKind,
+    };
   }
-  return paragraphs;
+
+  return {
+    type: "paragraph",
+    id: uid("p"),
+    spans: spanOut.length > 0 ? spanOut : [{ id: uid("s"), text: "" }],
+    ...(listKind ? { listStyle: listKind } : {}),
+  };
+}
+
+/**
+ * Slice story content by character range, preserving span styles and `listStyle` (viñetas).
+ * Used by the threading/layout system to assign content ranges to frames.
+ *
+ * La implementación anterior reconstruía párrafos desde runs planos y **perdía `listStyle`**,
+ * así que tras `syncTextFrameLayouts` el lienzo recibía `_designerRichSpans` sin "• ".
+ */
+export function sliceStoryContent(nodes: StoryNode[], start: number, end: number): StoryNode[] {
+  const paragraphs = nodes.filter((n): n is ParagraphNode => n.type === "paragraph");
+  if (paragraphs.length === 0) {
+    return [{ type: "paragraph", id: uid("p"), spans: [{ id: uid("s"), text: "" }] }];
+  }
+
+  const flat = flattenStoryContent(nodes);
+  const totalLen = flat.map((r) => r.text).join("").length;
+  const s = Math.max(0, start);
+  const e = Math.min(end, totalLen);
+  if (s >= e) {
+    return [{ type: "paragraph", id: uid("p"), spans: [{ id: uid("s"), text: "" }] }];
+  }
+
+  /** Marco único / historia completa en un frame: evita pérdida de metadatos. */
+  if (s === 0 && e === totalLen) {
+    return paragraphs.map((p) => ({
+      type: "paragraph" as const,
+      id: uid("p"),
+      spans: p.spans.map((sp) => ({
+        id: uid("s"),
+        text: sp.text,
+        ...(sp.style ? { style: { ...sp.style } } : {}),
+      })),
+      ...(p.listStyle === "disc"
+        ? { listStyle: "disc" as const }
+        : p.listStyle === "decimal"
+          ? { listStyle: "decimal" as const }
+          : {}),
+    }));
+  }
+
+  const out: ParagraphNode[] = [];
+  let pos = 0;
+  for (let pi = 0; pi < paragraphs.length; pi++) {
+    const p = paragraphs[pi]!;
+    if (pi > 0) pos += 1;
+    const flatStart = pos;
+    const prefixLen = listPrefixFlatLength(paragraphs, pi);
+    pos += prefixLen;
+    for (const sp of p.spans) pos += sp.text.length;
+    const flatEnd = pos;
+
+    const a = Math.max(s, flatStart);
+    const b = Math.min(e, flatEnd);
+    if (a >= b) continue;
+
+    out.push(sliceParagraphNodeByLocalRange(p, a - flatStart, b - flatStart, prefixLen));
+  }
+
+  return out.length > 0 ? out : [{ type: "paragraph", id: uid("p"), spans: [{ id: uid("s"), text: "" }] }];
 }
 
 export function uid(prefix: string) {
