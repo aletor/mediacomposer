@@ -307,6 +307,8 @@ export default function DesignerStudio({
   // ── Sync text frame layouts (overflow detection + multi-frame text distribution) ──
 
   const layoutSyncTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  /** Ref estable para forzar `syncTextFrameLayouts` antes del PDF multipágina (el efecto normal va con 60 ms de retraso). */
+  const syncTextFrameLayoutsRef = useRef<() => void>(() => {});
 
   const syncTextFrameLayouts = useCallback(() => {
     const api = studioApiRef.current;
@@ -489,6 +491,8 @@ export default function DesignerStudio({
       }
     }
   }, []);
+
+  syncTextFrameLayoutsRef.current = syncTextFrameLayouts;
 
   useEffect(() => {
     clearTimeout(layoutSyncTimerRef.current);
@@ -1246,6 +1250,10 @@ export default function DesignerStudio({
             requestAnimationFrame(() => resolve());
           });
         });
+        // Reparto texto encadenado (1/N, 2/N…) y `_designerRichSpans` por marco: sin esto el SVG/PDF puede quedar vacío o inválido
+        // porque el efecto `syncTextFrameLayouts` solo corre ~60 ms después del cambio de página.
+        syncTextFrameLayoutsRef.current();
+        await new Promise<void>((r) => setTimeout(r, 120));
         let api: DesignerStudioApi | null = null;
         for (let t = 0; t < 200; t++) {
           api = studioApiRef.current;
@@ -1260,11 +1268,23 @@ export default function DesignerStudio({
         }
         let m = "";
         for (let r = 0; r < 12; r++) {
-          m = await api.getVectorPdfMarkupForCurrentPage(pdfOpts);
+          try {
+            m = await api.getVectorPdfMarkupForCurrentPage(pdfOpts);
+          } catch (e) {
+            console.warn("[Designer] PDF multipágina: error generando SVG de la página", i + 1, e);
+            m = "";
+          }
           if (m.length > 0) break;
-          await new Promise((res) => setTimeout(res, 40));
+          syncTextFrameLayoutsRef.current();
+          await new Promise((res) => setTimeout(res, 60));
         }
         if (m) markups.push(m);
+      }
+      if (markups.length < pageCount) {
+        console.warn(
+          "[Designer] PDF multipágina: faltan páginas respecto al documento (posible timeout de lienzo o SVG inválido).",
+          { esperadas: pageCount, obtenidas: markups.length },
+        );
       }
       if (markups.length === 0) {
         alert("No se pudo preparar ninguna página para el PDF (el lienzo no estaba listo). Cierra el diálogo de exportación e inténtalo de nuevo.");

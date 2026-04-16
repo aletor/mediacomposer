@@ -294,7 +294,11 @@ export async function downloadMultiPageVectorPdf(
     try {
       const parser = new DOMParser();
       const parsed = parser.parseFromString(markup, "image/svg+xml");
-      if (parsed.querySelector("parsererror")) continue;
+      const pe = parsed.querySelector("parsererror");
+      if (pe) {
+        console.warn("[PDF multipágina] SVG con error de parseo, página omitida:", pe.textContent?.trim()?.slice(0, 200));
+        continue;
+      }
       const svgRoot = parsed.documentElement;
       const w = Math.max(1, parseFloat(svgRoot.getAttribute("width") || "1"));
       const h = Math.max(1, parseFloat(svgRoot.getAttribute("height") || "1"));
