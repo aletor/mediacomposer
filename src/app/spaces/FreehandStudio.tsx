@@ -3929,6 +3929,18 @@ async function blobToDataUrl(blob: Blob): Promise<string> {
   });
 }
 
+/** S3 (y muchos CDNs) no envían CORS para localhost: el primer `fetch` falla y ensucia la consola aunque luego usemos proxy. */
+function isLikelyNoBrowserCorsHttps(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    const h = u.hostname;
+    return h.endsWith(".amazonaws.com") || h.endsWith(".amazonaws.com.cn");
+  } catch {
+    return false;
+  }
+}
+
 async function rasterHrefToSafeDataUrl(href: string, cache: Map<string, string>): Promise<string> {
   const raw = href.trim();
   if (!raw) return TRANSPARENT_PIXEL_PNG;
@@ -3955,16 +3967,21 @@ async function rasterHrefToSafeDataUrl(href: string, cache: Map<string, string>)
     }
   };
 
-  let dataUrl = await fetchToDataUrl(resolved);
-
-  // S3 u orígenes sin CORS: mismo proxy que el PDF vectorial (`download-vector-pdf.ts`).
-  if (
-    !dataUrl &&
-    (resolved.startsWith("http://") || resolved.startsWith("https://")) &&
-    !resolved.includes("/api/spaces/proxy")
-  ) {
+  let dataUrl: string | null = null;
+  if (isLikelyNoBrowserCorsHttps(resolved)) {
     const proxy = `/api/spaces/proxy?url=${encodeURIComponent(resolved)}`;
     dataUrl = await fetchToDataUrl(proxy);
+  } else {
+    dataUrl = await fetchToDataUrl(resolved);
+    // Orígenes sin CORS: mismo proxy que el PDF vectorial (`download-vector-pdf.ts`).
+    if (
+      !dataUrl &&
+      (resolved.startsWith("http://") || resolved.startsWith("https://")) &&
+      !resolved.includes("/api/spaces/proxy")
+    ) {
+      const proxy = `/api/spaces/proxy?url=${encodeURIComponent(resolved)}`;
+      dataUrl = await fetchToDataUrl(proxy);
+    }
   }
 
   if (dataUrl) {
