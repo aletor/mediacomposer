@@ -279,7 +279,8 @@ export async function svgMarkupToPdfBlob(svgMarkup: string, opts?: VectorPdfPipe
 }
 
 /**
- * Une varias páginas SVG (ya preparadas para PDF, p. ej. con texto como trazos) en un solo PDF vectorial.
+ * Une varias páginas SVG en un solo PDF vectorial.
+ * El markup puede llevar texto como `<text>` (seleccionable) o como trazos, según cómo se haya generado.
  */
 export async function downloadMultiPageVectorPdf(
   svgMarkups: string[],

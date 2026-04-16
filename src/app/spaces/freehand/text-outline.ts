@@ -12,6 +12,11 @@ export type VectorPdfExportOptions = {
   outlineLinkRects?: boolean;
   /** Recomprime mapas de bits como JPEG (~72) para PDF más ligero (no afecta SVG embebido como imagen). */
   optimizeImages?: boolean;
+  /**
+   * PDF multipágina: emite `<text>` SVG en lugar de trazados (opentype); el visor permite seleccionar y copiar texto.
+   * Si es true, `makeUrlsClickable` no aplica (los enlaces por URL requieren el pipeline de trazados).
+   */
+  selectableText?: boolean;
 };
 
 export const FONT_CONVERSION_UNAVAILABLE = "Fuente no disponible para conversión";

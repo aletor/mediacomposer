@@ -241,7 +241,7 @@ export function FreehandExportModal({
             <div className="space-y-2 rounded-lg border border-violet-500/20 bg-violet-950/20 p-3">
               <label className="text-[10px] font-medium uppercase tracking-wider text-violet-300/90">Documento (Designer)</label>
               <p className="text-[10px] leading-snug text-zinc-500">
-                PDF vectorial multipágina: una hoja por página del documento (texto como trazados, mismas primitivas que el SVG).
+                PDF vectorial multipágina: una hoja por página; el texto se exporta como texto seleccionable (copiar en el visor). Las URLs clickeables automáticas solo aplican al PDF de una sola página con trazados.
               </p>
               <label className="flex cursor-pointer items-start gap-2 text-[11px] text-zinc-300">
                 <input
