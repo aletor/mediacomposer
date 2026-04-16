@@ -1260,7 +1260,7 @@ export default function DesignerStudio({
         }
         let m = "";
         for (let r = 0; r < 12; r++) {
-          m = await api.getVectorPdfMarkupForCurrentPage({ ...pdfOpts, selectableText: true });
+          m = await api.getVectorPdfMarkupForCurrentPage(pdfOpts);
           if (m.length > 0) break;
           await new Promise((res) => setTimeout(res, 40));
         }

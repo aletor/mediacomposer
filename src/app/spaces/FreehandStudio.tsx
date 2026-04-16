@@ -3623,7 +3623,7 @@ function textObjectToNativeSvgMarkup(t: TextObject): string {
   const fill = migrateFill(t.fill);
   const gid = gradientDefId(t.id);
   const fillAttr = escapeXmlAttr(fillPaintValue(fill, gid));
-  const raw = textContentForLayoutMeasure(t) || "\u00a0";
+  const raw = t.text || "\u00a0";
   const pad = t.textMode === "area" ? 4 : 0;
   const indent = t.paragraphIndent ?? 0;
   const boxW = textLayoutDims(t).w;
@@ -4995,15 +4995,11 @@ export default function FreehandStudio({
         });
         const textObjs = objs.filter((o): o is TextObject => o.type === "text" && o.visible && !o.isClipMask);
         if (textObjs.length > 0) {
-          if (pdfOpts?.selectableText === true) {
-            strRaw = substituteNativeTextForRasterExport(strRaw, objs);
-          } else {
-            strRaw = await substituteTextWithOutlinedPathsInSvg(
-              strRaw,
-              textObjs.map(textObjectToVectorPdfOutlineItem),
-              pdfOpts,
-            );
-          }
+          strRaw = await substituteTextWithOutlinedPathsInSvg(
+            strRaw,
+            textObjs.map(textObjectToVectorPdfOutlineItem),
+            pdfOpts,
+          );
         }
         return strRaw;
       },
