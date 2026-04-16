@@ -1,6 +1,7 @@
 import opentype from "opentype.js";
 import type { SpanStyle } from "../indesign/text-model";
 import { sanitizeStoryLinkHref } from "../indesign/text-model";
+import { sanitizeSvgNamedEntitiesForXml } from "./freehand-export";
 
 export type VectorPdfTextRun = { text: string; style?: SpanStyle };
 
@@ -1083,7 +1084,7 @@ export async function substituteTextWithOutlinedPathsInSvg(
       }
     }
   }
-  return new XMLSerializer().serializeToString(doc.documentElement);
+  return sanitizeSvgNamedEntitiesForXml(new XMLSerializer().serializeToString(doc.documentElement));
 }
 
 function pathPayloadToSvgD(p: GlyphPathPayload): string {

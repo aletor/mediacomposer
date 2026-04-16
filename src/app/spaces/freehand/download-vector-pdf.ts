@@ -2,6 +2,7 @@
 
 import { jsPDF } from "jspdf";
 import { svg2pdf } from "svg2pdf.js";
+import { sanitizeSvgNamedEntitiesForXml } from "./freehand-export";
 
 /** svg2pdf usa XHR sobre href remotos; S3 prefirmado suele fallar por CORS y rechaza con ProgressEvent. */
 function normalizeSvg2PdfReason(reason: unknown): Error {
@@ -168,7 +169,8 @@ async function prepareSvgMarkupForVectorPdf(
   svgMarkup: string,
   opts?: VectorPdfPipelineOptions,
 ): Promise<{ markup: string; cleanup: () => void }> {
-  let m = await inlineRemoteSvgImagesForPdf(svgMarkup);
+  let m = sanitizeSvgNamedEntitiesForXml(svgMarkup);
+  m = await inlineRemoteSvgImagesForPdf(m);
   if (opts?.optimizeImages) {
     m = await recompressRasterImagesForPdf(m, PDF_OPTIMIZE_JPEG_QUALITY);
   }

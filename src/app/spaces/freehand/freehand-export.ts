@@ -43,6 +43,17 @@ export type ExportDomOptions = {
 };
 
 /**
+ * HTML y el DOM serializan a veces espacios duros como `&nbsp;`. En XML/SVG solo existen
+ * cinco entidades con nombre predefinidas; `&nbsp;` provoca "Entity 'nbsp' not defined" en
+ * DOMParser, decode de imagen y pdf (svg2pdf).
+ */
+export function sanitizeSvgNamedEntitiesForXml(markup: string): string {
+  return markup
+    .replace(/&nbsp;/gi, "&#160;")
+    .replace(/&shy;/gi, "&#173;");
+}
+
+/**
  * Builds standalone SVG markup from the live canvas SVG (same world coordinates as objects).
  * Strips UI, filters by selection, resets viewBox to bounds, applies optional scale for width/height attrs.
  */
@@ -82,11 +93,11 @@ export function buildStandaloneSvgFromCanvasDom(
       ? ""
       : `<rect x="${bounds.x}" y="${bounds.y}" width="${bounds.w}" height="${bounds.h}" fill="${escapeXml(background)}"/>`;
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
+  return sanitizeSvgNamedEntitiesForXml(`<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${w}" height="${h}" viewBox="${bounds.x} ${bounds.y} ${bounds.w} ${bounds.h}">
 ${defsXml}
 ${bgRect}<g>${innerXml}</g>
-</svg>`;
+</svg>`);
 }
 
 function escapeXml(s: string): string {
