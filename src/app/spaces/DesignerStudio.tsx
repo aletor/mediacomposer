@@ -8,6 +8,7 @@ import {
   Layers,
   ArrowLeftRight,
   Maximize2,
+  Copy,
 } from "lucide-react";
 import FreehandStudio, {
   type FreehandObject,
@@ -27,7 +28,7 @@ import { createArtboard, type Artboard } from "./freehand/artboard";
 import type { VectorPdfExportOptions } from "./freehand/text-outline";
 import { computeFittingLayout } from "./indesign/image-frame-layout";
 import { layoutPageStories } from "./indesign/text-layout";
-import type { Story, TextFrame, SpanStyle, Typography } from "./indesign/text-model";
+import type { Story, StoryNode, TextFrame, SpanStyle, Typography } from "./indesign/text-model";
 import {
   serializeStoryContent,
   plainTextToStoryNodes,
@@ -87,6 +88,130 @@ interface DesignerStudioProps {
 let _dpgSeq = 0;
 function dpgUid(): string {
   return `dpg_${Date.now()}_${++_dpgSeq}`;
+}
+
+function collectIdsFromFreehandObject(o: FreehandObject, ids: Set<string>): void {
+  ids.add(o.id);
+  if (o.type === "booleanGroup") {
+    for (const c of o.children) collectIdsFromFreehandObject(c, ids);
+  } else if (o.type === "clippingContainer") {
+    collectIdsFromFreehandObject(o.mask as FreehandObject, ids);
+    for (const c of o.content) collectIdsFromFreehandObject(c, ids);
+  }
+}
+
+function collectIdsFromStoryNodes(nodes: StoryNode[] | undefined, ids: Set<string>): void {
+  if (!nodes) return;
+  for (const n of nodes) {
+    if (n.type === "paragraph") {
+      ids.add(n.id);
+      for (const sp of n.spans) ids.add(sp.id);
+    }
+  }
+}
+
+/** Copia profunda de una página con IDs nuevos (objetos, historias, marcos, guías). */
+function duplicateDesignerPageState(page: DesignerPageState): DesignerPageState {
+  const raw = JSON.parse(JSON.stringify(page)) as DesignerPageState;
+  const ids = new Set<string>();
+
+  ids.add(raw.id);
+  for (const o of raw.objects ?? []) collectIdsFromFreehandObject(o, ids);
+  for (const s of raw.stories ?? []) {
+    ids.add(s.id);
+    collectIdsFromStoryNodes(s.content, ids);
+    for (const fid of s.frames) ids.add(fid);
+  }
+  for (const tf of raw.textFrames ?? []) {
+    ids.add(tf.id);
+    ids.add(tf.storyId);
+  }
+  for (const im of raw.imageFrames ?? []) {
+    ids.add(im.id);
+    if (im.imageContent?.id) ids.add(im.imageContent.id);
+  }
+  for (const g of raw.layoutGuides ?? []) ids.add(g.id);
+
+  const map = new Map<string, string>();
+  for (const old of ids) {
+    map.set(old, dpgUid());
+  }
+
+  const remap = (s: string | undefined | null): string | undefined => {
+    if (s == null || s === "") return s ?? undefined;
+    return map.get(s) ?? s;
+  };
+
+  function applyFreehandObject(o: FreehandObject): void {
+    const nid = map.get(o.id);
+    if (nid) o.id = nid;
+    if (o.groupId) {
+      const g = remap(o.groupId);
+      if (g != null) o.groupId = g;
+    }
+    if (o.clipMaskId) {
+      const m = remap(o.clipMaskId);
+      if (m != null) o.clipMaskId = m;
+    }
+    if (o.storyId) {
+      const sid = remap(o.storyId);
+      if (sid != null) o.storyId = sid;
+    }
+    if (o.type === "textOnPath" && o.guidePathId) {
+      const gid = remap(o.guidePathId);
+      if (gid != null) o.guidePathId = gid;
+    }
+    if (o.type === "booleanGroup") {
+      for (const c of o.children) applyFreehandObject(c);
+    } else if (o.type === "clippingContainer") {
+      applyFreehandObject(o.mask as FreehandObject);
+      for (const c of o.content) applyFreehandObject(c);
+    }
+  }
+
+  const newPageId = map.get(raw.id);
+  if (newPageId) raw.id = newPageId;
+
+  for (const o of raw.objects ?? []) applyFreehandObject(o);
+
+  for (const s of raw.stories ?? []) {
+    const nsid = map.get(s.id);
+    if (nsid) s.id = nsid;
+    s.frames = s.frames.map((fid) => map.get(fid) ?? fid);
+    for (const node of s.content) {
+      if (node.type === "paragraph") {
+        const np = map.get(node.id);
+        if (np) node.id = np;
+        for (const sp of node.spans) {
+          const nsp = map.get(sp.id);
+          if (nsp) sp.id = nsp;
+        }
+      }
+    }
+  }
+
+  for (const tf of raw.textFrames ?? []) {
+    const tid = map.get(tf.id);
+    if (tid) tf.id = tid;
+    const sid = map.get(tf.storyId);
+    if (sid) tf.storyId = sid;
+  }
+
+  for (const im of raw.imageFrames ?? []) {
+    const iid = map.get(im.id);
+    if (iid) im.id = iid;
+    if (im.imageContent?.id) {
+      const cid = map.get(im.imageContent.id);
+      if (cid) im.imageContent.id = cid;
+    }
+  }
+
+  for (const g of raw.layoutGuides ?? []) {
+    const gid = map.get(g.id);
+    if (gid) g.id = gid;
+  }
+
+  return raw;
 }
 
 export default function DesignerStudio({
@@ -900,6 +1025,23 @@ export default function DesignerStudio({
     });
   }, []);
 
+  const duplicatePage = useCallback(
+    (idx: number) => {
+      const source = pagesRef.current[idx];
+      if (!source) return;
+      const dup = duplicateDesignerPageState(source);
+      commitPages((prev) => {
+        const next = [...prev.slice(0, idx + 1), dup, ...prev.slice(idx + 1)];
+        queueMicrotask(() => {
+          setDesignerPageEnterDirection("next");
+          setActivePageIndex(idx + 1);
+        });
+        return next;
+      });
+    },
+    [commitPages],
+  );
+
   const movePage = useCallback(
     (fromIndex: number, toIndex: number) => {
       if (fromIndex === toIndex) return;
@@ -1507,6 +1649,17 @@ export default function DesignerStudio({
                           }}
                         >
                           <Maximize2 className="h-2.5 w-2.5" strokeWidth={2} />
+                        </button>
+                        <button
+                          type="button"
+                          title="Duplicar página"
+                          className="rounded-[2px] border border-white/25 bg-white/[0.12] p-0.5 text-white transition hover:bg-white/20"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            duplicatePage(i);
+                          }}
+                        >
+                          <Copy className="h-2.5 w-2.5" strokeWidth={2} />
                         </button>
                         <button
                           type="button"

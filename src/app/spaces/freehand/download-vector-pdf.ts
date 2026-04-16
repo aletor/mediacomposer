@@ -4,6 +4,10 @@ import { jsPDF } from "jspdf";
 import { svg2pdf } from "svg2pdf.js";
 import { sanitizeSvgNamedEntitiesForXml } from "./freehand-export";
 
+/** 1×1 transparente: último recurso si no podemos incrustar una imagen remota (evita que svg2pdf falle por XHR/CORS). */
+const STUB_IMAGE_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
 /** svg2pdf usa XHR sobre href remotos; S3 prefirmado suele fallar por CORS y rechaza con ProgressEvent. */
 function normalizeSvg2PdfReason(reason: unknown): Error {
   if (reason instanceof Error) return reason;
@@ -57,25 +61,18 @@ export async function inlineRemoteSvgImagesForPdf(svgMarkup: string): Promise<st
   const tasks: Promise<void>[] = [];
 
   for (const img of images) {
-    const href = img.getAttribute("href") || img.getAttribute("xlink:href");
+    let href = img.getAttribute("href") || img.getAttribute("xlink:href");
     if (!href || href.startsWith("data:") || href.startsWith("#")) continue;
+    if (href.startsWith("//")) href = `https:${href}`;
     if (!href.startsWith("http://") && !href.startsWith("https://")) continue;
 
+    const target = href;
     tasks.push(
       (async () => {
-        try {
-          const proxy = `/api/spaces/proxy?url=${encodeURIComponent(href)}`;
-          const res = await fetch(proxy);
-          if (!res.ok) return;
-          const blob = await res.blob();
-          const buf = await blob.arrayBuffer();
-          const mime = blob.type && blob.type !== "application/octet-stream" ? blob.type : guessMimeFromUrl(href);
-          const dataUrl = `data:${mime};base64,${arrayBufferToBase64(buf)}`;
-          img.setAttribute("href", dataUrl);
-          img.removeAttribute("xlink:href");
-        } catch {
-          /* dejar href; svg2pdf puede fallar — error unificado arriba */
-        }
+        const dataUrl = await fetchRemoteImageAsDataUrl(target);
+        if (!dataUrl) return;
+        img.setAttribute("href", dataUrl);
+        img.removeAttribute("xlink:href");
       })(),
     );
   }
@@ -91,6 +88,24 @@ function guessMimeFromUrl(url: string): string {
   if (lower.endsWith(".webp")) return "image/webp";
   if (lower.endsWith(".gif")) return "image/gif";
   return "image/png";
+}
+
+/** Carga una URL absoluta http(s) o // vía proxy y devuelve data URL, o null. */
+async function fetchRemoteImageAsDataUrl(href: string): Promise<string | null> {
+  let url = href.trim();
+  if (url.startsWith("//")) url = `https:${url}`;
+  if (!url.startsWith("http://") && !url.startsWith("https://")) return null;
+  try {
+    const proxy = `/api/spaces/proxy?url=${encodeURIComponent(url)}`;
+    const res = await fetch(proxy);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    const buf = await blob.arrayBuffer();
+    const mime = blob.type && blob.type !== "application/octet-stream" ? blob.type : guessMimeFromUrl(url);
+    return `data:${mime};base64,${arrayBufferToBase64(buf)}`;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -148,10 +163,17 @@ async function recompressRasterImagesForPdf(svgMarkup: string, quality: number):
 
   const images = doc.querySelectorAll("image");
   for (const img of images) {
-    const href = img.getAttribute("href") || img.getAttribute("xlink:href");
+    let href = img.getAttribute("href") || img.getAttribute("xlink:href");
     if (!href || href.startsWith("#")) continue;
+    if (href.startsWith("//")) href = `https:${href}`;
     try {
-      const res = await fetch(href);
+      let fetchHref = href;
+      if (href.startsWith("http://") || href.startsWith("https://")) {
+        const proxied = await fetchRemoteImageAsDataUrl(href);
+        if (!proxied) continue;
+        fetchHref = proxied;
+      }
+      const res = await fetch(fetchHref);
       if (!res.ok) continue;
       const blob = await res.blob();
       const jpegDataUrl = await rasterBlobToJpegDataUrl(blob, quality);
@@ -174,7 +196,48 @@ async function prepareSvgMarkupForVectorPdf(
   if (opts?.optimizeImages) {
     m = await recompressRasterImagesForPdf(m, PDF_OPTIMIZE_JPEG_QUALITY);
   }
-  return rewriteLargeDataUrlImagesForSvg2pdf(m);
+  const withBlobs = await rewriteLargeDataUrlImagesForSvg2pdf(m);
+  return finalizeRemoteImagesForSvg2pdf(withBlobs.markup, withBlobs.cleanup);
+}
+
+/**
+ * Cualquier `http(s)` residual haría que svg2pdf use XHR y falle por CORS.
+ * Reintenta el proxy por imagen (p. ej. tras reescritura a blob); si sigue fallando, píxel transparente.
+ */
+async function finalizeRemoteImagesForSvg2pdf(
+  svgMarkup: string,
+  prevCleanup: () => void,
+): Promise<{ markup: string; cleanup: () => void }> {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgMarkup, "image/svg+xml");
+  if (doc.querySelector("parsererror")) {
+    return { markup: svgMarkup, cleanup: prevCleanup };
+  }
+  let stubbed = false;
+  for (const img of doc.querySelectorAll("image")) {
+    let href = img.getAttribute("href") || img.getAttribute("xlink:href") || "";
+    if (!href || href.startsWith("data:") || href.startsWith("blob:") || href.startsWith("#")) continue;
+    if (href.startsWith("//")) href = `https:${href}`;
+    if (!href.startsWith("http://") && !href.startsWith("https://")) continue;
+    const dataUrl = await fetchRemoteImageAsDataUrl(href);
+    if (dataUrl) {
+      img.setAttribute("href", dataUrl);
+      img.removeAttribute("xlink:href");
+    } else {
+      img.setAttribute("href", STUB_IMAGE_DATA_URL);
+      img.removeAttribute("xlink:href");
+      stubbed = true;
+    }
+  }
+  if (stubbed) {
+    console.warn(
+      "[PDF] Una o más imágenes remotas no se pudieron incrustar; se sustituyeron por un píxel transparente para completar el PDF.",
+    );
+  }
+  return {
+    markup: new XMLSerializer().serializeToString(doc.documentElement),
+    cleanup: prevCleanup,
+  };
 }
 
 async function rewriteLargeDataUrlImagesForSvg2pdf(svgMarkup: string): Promise<{
