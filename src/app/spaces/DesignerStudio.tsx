@@ -47,7 +47,7 @@ import {
 } from "./indesign/text-threading";
 import { readResponseJson } from "@/lib/read-response-json";
 import { useDesignerSpaceId } from "@/contexts/DesignerSpaceIdContext";
-import { newDesignerAssetId } from "./designer-image-pipeline";
+import { newDesignerAssetId, optimizeImageBlobToOptFormat } from "./designer-image-pipeline";
 import {
   applyDesignerImageDisplayUrls,
   collectAllDesignerImageS3Keys,
@@ -1052,14 +1052,28 @@ export default function DesignerStudio({
       const frameObj = api?.getObjects().find((o) => o.id === frameId);
 
       const assetId = newDesignerAssetId();
-      const extFallback = (file.name.split(".").pop() || "jpg").replace(/[^a-z0-9]/gi, "").toLowerCase() || "jpg";
+
+      let optBlob: Blob;
+      let optExt: string;
+      try {
+        const optimized = await optimizeImageBlobToOptFormat(file, file.type || "image/jpeg");
+        optBlob = optimized.blob;
+        optExt = optimized.ext;
+      } catch (e) {
+        console.error("[Designer] optimize:", e);
+        alert("No se pudo optimizar la imagen. Prueba con otro archivo.");
+        return;
+      }
 
       const formData = new FormData();
-      formData.append("file", file);
+      formData.append(
+        "file",
+        new File([optBlob], `optimized.${optExt}`, { type: optBlob.type || "application/octet-stream" }),
+      );
       formData.append("assetId", assetId);
-      formData.append("variant", "HR");
+      formData.append("variant", "OPT");
       if (designerSpaceId) formData.append("spaceId", designerSpaceId);
-      formData.append("ext", extFallback);
+      formData.append("ext", optExt);
 
       let uploadRes: Response;
       try {
@@ -1084,23 +1098,30 @@ export default function DesignerStudio({
       }
 
       const persistedUrl = json.url;
-      const hrKey = json.s3Key;
+      const optKey = json.s3Key;
       let iw = 100;
       let ih = 100;
       try {
-        const dim = await readImageFilePixelSize(file);
-        iw = dim.w;
-        ih = dim.h;
+        const bmp = await createImageBitmap(optBlob);
+        iw = bmp.width;
+        ih = bmp.height;
+        bmp.close();
       } catch {
-        const img = new window.Image();
-        img.crossOrigin = "anonymous";
-        img.src = persistedUrl;
-        await new Promise<void>((res) => {
-          img.onload = () => res();
-          img.onerror = () => res();
-        });
-        iw = img.naturalWidth || 100;
-        ih = img.naturalHeight || 100;
+        try {
+          const dim = await readImageFilePixelSize(file);
+          iw = dim.w;
+          ih = dim.h;
+        } catch {
+          const img = new window.Image();
+          img.crossOrigin = "anonymous";
+          img.src = persistedUrl;
+          await new Promise<void>((res) => {
+            img.onload = () => res();
+            img.onerror = () => res();
+          });
+          iw = img.naturalWidth || 100;
+          ih = img.naturalHeight || 100;
+        }
       }
 
       const fw = frameObj?.width ?? 200;
@@ -1109,8 +1130,8 @@ export default function DesignerStudio({
 
       const content = {
         src: persistedUrl,
-        s3Key: hrKey,
-        s3KeyHr: hrKey,
+        s3Key: optKey,
+        s3KeyOpt: optKey,
         designerAssetId: assetId,
         originalWidth: iw,
         originalHeight: ih,

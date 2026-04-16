@@ -116,12 +116,62 @@ const LARGE_DATA_URL_FOR_SVG2PDF = 32 * 1024;
 /** Calidad JPEG al optimizar (0–1). ~0.72 suele dar buen equilibrio peso/calidad en documentos. */
 const PDF_OPTIMIZE_JPEG_QUALITY = 0.72;
 
+function hasTransparencyInImageData(data: ImageData): boolean {
+  const d = data.data;
+  for (let i = 3; i < d.length; i += 4) {
+    if (d[i]! < 255) return true;
+  }
+  return false;
+}
+
+/** Muestreo rápido de alpha (misma idea que en designer-image-pipeline). */
+async function imageBitmapLikelyHasAlpha(bmp: ImageBitmap, mimeHint: string): Promise<boolean> {
+  const mimeLower = (mimeHint || "").toLowerCase();
+  if (mimeLower.includes("jpeg") || mimeLower.includes("jpg")) return false;
+  if (mimeLower.includes("png") || mimeLower.includes("webp") || mimeLower.includes("gif")) {
+    const w = Math.min(64, bmp.width);
+    const h = Math.min(64, bmp.height);
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return true;
+    ctx.drawImage(bmp, 0, 0, w, h);
+    try {
+      const id = ctx.getImageData(0, 0, w, h);
+      return hasTransparencyInImageData(id);
+    } catch {
+      return true;
+    }
+  }
+  const w = Math.min(64, bmp.width);
+  const h = Math.min(64, bmp.height);
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return true;
+  ctx.drawImage(bmp, 0, 0, w, h);
+  try {
+    const id = ctx.getImageData(0, 0, w, h);
+    return hasTransparencyInImageData(id);
+  } catch {
+    return true;
+  }
+}
+
 export type VectorPdfPipelineOptions = {
-  /** Convierte PNG/WebP/GIF/JPEG raster a JPEG con `PDF_OPTIMIZE_JPEG_QUALITY`; no toca `image/svg+xml`. */
+  /**
+   * Reduce peso del PDF: JPEG (~calidad 0.72) para mapas opacos; PNG sin fondo blanco si hay transparencia
+   * (evita “cuadro blanco” al convertir PNG con alpha). No toca `image/svg+xml`.
+   */
   optimizeImages?: boolean;
 };
 
-async function rasterBlobToJpegDataUrl(blob: Blob, quality: number): Promise<string | null> {
+/**
+ * Recomprime rasters para el PDF: JPEG con fondo blanco solo si no hay canal alpha; si hay alpha, PNG sobre canvas transparente.
+ */
+async function rasterBlobToOptimizedPdfDataUrl(blob: Blob, quality: number): Promise<string | null> {
   if (blob.type === "image/svg+xml") return null;
   try {
     const bmp = await createImageBitmap(blob);
@@ -131,8 +181,22 @@ async function rasterBlobToJpegDataUrl(blob: Blob, quality: number): Promise<str
       const canvas = document.createElement("canvas");
       canvas.width = w;
       canvas.height = h;
-      const ctx = canvas.getContext("2d");
+      const ctx = canvas.getContext("2d", { alpha: true });
       if (!ctx) return null;
+
+      const hasAlpha = await imageBitmapLikelyHasAlpha(bmp, blob.type);
+
+      if (hasAlpha) {
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(bmp, 0, 0);
+        const out = await new Promise<Blob | null>((resolve) => {
+          canvas.toBlob((b) => resolve(b), "image/png");
+        });
+        if (!out) return null;
+        const buf = await out.arrayBuffer();
+        return `data:image/png;base64,${arrayBufferToBase64(buf)}`;
+      }
+
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, w, h);
       ctx.drawImage(bmp, 0, 0);
@@ -151,7 +215,7 @@ async function rasterBlobToJpegDataUrl(blob: Blob, quality: number): Promise<str
 }
 
 /**
- * Recomprime cada `<image>` raster como JPEG para reducir tamaño en el PDF.
+ * Recomprime cada `<image>` raster para el PDF (JPEG opacos, PNG si hay transparencia).
  * Procesa en serie para limitar picos de memoria.
  */
 async function recompressRasterImagesForPdf(svgMarkup: string, quality: number): Promise<string> {
@@ -174,9 +238,9 @@ async function recompressRasterImagesForPdf(svgMarkup: string, quality: number):
       const res = await fetch(fetchHref);
       if (!res.ok) continue;
       const blob = await res.blob();
-      const jpegDataUrl = await rasterBlobToJpegDataUrl(blob, quality);
-      if (!jpegDataUrl) continue;
-      img.setAttribute("href", jpegDataUrl);
+      const dataUrl = await rasterBlobToOptimizedPdfDataUrl(blob, quality);
+      if (!dataUrl) continue;
+      img.setAttribute("href", dataUrl);
       img.removeAttribute("xlink:href");
     } catch {
       /* mantener href original */

@@ -8,14 +8,32 @@ import {
 import { readResponseJson } from "@/lib/read-response-json";
 import { tryExtractKnowledgeFilesKeyFromUrl } from "@/lib/s3-media-hydrate";
 
-/** Misma lógica que al hidratar el proyecto: HR desde `s3KeyHr` / `s3Key` o inferida de `src`. */
+/**
+ * Clave `knowledge-files/...` para presign e hidratar: prioriza OPT (único archivo guardado en proyectos nuevos),
+ * luego HR/s3Key/src para legados.
+ */
 export function resolveDesignerImageHrKey(
   c: NonNullable<FreehandObject["imageFrameContent"]>,
 ): string {
-  const direct = (c.s3KeyHr || c.s3Key || "").trim();
+  const direct = (c.s3KeyOpt || c.s3KeyHr || c.s3Key || "").trim();
   if (direct.startsWith("knowledge-files/")) return direct;
   const fromSrc = c.src ? tryExtractKnowledgeFilesKeyFromUrl(c.src) : null;
   return fromSrc && fromSrc.startsWith("knowledge-files/") ? fromSrc : "";
+}
+
+/**
+ * Solo claves HR legacy (`…_HR.ext`) para la cola “generar OPT desde HR”. No usar cuando solo existe OPT.
+ */
+export function resolveLegacyDesignerHrKeyForOptimization(
+  c: NonNullable<FreehandObject["imageFrameContent"]>,
+): string {
+  const hr = (c.s3KeyHr || "").trim();
+  if (hr.startsWith("knowledge-files/")) return hr;
+  const sk = (c.s3Key || "").trim();
+  if (sk.startsWith("knowledge-files/") && sk.includes("_HR.")) return sk;
+  const fromSrc = c.src ? tryExtractKnowledgeFilesKeyFromUrl(c.src) : null;
+  if (fromSrc?.startsWith("knowledge-files/") && fromSrc.includes("_HR.")) return fromSrc;
+  return "";
 }
 
 export type DesignerOptimizePending = {
@@ -92,12 +110,13 @@ export function collectPendingDesignerOptimizations(
     if (!o.isImageFrame || !o.imageFrameContent) return;
     const c = o.imageFrameContent;
     if (c.designerHrSourceMissing) return;
-    const hrKey = resolveDesignerImageHrKey(c);
-    if (!hrKey.startsWith("knowledge-files/")) return;
     if (c.s3KeyOpt) {
-      hasOptByHr.add(hrKey);
+      const legacyHr = resolveLegacyDesignerHrKeyForOptimization(c);
+      if (legacyHr.startsWith("knowledge-files/")) hasOptByHr.add(legacyHr);
       return;
     }
+    const hrKey = resolveLegacyDesignerHrKeyForOptimization(c);
+    if (!hrKey.startsWith("knowledge-files/")) return;
     if (candidates.has(hrKey)) return;
     const assetId =
       c.designerAssetId && c.designerAssetId.length > 0 ? c.designerAssetId : `legacy_${hrKey}`;
@@ -153,7 +172,8 @@ export function patchPagesMarkHrSourceMissing(
 ): DesignerPageState[] {
   return patchPagesWithImageFramePredicate(
     pages,
-    (c) => resolveDesignerImageHrKey(c) === hrKey,
+    (c) =>
+      resolveLegacyDesignerHrKeyForOptimization(c) === hrKey || resolveDesignerImageHrKey(c) === hrKey,
     (c) => ({ ...c, designerHrSourceMissing: true }),
   );
 }
@@ -238,15 +258,15 @@ export async function createOptVersionForDesignerAsset(
 
   const nextPages = patchPagesWithImageFramePredicate(
     pages,
-    (c) => resolveDesignerImageHrKey(c) === item.hrKey && !c.s3KeyOpt,
+    (c) => resolveLegacyDesignerHrKeyForOptimization(c) === item.hrKey && !c.s3KeyOpt,
     (c) => {
       const nextAsset = item.assetId.startsWith("legacy_") ? assetId : c.designerAssetId || assetId;
       return {
         ...c,
         designerAssetId: nextAsset,
-        s3KeyHr: c.s3KeyHr || c.s3Key || item.hrKey,
-        s3Key: c.s3Key,
         s3KeyOpt: optKey,
+        s3Key: optKey,
+        s3KeyHr: undefined,
       };
     },
   );
@@ -260,9 +280,10 @@ export function collectAllDesignerImageS3Keys(pages: DesignerPageState[]): strin
   const visit = (o: FreehandObject) => {
     if (o.isImageFrame && o.imageFrameContent) {
       const c = o.imageFrameContent;
-      const hr = resolveDesignerImageHrKey(c);
-      if (hr.startsWith("knowledge-files/")) s.add(hr);
-      if (c.s3KeyOpt?.startsWith("knowledge-files/")) s.add(c.s3KeyOpt);
+      const primary = resolveDesignerImageHrKey(c);
+      if (primary.startsWith("knowledge-files/")) s.add(primary);
+      const legacyHr = (c.s3KeyHr || "").trim();
+      if (legacyHr.startsWith("knowledge-files/") && legacyHr !== primary) s.add(legacyHr);
     }
     if (o.type === "booleanGroup") o.children.forEach(visit);
     else if (o.type === "clippingContainer") {
@@ -288,15 +309,15 @@ export function applyDesignerImageDisplayUrls(
       return hr.startsWith("knowledge-files/");
     },
     (c) => {
-      const hr = resolveDesignerImageHrKey(c);
-      if (!hr.startsWith("knowledge-files/")) return c;
+      const primary = resolveDesignerImageHrKey(c);
+      if (!primary.startsWith("knowledge-files/")) return c;
       const opt = c.s3KeyOpt;
-      const key = useOptimized && opt ? opt : hr;
+      const key = useOptimized && opt ? opt : primary;
       const src = (key && urlByKey[key]) || c.src;
       return {
         ...c,
-        s3KeyHr: c.s3KeyHr || hr,
-        s3Key: key || c.s3Key || hr,
+        s3KeyHr: c.s3KeyHr,
+        s3Key: key || c.s3Key || primary,
         src,
       };
     },

@@ -356,13 +356,13 @@ interface FreehandObjectBase {
   /** Designer mode: image content inside an image frame. */
   imageFrameContent?: {
     src: string;
-    /** Persistido en proyecto; URL en `src` se renueva al cargar con hydrate S3. */
+    /** Persistido en proyecto; URL en `src` se renueva al cargar con hydrate S3. Suele coincidir con `s3KeyOpt` si solo se guarda la versión optimizada. */
     s3Key?: string;
-    /** Alta resolución (origen). Si solo existe `s3Key`, equivale a HR. */
+    /** Legado: clave HR (`…_HR.ext`). Proyectos nuevos solo persisten OPT. */
     s3KeyHr?: string;
-    /** Versión optimizada (misma composición en página; otro fichero en S3). */
+    /** Versión optimizada en S3 (única guardada en flujos nuevos). */
     s3KeyOpt?: string;
-    /** Identificador estable para deduplicar HR/OPT en el mismo proyecto. */
+    /** Identificador estable del asset en el espacio. */
     designerAssetId?: string;
     /** HR no está en S3 (p. ej. clave obsoleta); no reintentar auto-OPT hasta reemplazar la imagen. */
     designerHrSourceMissing?: boolean;

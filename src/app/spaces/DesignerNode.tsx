@@ -31,7 +31,7 @@ export type DesignerNodeData = {
   value?: string;
   pages?: DesignerPageState[];
   activePageIndex?: number;
-  /** Auto-optimización de imágenes (HR/OPT en S3); persiste en el nodo. */
+  /** Auto-optimización: cola legada HR→OPT en segundo plano; las imágenes nuevas solo persisten OPT en S3. */
   autoImageOptimization?: boolean;
 };
 

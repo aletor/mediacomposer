@@ -5,7 +5,8 @@ import { buildDesignerAssetObjectKey } from "@/lib/designer-asset-keys";
 const ALLOWED_EXT = new Set(["jpg", "jpeg", "png", "webp", "gif", "bin"]);
 
 /**
- * Sube un binario a la ruta Designer HR/OPT del espacio.
+ * Sube un binario a la ruta Designer (`…_HR` | `…_OPT`) del espacio.
+ * Flujo actual del Designer: solo sube `OPT` (imagen ya optimizada en cliente). `HR` queda por compatibilidad con datos antiguos.
  * FormData: file, spaceId (opcional), assetId, variant (HR | OPT), ext (opcional, sin punto)
  */
 export async function POST(req: Request) {

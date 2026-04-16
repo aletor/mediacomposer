@@ -171,19 +171,19 @@ function hydrateDesignerPagesInData(d: Record<string, unknown>, urls: Record<str
       const ifc = o.imageFrameContent;
       if (!ifc || typeof ifc !== "object") return obj;
       const row = ifc as Record<string, unknown>;
+      const skOpt = typeof row.s3KeyOpt === "string" ? row.s3KeyOpt : null;
       const skHr = typeof row.s3KeyHr === "string" ? row.s3KeyHr : null;
       const skLegacy = typeof row.s3Key === "string" ? row.s3Key : null;
       const keyFromUrl = typeof row.src === "string" ? tryExtractKnowledgeFilesKeyFromUrl(row.src) : null;
-      const resolvedHr = skHr || skLegacy || keyFromUrl;
-      if (resolvedHr && urls[resolvedHr]) {
+      const resolvedKey = skOpt || skHr || skLegacy || keyFromUrl;
+      if (resolvedKey && urls[resolvedKey]) {
         any = true;
-        const skOpt = typeof row.s3KeyOpt === "string" ? row.s3KeyOpt : null;
         const nextRow = {
           ...row,
-          src: urls[resolvedHr],
-          s3Key: resolvedHr,
-          s3KeyHr: skHr || resolvedHr,
-          ...(skOpt && urls[skOpt] ? { s3KeyOpt: skOpt } : {}),
+          src: urls[resolvedKey],
+          s3Key: resolvedKey,
+          ...(skHr ? { s3KeyHr: skHr } : {}),
+          ...(skOpt ? { s3KeyOpt: skOpt } : {}),
         };
         return {
           ...o,
