@@ -14,7 +14,7 @@ import FreehandStudio, {
   type FreehandObject,
   type LayoutGuide,
   type DesignerStudioApi,
-} from "./FreehandStudio";
+} from "../FreehandStudio";
 import type { DesignerPageState } from "./DesignerNode";
 import {
   DEFAULT_DESIGNER_PAGE_FORMAT,
@@ -22,13 +22,13 @@ import {
   type IndesignPageFormatId,
   formatById,
   getPageDimensions,
-} from "./indesign/page-formats";
+} from "../indesign/page-formats";
 import { DesignerPagePreview } from "./DesignerPagePreview";
-import { createArtboard, type Artboard } from "./freehand/artboard";
-import type { VectorPdfExportOptions } from "./freehand/text-outline";
-import { computeFittingLayout } from "./indesign/image-frame-layout";
-import { layoutPageStories } from "./indesign/text-layout";
-import type { Story, StoryNode, TextFrame, SpanStyle, Typography } from "./indesign/text-model";
+import { createArtboard, type Artboard } from "../freehand/artboard";
+import type { VectorPdfExportOptions } from "../freehand/text-outline";
+import { computeFittingLayout } from "../indesign/image-frame-layout";
+import { layoutPageStories } from "../indesign/text-layout";
+import type { Story, StoryNode, TextFrame, SpanStyle, Typography } from "../indesign/text-model";
 import {
   serializeStoryContent,
   plainTextToStoryNodes,
@@ -37,14 +37,14 @@ import {
   sliceStoryContent,
   flattenStoryContent,
   DEFAULT_TYPOGRAPHY,
-} from "./indesign/text-model";
+} from "../indesign/text-model";
 import {
   patchStoryContentPlain,
   appendTextFrameAfter,
   findFollowUpFrameRect,
   unlinkFrameAt,
   updateStoryTypography,
-} from "./indesign/text-threading";
+} from "../indesign/text-threading";
 import { readResponseJson } from "@/lib/read-response-json";
 import { useDesignerSpaceId } from "@/contexts/DesignerSpaceIdContext";
 import { newDesignerAssetId, optimizeImageBlobToOptFormat } from "./designer-image-pipeline";
@@ -590,7 +590,7 @@ export default function DesignerStudio({
 
   // ── Helper: build rich span array for a frame's content slice ──
 
-  function buildRichSpansForFrame(contentNodes: import("./indesign/text-model").StoryNode[]): Array<{ text: string; style?: SpanStyle }> {
+  function buildRichSpansForFrame(contentNodes: import("../indesign/text-model").StoryNode[]): Array<{ text: string; style?: SpanStyle }> {
     const runs = flattenStoryContent(contentNodes);
     const spans: Array<{ text: string; style?: SpanStyle }> = [];
     for (const run of runs) {
@@ -1579,7 +1579,7 @@ export default function DesignerStudio({
     const savedIdx = activeIdxRef.current;
     const markups: string[] = [];
     try {
-      const { downloadMultiPageVectorPdf } = await import("./freehand/download-vector-pdf");
+      const { downloadMultiPageVectorPdf } = await import("../freehand/download-vector-pdf");
       for (let i = 0; i < pageCount; i++) {
         const pg = pagesRef.current[i];
         if (!pg) continue;

@@ -1,6 +1,6 @@
 "use client";
 
-import type { FreehandObject, RectObject } from "./FreehandStudio";
+import type { FreehandObject, RectObject } from "../FreehandStudio";
 
 function looseThumbRect(o: FreehandObject): { x: number; y: number; w: number; h: number } | null {
   if (!o.visible) return null;

@@ -3,7 +3,7 @@
  * Esta capa las sube a S3 (variante OPT) y actualiza `src` + metadatos como un marco nuevo.
  */
 import type { DesignerPageState } from "./DesignerNode";
-import type { FreehandObject } from "./FreehandStudio";
+import type { FreehandObject } from "../FreehandStudio";
 import { newDesignerAssetId, optimizeImageBlobToOptFormat } from "./designer-image-pipeline";
 import { readResponseJson } from "@/lib/read-response-json";
 

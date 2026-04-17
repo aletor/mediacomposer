@@ -4,7 +4,7 @@
  */
 import JSZip from "jszip";
 import type { DesignerPageState } from "./DesignerNode";
-import type { FreehandObject } from "./FreehandStudio";
+import type { FreehandObject } from "../FreehandStudio";
 import { fetchBlobViaSpacesProxy } from "@/lib/spaces-proxy-fetch";
 
 export const FOLDDER_DE_FORMAT = "foldder-design" as const;

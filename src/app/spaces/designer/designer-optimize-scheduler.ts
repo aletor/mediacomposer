@@ -1,5 +1,5 @@
 import type { DesignerPageState } from "./DesignerNode";
-import type { FreehandObject } from "./FreehandStudio";
+import type { FreehandObject } from "../FreehandStudio";
 import {
   fetchBlobViaProxy,
   newDesignerAssetId,

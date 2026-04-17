@@ -143,7 +143,7 @@ import {
   DesignerRulerCorner,
   DesignerRulerHorizontal,
   DesignerRulerVertical,
-} from "./DesignerCanvasRulers";
+} from "./designer/DesignerCanvasRulers";
 
 /** Iconos para la botonera de modos de ajuste del marco de imagen (panel Designer). */
 function ImageFrameFittingGlyph({ mode, className }: { mode: string; className?: string }) {

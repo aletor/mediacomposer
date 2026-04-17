@@ -5,14 +5,14 @@ import { createPortal } from "react-dom";
 import { NodeResizer, Position, useReactFlow, type NodeProps } from "@xyflow/react";
 import { Pencil } from "lucide-react";
 import { FOLDDER_FIT_VIEW_EASE } from "@/lib/fit-view-ease";
-import { FoldderDataHandle } from "./FoldderDataHandle";
-import { NodeIcon } from "./foldder-icons";
-import type { IndesignPageFormatId } from "./indesign/page-formats";
-import { DEFAULT_DESIGNER_PAGE_FORMAT, getPageDimensions } from "./indesign/page-formats";
+import { FoldderDataHandle } from "../FoldderDataHandle";
+import { NodeIcon } from "../foldder-icons";
+import type { IndesignPageFormatId } from "../indesign/page-formats";
+import { DEFAULT_DESIGNER_PAGE_FORMAT, getPageDimensions } from "../indesign/page-formats";
 import { DesignerPagePreview } from "./DesignerPagePreview";
-import type { Story, TextFrame } from "./indesign/text-model";
-import type { ImageFrameRecord } from "./indesign/image-frame-model";
-import type { FreehandObject, LayoutGuide } from "./FreehandStudio";
+import type { Story, TextFrame } from "../indesign/text-model";
+import type { ImageFrameRecord } from "../indesign/image-frame-model";
+import type { FreehandObject, LayoutGuide } from "../FreehandStudio";
 
 export type DesignerPageState = {
   id: string;

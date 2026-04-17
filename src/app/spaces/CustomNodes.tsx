@@ -9555,4 +9555,4 @@ export const BezierMaskNode = memo(({ id, data, selected }: NodeProps<any>) => {
 });
 
 export { VfxGeneratorNode } from "./VfxGeneratorNode";
-export { DesignerNode } from "./DesignerNode";
+export { DesignerNode } from "./designer/DesignerNode";
