@@ -9,7 +9,8 @@ export {
   type DesignerNodeData,
   type DesignerPageState,
 } from "./DesignerNode";
-export { default as DesignerStudio, designerCanvasSessionKey } from "./DesignerStudio";
+export { designerCanvasSessionKey } from "./designer-studio-pure";
+export { default as DesignerStudio } from "./DesignerStudio";
 export { DesignerPagePreview } from "./DesignerPagePreview";
 export {
   DESIGNER_RULER_THICKNESS,

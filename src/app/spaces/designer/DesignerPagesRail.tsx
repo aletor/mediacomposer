@@ -1,0 +1,201 @@
+"use client";
+
+import React from "react";
+import { ArrowLeftRight, Copy, Layers, Maximize2, Plus, Trash2 } from "lucide-react";
+import type { DesignerPageState } from "./DesignerNode";
+import { DesignerPagePreview } from "./DesignerPagePreview";
+import { formatById, getPageDimensions } from "../indesign/page-formats";
+
+export type DesignerPagesRailProps = {
+  pages: DesignerPageState[];
+  activePageIndex: number;
+  pageThumbnails: Record<string, string>;
+  scrollElRef: React.RefObject<HTMLDivElement | null>;
+  onRailScroll: (scrollTop: number) => void;
+  dragPageIndexRef: React.MutableRefObject<number | null>;
+  suppressPageThumbClickRef: React.MutableRefObject<boolean>;
+  goToDesignerPage: (i: number) => void;
+  movePage: (fromIndex: number, toIndex: number) => void;
+  swapOrientation: (idx: number) => void;
+  duplicatePage: (idx: number) => void;
+  deletePage: (idx: number) => void;
+  onRequestAddPageModal: () => void;
+  onRequestResizePageModal: (pageIndex: number) => void;
+};
+
+export function DesignerPagesRail({
+  pages,
+  activePageIndex,
+  pageThumbnails,
+  scrollElRef,
+  onRailScroll,
+  dragPageIndexRef,
+  suppressPageThumbClickRef,
+  goToDesignerPage,
+  movePage,
+  swapOrientation,
+  duplicatePage,
+  deletePage,
+  onRequestAddPageModal,
+  onRequestResizePageModal,
+}: DesignerPagesRailProps) {
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex shrink-0 items-center justify-center border-b border-white/[0.08] py-2">
+        <Layers className="h-3.5 w-3.5 text-violet-300/70" strokeWidth={2} />
+      </div>
+      <div
+        ref={scrollElRef}
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 py-1.5"
+        onScroll={(e) => {
+          onRailScroll(e.currentTarget.scrollTop);
+        }}
+      >
+        <div className="flex flex-col gap-2">
+          {pages.map((p, i) => {
+            const pd = getPageDimensions(p);
+            const pf = formatById(p.format);
+            const active = i === activePageIndex;
+            const resLabel = `${Math.round(pd.width)}×${Math.round(pd.height)}`;
+            const railThumb = pageThumbnails[p.id];
+            return (
+              <div
+                key={p.id}
+                data-designer-rail-index={i}
+                className="rounded-[2px] border border-white/[0.08] bg-black/15 px-0.5 py-1"
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const raw = e.dataTransfer.getData("text/plain");
+                  const from = dragPageIndexRef.current ?? (raw ? Number.parseInt(raw, 10) : NaN);
+                  dragPageIndexRef.current = null;
+                  if (Number.isNaN(from) || from === i) return;
+                  movePage(from, i);
+                }}
+              >
+                <div className="flex w-full flex-col gap-0.5">
+                  <button
+                    type="button"
+                    draggable
+                    title={`${i + 1}. ${pf.label} · ${resLabel} — arrastra para reordenar; clic para ver en pantalla`}
+                    className={`relative flex w-full cursor-grab touch-none flex-col items-center gap-0.5 rounded-[2px] border px-0.5 py-0.5 text-left transition active:cursor-grabbing ${
+                      active
+                        ? "border-violet-400/45 bg-violet-950/35 shadow-[0_0_0_1px_rgba(167,139,250,0.15)]"
+                        : "border-white/[0.08] bg-black/20 hover:border-white/15"
+                    }`}
+                    onDragStart={(e) => {
+                      suppressPageThumbClickRef.current = false;
+                      dragPageIndexRef.current = i;
+                      e.dataTransfer.setData("text/plain", String(i));
+                      e.dataTransfer.effectAllowed = "move";
+                    }}
+                    onDrag={() => {
+                      suppressPageThumbClickRef.current = true;
+                    }}
+                    onDragEnd={() => {
+                      dragPageIndexRef.current = null;
+                    }}
+                    onClick={() => {
+                      if (suppressPageThumbClickRef.current) {
+                        suppressPageThumbClickRef.current = false;
+                        return;
+                      }
+                      goToDesignerPage(i);
+                    }}
+                    onDoubleClick={(e) => {
+                      e.preventDefault();
+                      suppressPageThumbClickRef.current = false;
+                      goToDesignerPage(i);
+                    }}
+                  >
+                    <div className="flex h-[72px] w-full items-stretch justify-center overflow-hidden rounded-[2px] bg-zinc-950/90 ring-1 ring-inset ring-white/[0.06]">
+                      {railThumb ? (
+                        // Data URL del export del lienzo; `<Image>` no aporta aquí.
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={railThumb}
+                          alt=""
+                          className="h-full w-full object-contain"
+                          draggable={false}
+                        />
+                      ) : (
+                        <DesignerPagePreview
+                          objects={p.objects ?? []}
+                          pageWidth={pd.width}
+                          pageHeight={pd.height}
+                        />
+                      )}
+                    </div>
+                    <span className="font-mono text-[8px] font-bold tabular-nums text-zinc-500">{i + 1}</span>
+                    <span className="max-w-full truncate px-0.5 text-center font-mono text-[6px] leading-tight text-zinc-500">
+                      {resLabel}
+                    </span>
+                  </button>
+                </div>
+                <div className="mt-1 flex w-full justify-center gap-0.5">
+                  <button
+                    type="button"
+                    title="Intercambiar orientación"
+                    className="rounded-[2px] border border-white/[0.12] bg-white/[0.06] p-0.5 text-white transition hover:bg-white/12"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      swapOrientation(i);
+                    }}
+                  >
+                    <ArrowLeftRight className="h-2.5 w-2.5" strokeWidth={2} />
+                  </button>
+                  <button
+                    type="button"
+                    title="Tamaño del pliego (preset)"
+                    className="rounded-[2px] border border-white/[0.12] bg-white/[0.06] p-0.5 text-white transition hover:bg-white/12"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRequestResizePageModal(i);
+                    }}
+                  >
+                    <Maximize2 className="h-2.5 w-2.5" strokeWidth={2} />
+                  </button>
+                  <button
+                    type="button"
+                    title="Duplicar página"
+                    className="rounded-[2px] border border-white/25 bg-white/[0.12] p-0.5 text-white transition hover:bg-white/20"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      duplicatePage(i);
+                    }}
+                  >
+                    <Copy className="h-2.5 w-2.5" strokeWidth={2} />
+                  </button>
+                  <button
+                    type="button"
+                    title="Eliminar página"
+                    disabled={pages.length <= 1}
+                    className="rounded-[2px] border border-white/25 bg-white/[0.12] p-0.5 text-white transition hover:bg-white/20 disabled:pointer-events-none disabled:opacity-35"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deletePage(i);
+                    }}
+                  >
+                    <Trash2 className="h-2.5 w-2.5" strokeWidth={2} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+          <button
+            type="button"
+            title="Añadir página"
+            onClick={onRequestAddPageModal}
+            className="flex w-full items-center justify-center gap-1 rounded-[2px] border border-dashed border-white/18 bg-white/[0.02] py-1.5 text-[10px] font-medium text-zinc-400 transition hover:border-violet-400/35 hover:bg-violet-500/10 hover:text-zinc-200"
+          >
+            <Plus className="h-3.5 w-3.5" strokeWidth={2} />
+            Nueva
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

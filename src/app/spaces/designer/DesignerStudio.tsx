@@ -2,14 +2,6 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import {
-  Plus,
-  Trash2,
-  Layers,
-  ArrowLeftRight,
-  Maximize2,
-  Copy,
-} from "lucide-react";
 import FreehandStudio, {
   type FreehandObject,
   type LayoutGuide,
@@ -18,24 +10,21 @@ import FreehandStudio, {
 import type { DesignerPageState } from "./DesignerNode";
 import {
   DEFAULT_DESIGNER_PAGE_FORMAT,
-  INDESIGN_PAGE_FORMATS,
   type IndesignPageFormatId,
   formatById,
   getPageDimensions,
 } from "../indesign/page-formats";
-import { DesignerPagePreview } from "./DesignerPagePreview";
 import { createArtboard, type Artboard } from "../freehand/artboard";
 import type { VectorPdfExportOptions } from "../freehand/text-outline";
 import { computeFittingLayout } from "../indesign/image-frame-layout";
 import { layoutPageStories } from "../indesign/text-layout";
-import type { Story, StoryNode, TextFrame, SpanStyle, Typography } from "../indesign/text-model";
+import type { Story, TextFrame, Typography } from "../indesign/text-model";
 import {
   serializeStoryContent,
   plainTextToStoryNodes,
   htmlToStoryNodes,
   storyNodesToHtml,
   sliceStoryContent,
-  flattenStoryContent,
   DEFAULT_TYPOGRAPHY,
 } from "../indesign/text-model";
 import {
@@ -57,36 +46,16 @@ import {
 } from "./designer-optimize-scheduler";
 import { exportDesignerDeFile, importDesignerDeFile } from "./designer-document-file";
 import { uploadImportedDesignerBlobUrlsToS3 } from "./designer-de-s3-hydrate";
-
-/** Dimensiones intrínsecas del archivo local (evita diferencias S3/CORS/EXIF vs `<Image>` remota). */
-async function readImageFilePixelSize(file: File): Promise<{ w: number; h: number }> {
-  if (typeof createImageBitmap === "function") {
-    try {
-      const bmp = await createImageBitmap(file);
-      const w = bmp.width;
-      const h = bmp.height;
-      bmp.close();
-      if (w > 0 && h > 0) return { w, h };
-    } catch {
-      /* fallback */
-    }
-  }
-  const url = URL.createObjectURL(file);
-  const img = new window.Image();
-  img.decoding = "async";
-  img.src = url;
-  try {
-    await new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve();
-      img.onerror = () => reject(new Error("image-decode"));
-    });
-    const w = img.naturalWidth || 100;
-    const h = img.naturalHeight || 100;
-    return { w, h };
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
+import {
+  buildRichSpansForFrame,
+  designerCanvasSessionKey,
+  dpgUid,
+  duplicateDesignerPageState,
+  readImageFilePixelSize,
+} from "./designer-studio-pure";
+import { DesignerFormatModal, type DesignerFormatModalState } from "./DesignerFormatModal";
+import { DesignerPagesRail } from "./DesignerPagesRail";
+import { DesignerStudioPageBar } from "./DesignerStudioPageBar";
 
 interface DesignerStudioProps {
   initialPages: DesignerPageState[];
@@ -99,145 +68,6 @@ interface DesignerStudioProps {
   /** Persistido en el nodo Designer: auto-optimización de imágenes en background. */
   autoImageOptimization?: boolean;
   onAutoImageOptimizationChange?: (enabled: boolean) => void;
-}
-
-/** Debe coincidir con `getExportSessionKey` en FreehandStudio (miniatura, PDF multipágina). */
-export function designerCanvasSessionKey(
-  instanceKey: string,
-  pageId: string,
-  width: number,
-  height: number,
-): string {
-  return `designer-fh-${instanceKey}__${pageId}__${Math.round(width)}_${Math.round(height)}`;
-}
-
-let _dpgSeq = 0;
-function dpgUid(): string {
-  return `dpg_${Date.now()}_${++_dpgSeq}`;
-}
-
-function collectIdsFromFreehandObject(o: FreehandObject, ids: Set<string>): void {
-  ids.add(o.id);
-  if (o.type === "booleanGroup") {
-    for (const c of o.children) collectIdsFromFreehandObject(c, ids);
-  } else if (o.type === "clippingContainer") {
-    collectIdsFromFreehandObject(o.mask as FreehandObject, ids);
-    for (const c of o.content) collectIdsFromFreehandObject(c, ids);
-  }
-}
-
-function collectIdsFromStoryNodes(nodes: StoryNode[] | undefined, ids: Set<string>): void {
-  if (!nodes) return;
-  for (const n of nodes) {
-    if (n.type === "paragraph") {
-      ids.add(n.id);
-      for (const sp of n.spans) ids.add(sp.id);
-    }
-  }
-}
-
-/** Copia profunda de una página con IDs nuevos (objetos, historias, marcos, guías). */
-function duplicateDesignerPageState(page: DesignerPageState): DesignerPageState {
-  const raw = JSON.parse(JSON.stringify(page)) as DesignerPageState;
-  const ids = new Set<string>();
-
-  ids.add(raw.id);
-  for (const o of raw.objects ?? []) collectIdsFromFreehandObject(o, ids);
-  for (const s of raw.stories ?? []) {
-    ids.add(s.id);
-    collectIdsFromStoryNodes(s.content, ids);
-    for (const fid of s.frames) ids.add(fid);
-  }
-  for (const tf of raw.textFrames ?? []) {
-    ids.add(tf.id);
-    ids.add(tf.storyId);
-  }
-  for (const im of raw.imageFrames ?? []) {
-    ids.add(im.id);
-    if (im.imageContent?.id) ids.add(im.imageContent.id);
-  }
-  for (const g of raw.layoutGuides ?? []) ids.add(g.id);
-
-  const map = new Map<string, string>();
-  for (const old of ids) {
-    map.set(old, dpgUid());
-  }
-
-  const remap = (s: string | undefined | null): string | undefined => {
-    if (s == null || s === "") return s ?? undefined;
-    return map.get(s) ?? s;
-  };
-
-  function applyFreehandObject(o: FreehandObject): void {
-    const nid = map.get(o.id);
-    if (nid) o.id = nid;
-    if (o.groupId) {
-      const g = remap(o.groupId);
-      if (g != null) o.groupId = g;
-    }
-    if (o.clipMaskId) {
-      const m = remap(o.clipMaskId);
-      if (m != null) o.clipMaskId = m;
-    }
-    if (o.storyId) {
-      const sid = remap(o.storyId);
-      if (sid != null) o.storyId = sid;
-    }
-    if (o.type === "textOnPath" && o.guidePathId) {
-      const gid = remap(o.guidePathId);
-      if (gid != null) o.guidePathId = gid;
-    }
-    if (o.type === "booleanGroup") {
-      for (const c of o.children) applyFreehandObject(c);
-    } else if (o.type === "clippingContainer") {
-      applyFreehandObject(o.mask as FreehandObject);
-      for (const c of o.content) applyFreehandObject(c);
-    }
-  }
-
-  const newPageId = map.get(raw.id);
-  if (newPageId) raw.id = newPageId;
-
-  for (const o of raw.objects ?? []) applyFreehandObject(o);
-
-  for (const s of raw.stories ?? []) {
-    const nsid = map.get(s.id);
-    if (nsid) s.id = nsid;
-    s.frames = s.frames.map((fid) => map.get(fid) ?? fid);
-    for (const node of s.content) {
-      if (node.type === "paragraph") {
-        const np = map.get(node.id);
-        if (np) node.id = np;
-        for (const sp of node.spans) {
-          const nsp = map.get(sp.id);
-          if (nsp) sp.id = nsp;
-        }
-      }
-    }
-  }
-
-  for (const tf of raw.textFrames ?? []) {
-    const tid = map.get(tf.id);
-    if (tid) tf.id = tid;
-    const sid = map.get(tf.storyId);
-    if (sid) tf.storyId = sid;
-  }
-
-  for (const im of raw.imageFrames ?? []) {
-    const iid = map.get(im.id);
-    if (iid) im.id = iid;
-    if (im.imageContent?.id) {
-      const cid = map.get(im.imageContent.id);
-      if (cid) im.imageContent.id = cid;
-    }
-  }
-
-  for (const g of raw.layoutGuides ?? []) {
-    const gid = map.get(g.id);
-    if (gid) g.id = gid;
-  }
-
-  return raw;
 }
 
 export default function DesignerStudio({
@@ -272,9 +102,7 @@ export default function DesignerStudio({
   );
 
   /** null | nueva página | cambiar tamaño de una página existente */
-  const [formatModal, setFormatModal] = useState<
-    null | { kind: "add" } | { kind: "resize"; pageIndex: number }
-  >(null);
+  const [formatModal, setFormatModal] = useState<DesignerFormatModalState>(null);
   const [pendingFormat, setPendingFormat] = useState<IndesignPageFormatId>(DEFAULT_DESIGNER_PAGE_FORMAT);
 
   const dragPageIndexRef = useRef<number | null>(null);
@@ -587,18 +415,6 @@ export default function DesignerStudio({
       }),
     ];
   }, [activePage, activePageIndex]);
-
-  // ── Helper: build rich span array for a frame's content slice ──
-
-  function buildRichSpansForFrame(contentNodes: import("../indesign/text-model").StoryNode[]): Array<{ text: string; style?: SpanStyle }> {
-    const runs = flattenStoryContent(contentNodes);
-    const spans: Array<{ text: string; style?: SpanStyle }> = [];
-    for (const run of runs) {
-      const hasStyle = run.style && Object.keys(run.style).length > 0;
-      spans.push({ text: run.text, ...(hasStyle ? { style: run.style } : {}) });
-    }
-    return spans;
-  }
 
   // ── Sync text frame layouts (overflow detection + multi-frame text distribution) ──
 
@@ -1807,169 +1623,30 @@ export default function DesignerStudio({
         designerCanvasZenMode={designerCanvasZenMode}
         onDesignerCanvasZenModeChange={setDesignerCanvasZenMode}
         designerPagesRail={
-          <div className="flex h-full min-h-0 flex-col">
-            <div className="flex shrink-0 items-center justify-center border-b border-white/[0.08] py-2">
-              <Layers className="h-3.5 w-3.5 text-violet-300/70" strokeWidth={2} />
-            </div>
-            <div
-              ref={designerPagesRailScrollElRef}
-              className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 py-1.5"
-              onScroll={(e) => {
-                designerPagesRailScrollTopRef.current = e.currentTarget.scrollTop;
-              }}
-            >
-              <div className="flex flex-col gap-2">
-                {pages.map((p, i) => {
-                  const pd = getPageDimensions(p);
-                  const pf = formatById(p.format);
-                  const active = i === activePageIndex;
-                  const resLabel = `${Math.round(pd.width)}×${Math.round(pd.height)}`;
-                  const railThumb = pageThumbnails[p.id];
-                  return (
-                    <div
-                      key={p.id}
-                      data-designer-rail-index={i}
-                      className="rounded-[2px] border border-white/[0.08] bg-black/15 px-0.5 py-1"
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        e.dataTransfer.dropEffect = "move";
-                      }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        const raw = e.dataTransfer.getData("text/plain");
-                        const from = dragPageIndexRef.current ?? (raw ? Number.parseInt(raw, 10) : NaN);
-                        dragPageIndexRef.current = null;
-                        if (Number.isNaN(from) || from === i) return;
-                        movePage(from, i);
-                      }}
-                    >
-                      <div className="flex w-full flex-col gap-0.5">
-                        <button
-                          type="button"
-                          draggable
-                          title={`${i + 1}. ${pf.label} · ${resLabel} — arrastra para reordenar; clic para ver en pantalla`}
-                          className={`relative flex w-full cursor-grab touch-none flex-col items-center gap-0.5 rounded-[2px] border px-0.5 py-0.5 text-left transition active:cursor-grabbing ${
-                            active
-                              ? "border-violet-400/45 bg-violet-950/35 shadow-[0_0_0_1px_rgba(167,139,250,0.15)]"
-                              : "border-white/[0.08] bg-black/20 hover:border-white/15"
-                          }`}
-                          onDragStart={(e) => {
-                            suppressPageThumbClickRef.current = false;
-                            dragPageIndexRef.current = i;
-                            e.dataTransfer.setData("text/plain", String(i));
-                            e.dataTransfer.effectAllowed = "move";
-                          }}
-                          onDrag={() => {
-                            suppressPageThumbClickRef.current = true;
-                          }}
-                          onDragEnd={() => {
-                            dragPageIndexRef.current = null;
-                          }}
-                          onClick={() => {
-                            if (suppressPageThumbClickRef.current) {
-                              suppressPageThumbClickRef.current = false;
-                              return;
-                            }
-                            goToDesignerPage(i);
-                          }}
-                          onDoubleClick={(e) => {
-                            e.preventDefault();
-                            suppressPageThumbClickRef.current = false;
-                            goToDesignerPage(i);
-                          }}
-                        >
-                          <div className="flex h-[72px] w-full items-stretch justify-center overflow-hidden rounded-[2px] bg-zinc-950/90 ring-1 ring-inset ring-white/[0.06]">
-                            {railThumb ? (
-                              // Data URL del export del lienzo; `<Image>` no aporta aquí.
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                src={railThumb}
-                                alt=""
-                                className="h-full w-full object-contain"
-                                draggable={false}
-                              />
-                            ) : (
-                              <DesignerPagePreview
-                                objects={p.objects ?? []}
-                                pageWidth={pd.width}
-                                pageHeight={pd.height}
-                              />
-                            )}
-                          </div>
-                          <span className="font-mono text-[8px] font-bold tabular-nums text-zinc-500">
-                            {i + 1}
-                          </span>
-                          <span className="max-w-full truncate px-0.5 text-center font-mono text-[6px] leading-tight text-zinc-500">
-                            {resLabel}
-                          </span>
-                        </button>
-                      </div>
-                      <div className="mt-1 flex w-full justify-center gap-0.5">
-                        <button
-                          type="button"
-                          title="Intercambiar orientación"
-                          className="rounded-[2px] border border-white/[0.12] bg-white/[0.06] p-0.5 text-white transition hover:bg-white/12"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            swapOrientation(i);
-                          }}
-                        >
-                          <ArrowLeftRight className="h-2.5 w-2.5" strokeWidth={2} />
-                        </button>
-                        <button
-                          type="button"
-                          title="Tamaño del pliego (preset)"
-                          className="rounded-[2px] border border-white/[0.12] bg-white/[0.06] p-0.5 text-white transition hover:bg-white/12"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setPendingFormat(pages[i]?.format ?? DEFAULT_DESIGNER_PAGE_FORMAT);
-                            setFormatModal({ kind: "resize", pageIndex: i });
-                          }}
-                        >
-                          <Maximize2 className="h-2.5 w-2.5" strokeWidth={2} />
-                        </button>
-                        <button
-                          type="button"
-                          title="Duplicar página"
-                          className="rounded-[2px] border border-white/25 bg-white/[0.12] p-0.5 text-white transition hover:bg-white/20"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            duplicatePage(i);
-                          }}
-                        >
-                          <Copy className="h-2.5 w-2.5" strokeWidth={2} />
-                        </button>
-                        <button
-                          type="button"
-                          title="Eliminar página"
-                          disabled={pages.length <= 1}
-                          className="rounded-[2px] border border-white/25 bg-white/[0.12] p-0.5 text-white transition hover:bg-white/20 disabled:pointer-events-none disabled:opacity-35"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            deletePage(i);
-                          }}
-                        >
-                          <Trash2 className="h-2.5 w-2.5" strokeWidth={2} />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-                <button
-                  type="button"
-                  title="Añadir página"
-                  onClick={() => {
-                    setPendingFormat(activePage?.format ?? pages[0]?.format ?? DEFAULT_DESIGNER_PAGE_FORMAT);
-                    setFormatModal({ kind: "add" });
-                  }}
-                  className="flex w-full items-center justify-center gap-1 rounded-[2px] border border-dashed border-white/18 bg-white/[0.02] py-1.5 text-[10px] font-medium text-zinc-400 transition hover:border-violet-400/35 hover:bg-violet-500/10 hover:text-zinc-200"
-                >
-                  <Plus className="h-3.5 w-3.5" strokeWidth={2} />
-                  Nueva
-                </button>
-              </div>
-            </div>
-          </div>
+          <DesignerPagesRail
+            pages={pages}
+            activePageIndex={activePageIndex}
+            pageThumbnails={pageThumbnails}
+            scrollElRef={designerPagesRailScrollElRef}
+            onRailScroll={(top) => {
+              designerPagesRailScrollTopRef.current = top;
+            }}
+            dragPageIndexRef={dragPageIndexRef}
+            suppressPageThumbClickRef={suppressPageThumbClickRef}
+            goToDesignerPage={goToDesignerPage}
+            movePage={movePage}
+            swapOrientation={swapOrientation}
+            duplicatePage={duplicatePage}
+            deletePage={deletePage}
+            onRequestAddPageModal={() => {
+              setPendingFormat(activePage?.format ?? pages[0]?.format ?? DEFAULT_DESIGNER_PAGE_FORMAT);
+              setFormatModal({ kind: "add" });
+            }}
+            onRequestResizePageModal={(i) => {
+              setPendingFormat(pages[i]?.format ?? DEFAULT_DESIGNER_PAGE_FORMAT);
+              setFormatModal({ kind: "resize", pageIndex: i });
+            }}
+          />
         }
       />
 
@@ -1999,87 +1676,16 @@ export default function DesignerStudio({
         }}
       />
 
-      {/* Barra inferior: saltar de página y añadir (misma interacción que antes) */}
-      <div className="pointer-events-auto fixed bottom-0 left-1/2 z-[10001] -translate-x-1/2 flex items-center gap-1 rounded-t-xl border border-b-0 border-white/[0.08] bg-[#0e1015]/90 px-3 py-1.5 backdrop-blur-md">
-        {pages.map((p, i) => (
-          <button
-            key={p.id}
-            type="button"
-            onClick={() => {
-              goToDesignerPage(i);
-            }}
-            className={`min-w-[1.75rem] rounded-md px-2 py-1 text-[10px] font-bold tabular-nums transition ${
-              i === activePageIndex
-                ? "bg-violet-500/25 text-violet-200 ring-1 ring-violet-400/30"
-                : "text-zinc-600 hover:bg-white/[0.06] hover:text-zinc-300"
-            }`}
-          >
-            {i + 1}
-          </button>
-        ))}
-      </div>
+      <DesignerStudioPageBar pages={pages} activePageIndex={activePageIndex} onGoToPage={goToDesignerPage} />
 
-      {/* Formato: nueva página o cambiar tamaño de pliego */}
-      {formatModal && (
-        <div
-          className="fixed inset-0 z-[10060] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="w-full max-w-sm rounded-2xl border border-white/12 bg-gradient-to-b from-zinc-900/98 to-[#12121a] p-5 shadow-2xl shadow-black/60 ring-1 ring-white/[0.06]">
-            <p className="text-sm font-bold tracking-tight text-zinc-100">
-              {formatModal.kind === "add" ? "Nueva página" : "Tamaño del pliego"}
-            </p>
-            <p className="mt-1 text-[11px] text-zinc-500">
-              {formatModal.kind === "add"
-                ? "Elige el preset del pliego que se añadirá al final."
-                : "Aplica un preset de tamaño a esta página (se sustituyen ancho y alto personalizados)."}
-            </p>
-            <div className="mt-4 space-y-2">
-              {INDESIGN_PAGE_FORMATS.map((f) => (
-                <label
-                  key={f.id}
-                  className={`flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 text-xs transition ${
-                    pendingFormat === f.id
-                      ? "border-violet-400/40 bg-violet-500/10 text-zinc-100"
-                      : "border-white/[0.08] bg-black/20 text-zinc-400 hover:border-white/15"
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="fmt"
-                    className="accent-violet-500"
-                    checked={pendingFormat === f.id}
-                    onChange={() => setPendingFormat(f.id)}
-                  />
-                  <span>
-                    {f.label}{" "}
-                    <span className="text-zinc-600">
-                      ({f.width}×{f.height})
-                    </span>
-                  </span>
-                </label>
-              ))}
-            </div>
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                type="button"
-                className="rounded-lg border border-white/12 px-4 py-2 text-xs font-medium text-zinc-300 transition hover:bg-white/5"
-                onClick={() => setFormatModal(null)}
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                className="rounded-lg bg-gradient-to-b from-violet-500 to-purple-600 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-violet-950/40"
-                onClick={formatModal.kind === "add" ? addPage : applyPageFormatPreset}
-              >
-                {formatModal.kind === "add" ? "Añadir" : "Aplicar"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DesignerFormatModal
+        formatModal={formatModal}
+        pendingFormat={pendingFormat}
+        onPendingFormatChange={setPendingFormat}
+        onDismiss={() => setFormatModal(null)}
+        onConfirmAdd={addPage}
+        onConfirmResize={applyPageFormatPreset}
+      />
     </div>
   );
 }
