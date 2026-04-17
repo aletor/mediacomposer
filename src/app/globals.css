@@ -186,3 +186,76 @@ input *, textarea *, [contenteditable="true"] * {
     opacity: 0.88;
   }
 }
+
+/* Presenter: animaciones de entrada por grupo (SVG <g>) */
+.presenter-g-instant {
+  opacity: 1;
+}
+.presenter-g-fade {
+  animation: presenter-g-fade-anim 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.presenter-g-slide-up {
+  animation: presenter-g-slide-up-anim 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.presenter-g-slide-down {
+  animation: presenter-g-slide-down-anim 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.presenter-g-slide-left {
+  animation: presenter-g-slide-left-anim 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.presenter-g-slide-right {
+  animation: presenter-g-slide-right-anim 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.presenter-g-grow {
+  animation: presenter-g-grow-anim 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: center center;
+}
+.presenter-g-shrink {
+  animation: presenter-g-shrink-anim 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: center center;
+}
+
+@keyframes presenter-g-fade-anim {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes presenter-g-slide-up-anim {
+  from { opacity: 0; transform: translateY(12%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes presenter-g-slide-down-anim {
+  from { opacity: 0; transform: translateY(-12%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes presenter-g-slide-left-anim {
+  from { opacity: 0; transform: translateX(12%); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes presenter-g-slide-right-anim {
+  from { opacity: 0; transform: translateX(-12%); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes presenter-g-grow-anim {
+  from { opacity: 0; transform: scale(0.88); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes presenter-g-shrink-anim {
+  from { opacity: 0; transform: scale(1.12); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Resalte al elegir en Presenter (clic en el slide): violeta = elemento suelto; ámbar = grupo (Ctrl+G) */
+.presenter-pick-highlight {
+  filter: drop-shadow(0 0 6px rgba(139, 92, 246, 0.95));
+}
+.presenter-pick-highlight-group {
+  filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.98));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [class^="presenter-g-"] {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}

@@ -43,5 +43,8 @@ next-env.d.ts
 # API usage log (local)
 /data/api-usage.jsonl
 
+# Presenter share DB (local tokens + payloads)
+/data/presenter-shares.json
+
 # portable Node bundle (no subir)
 .node-portable/

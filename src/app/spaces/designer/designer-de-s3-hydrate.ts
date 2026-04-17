@@ -31,6 +31,9 @@ function collectBlobUrlsFromObject(o: FreehandObject, out: Set<string>): void {
     if (cr && isBlobUrl(cr)) out.add(cr);
     for (const c of o.children) collectBlobUrlsFromObject(c, out);
   }
+  if (o.type === "vectorGroup") {
+    for (const c of o.children) collectBlobUrlsFromObject(c, out);
+  }
   if (o.type === "clippingContainer") {
     collectBlobUrlsFromObject(o.mask as FreehandObject, out);
     for (const c of o.content) collectBlobUrlsFromObject(c, out);
@@ -116,6 +119,12 @@ function patchObjectBlobs(o: FreehandObject, map: Map<string, UploadedMeta>): Fr
       } as FreehandObject;
     }
     return o;
+  }
+  if (o.type === "vectorGroup") {
+    return {
+      ...o,
+      children: o.children.map((c) => patchObjectBlobs(c, map)),
+    } as FreehandObject;
   }
   if (o.type === "booleanGroup") {
     let cachedResult = o.cachedResult;

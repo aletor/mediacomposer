@@ -9,34 +9,128 @@ import {
   type RenderObjOpts,
 } from "../FreehandStudio";
 import { gradientDefId, migrateFill, renderFillDef } from "../freehand/fill";
+import type { PresenterGroupEnterId, PresenterRevealStep } from "./presenter-group-animations";
+import { getEnterForObject, isObjectRevealed, revealTargetKey } from "./presenter-group-animations";
+import { boundsForGroupId, boundsForObjectId } from "./presenter-group-bounds";
 
 const PRESENTER_RENDER_OPTS: RenderObjOpts = {
-  /** Sin marcos azules de marcos de texto — vista final. */
   canvasZenMode: true,
   designerMode: true,
   textEditingId: null,
   imageFrameOptimizeShowFrameId: null,
 };
 
-/**
- * Misma pipeline de pintura que el lienzo del Designer (renderObj + defs de degradados y clips).
- * Sustituye el preview esquemático para Presenter.
- */
+export type PlayRevealState = {
+  revealCount: number;
+  steps: PresenterRevealStep[];
+};
+
+function shouldPaintObject(o: FreehandObject, playReveal: PlayRevealState | null | undefined): boolean {
+  if (!playReveal?.steps?.length) return true;
+  return isObjectRevealed(o, playReveal.revealCount, playReveal.steps);
+}
+
+function enterAnimationClass(enter: PresenterGroupEnterId, shouldRun: boolean): string {
+  if (!shouldRun) return "";
+  switch (enter) {
+    case "none":
+    case "instant":
+      return "";
+    case "fadeIn":
+      return "presenter-g-fade";
+    case "slideUp":
+      return "presenter-g-slide-up";
+    case "slideDown":
+      return "presenter-g-slide-down";
+    case "slideLeft":
+      return "presenter-g-slide-left";
+    case "slideRight":
+      return "presenter-g-slide-right";
+    case "grow":
+      return "presenter-g-grow";
+    case "shrink":
+      return "presenter-g-shrink";
+    default:
+      return "presenter-g-fade";
+  }
+}
+
+function clipGroupAnimationClass(
+  mask: FreehandObject,
+  playReveal: PlayRevealState | null | undefined,
+  animateEnterTargetKey: string | null | undefined,
+): string {
+  if (!playReveal?.steps?.length || !animateEnterTargetKey) return "";
+  if (revealTargetKey(mask) !== animateEnterTargetKey) return "";
+  const enter = getEnterForObject(mask, playReveal.steps);
+  return enterAnimationClass(enter, true);
+}
+
+export type PickPointerModifiers = { ctrlKey: boolean; metaKey: boolean };
+
+export type PickPresenterInteraction = {
+  highlightKeys: string[];
+  onPick: (key: string | null, mods: PickPointerModifiers) => void;
+};
+
+/** @deprecated usar PickPresenterInteraction */
+export type PickGroupInteraction = PickPresenterInteraction;
+
+function boundsForPresenterKey(
+  objects: FreehandObject[],
+  key: string,
+): { x: number; y: number; width: number; height: number } | null {
+  if (key.startsWith("group:")) {
+    return boundsForGroupId(objects, key.slice(6));
+  }
+  if (key.startsWith("object:")) {
+    return boundsForObjectId(objects, key.slice(7));
+  }
+  return null;
+}
+
 export function DesignerPageCanvasView({
   objects,
   pageWidth,
   pageHeight,
   background = "#fafafa",
+  playReveal = null,
+  animateEnterTargetKey = null,
+  pickInteraction = null,
+  allowPickDuringReveal = false,
 }: {
   objects: FreehandObject[];
   pageWidth: number;
   pageHeight: number;
   background?: string;
+  playReveal?: PlayRevealState | null;
+  /** Paso que acaba de revelarse (animación de entrada una vez). */
+  animateEnterTargetKey?: string | null;
+  pickInteraction?: PickPresenterInteraction | null;
+  /** Si es true, se puede seguir eligiendo elementos en el lienzo aunque haya `playReveal` (vista previa en editor). */
+  allowPickDuringReveal?: boolean;
 }) {
   const pw = Math.max(1, pageWidth);
   const ph = Math.max(1, pageHeight);
 
   const clipObjects = useMemo(() => objects.filter((o) => o.isClipMask), [objects]);
+  const allowPick =
+    Boolean(pickInteraction) &&
+    (!(playReveal?.steps && playReveal.steps.length > 0) || allowPickDuringReveal);
+
+  const selectionOverlayRects = useMemo(() => {
+    if (!allowPick || !pickInteraction?.highlightKeys?.length) return [];
+    const keys = [...new Set(pickInteraction.highlightKeys)];
+    const out: { key: string; x: number; y: number; width: number; height: number }[] = [];
+    for (const k of keys) {
+      const b = boundsForPresenterKey(objects, k);
+      if (b && b.width > 0 && b.height > 0) {
+        out.push({ key: k, ...b });
+      }
+    }
+    return out;
+  }, [allowPick, pickInteraction?.highlightKeys, objects]);
+
   const clippedGroups = useMemo(() => {
     const map = new Map<string, FreehandObject[]>();
     for (const o of objects) {
@@ -51,9 +145,10 @@ export function DesignerPageCanvasView({
 
   return (
     <svg
-      className="block h-full w-full"
+      className={`block h-full w-full ${allowPick ? "touch-manipulation" : ""}`}
       viewBox={`0 0 ${pw} ${ph}`}
       preserveAspectRatio="xMidYMid meet"
+      style={allowPick ? { cursor: "default" } : undefined}
     >
       <defs>
         {flattenObjectsForGradientDefs(objects).map((o) => {
@@ -65,26 +160,122 @@ export function DesignerPageCanvasView({
           <rect x={0} y={0} width={pw} height={ph} />
         </clipPath>
       </defs>
-      <rect width={pw} height={ph} fill={background} />
+      <rect
+        width={pw}
+        height={ph}
+        fill={background}
+        onPointerDownCapture={
+          allowPick && pickInteraction
+            ? (e) => {
+                pickInteraction.onPick(null, { ctrlKey: e.ctrlKey, metaKey: e.metaKey });
+              }
+            : undefined
+        }
+      />
       <g clipPath="url(#presenter-page-clip)">
         {objects.map((obj) => {
           if (obj.isClipMask) return null;
           if (obj.clipMaskId) return null;
+          if (!shouldPaintObject(obj, playReveal)) return null;
+          const tKey = revealTargetKey(obj);
+          const runAnim = Boolean(
+            playReveal?.steps?.length && animateEnterTargetKey && tKey === animateEnterTargetKey,
+          );
+          const enter = getEnterForObject(obj, playReveal?.steps ?? []);
+          const animClass = enterAnimationClass(enter, runAnim);
+          const isHi = Boolean(allowPick && pickInteraction?.highlightKeys.includes(tKey));
+          const isGroupTarget = tKey.startsWith("group:");
+          const pickHi = isHi
+            ? isGroupTarget
+              ? "presenter-pick-highlight-group"
+              : "presenter-pick-highlight"
+            : "";
+          const cls = [animClass, pickHi].filter(Boolean).join(" ") || undefined;
+          const onPickCap = allowPick && pickInteraction
+            ? (e: React.PointerEvent) => {
+                e.stopPropagation();
+                pickInteraction.onPick(tKey, { ctrlKey: e.ctrlKey, metaKey: e.metaKey });
+              }
+            : undefined;
+          const pickStyle: React.CSSProperties | undefined = allowPick
+            ? { cursor: "pointer" }
+            : undefined;
           return (
-            <g key={obj.id} data-fh-obj={obj.id}>
+            <g
+              key={obj.id}
+              data-fh-obj={obj.id}
+              className={cls}
+              style={pickStyle}
+              onPointerDownCapture={onPickCap}
+            >
               {renderObj(obj, objects, new Set(), PRESENTER_RENDER_OPTS)}
             </g>
           );
         })}
-        {Array.from(clippedGroups.entries()).map(([clipId, members]) => (
-          <g key={`cg-${clipId}`} data-fh-clip-root={clipId} clipPath={`url(#clip-${clipId})`}>
-            {members.map((m) => (
-              <g key={m.id} data-fh-obj={m.id}>
-                {renderObj(m, objects, new Set(), PRESENTER_RENDER_OPTS)}
-              </g>
-            ))}
-          </g>
-        ))}
+        {Array.from(clippedGroups.entries()).map(([clipId, members]) => {
+          const mask = clipObjects.find((c) => c.id === clipId);
+          if (!mask) return null;
+          if (!shouldPaintObject(mask, playReveal)) return null;
+          if (!members.every((m) => shouldPaintObject(m, playReveal))) return null;
+          const clipAnim = clipGroupAnimationClass(mask, playReveal, animateEnterTargetKey);
+          const clipTKey = revealTargetKey(mask);
+          const clipIsGroup = clipTKey.startsWith("group:");
+          const pickHiClip =
+            allowPick && pickInteraction?.highlightKeys.includes(clipTKey)
+              ? clipIsGroup
+                ? "presenter-pick-highlight-group"
+                : "presenter-pick-highlight"
+              : "";
+          const clipCls = [clipAnim, pickHiClip].filter(Boolean).join(" ") || undefined;
+          const onPickClip =
+            allowPick && pickInteraction
+              ? (e: React.PointerEvent) => {
+                  e.stopPropagation();
+                  pickInteraction.onPick(clipTKey, { ctrlKey: e.ctrlKey, metaKey: e.metaKey });
+                }
+              : undefined;
+          const pickStyleClip: React.CSSProperties | undefined = allowPick ? { cursor: "pointer" } : undefined;
+          return (
+            <g
+              key={`cg-${clipId}`}
+              data-fh-clip-root={clipId}
+              clipPath={`url(#clip-${clipId})`}
+              className={clipCls}
+              style={pickStyleClip}
+              onPointerDownCapture={onPickClip}
+            >
+              {members.map((m) => (
+                <g key={m.id} data-fh-obj={m.id}>
+                  {renderObj(m, objects, new Set(), PRESENTER_RENDER_OPTS)}
+                </g>
+              ))}
+            </g>
+          );
+        })}
+        {selectionOverlayRects.map((r) => {
+          const pad = 3;
+          const x = r.x - pad;
+          const y = r.y - pad;
+          const w = r.width + pad * 2;
+          const h = r.height + pad * 2;
+          const isGroupMarco = r.key.startsWith("group:");
+          return (
+            <g key={`sel-${r.key}`} pointerEvents="none" className="presenter-selection-marco">
+              <rect
+                x={x}
+                y={y}
+                width={w}
+                height={h}
+                fill={isGroupMarco ? "rgba(245, 158, 11, 0.06)" : "none"}
+                stroke={isGroupMarco ? "rgb(251 191 36)" : "rgb(139 92 246)"}
+                strokeWidth={isGroupMarco ? 3 : 2.5}
+                strokeDasharray={isGroupMarco ? undefined : "6 4"}
+                vectorEffect="nonScalingStroke"
+                rx={2}
+              />
+            </g>
+          );
+        })}
       </g>
     </svg>
   );

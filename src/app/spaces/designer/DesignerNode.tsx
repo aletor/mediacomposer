@@ -13,6 +13,7 @@ import { DesignerPagePreview } from "./DesignerPagePreview";
 import type { Story, TextFrame } from "../indesign/text-model";
 import type { ImageFrameRecord } from "../indesign/image-frame-model";
 import type { FreehandObject, LayoutGuide } from "../FreehandStudio";
+import type { PresenterGroupStep } from "../presenter/presenter-group-animations";
 
 export type DesignerPageState = {
   id: string;
@@ -24,6 +25,8 @@ export type DesignerPageState = {
   stories?: Story[];
   textFrames?: TextFrame[];
   imageFrames?: ImageFrameRecord[];
+  /** Presenter: solo pasos con animación definida (el resto del lienzo queda siempre visible en Play). */
+  presenterGroupSteps?: PresenterGroupStep[];
 };
 
 export type DesignerNodeData = {

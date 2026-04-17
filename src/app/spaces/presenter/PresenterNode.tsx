@@ -7,7 +7,7 @@ import { Presentation } from "lucide-react";
 import { FOLDDER_FIT_VIEW_EASE } from "@/lib/fit-view-ease";
 import { FoldderDataHandle } from "../FoldderDataHandle";
 import { NodeIcon } from "../foldder-icons";
-import type { DesignerPageState } from "../designer/DesignerNode";
+import type { DesignerNodeData, DesignerPageState } from "../designer/DesignerNode";
 import { PresenterStudio } from "./PresenterStudio";
 
 export type PresenterNodeData = {
@@ -18,6 +18,7 @@ function useDesignerDocumentPages(presenterId: string): {
   pages: DesignerPageState[] | null;
   connected: boolean;
   designerMissing: boolean;
+  designerNodeId: string | null;
 } {
   const edges = useEdges();
   const nodes = useNodes();
@@ -28,15 +29,15 @@ function useDesignerDocumentPages(presenterId: string): {
     );
     const edge = incoming[0];
     if (!edge) {
-      return { pages: null, connected: false, designerMissing: false };
+      return { pages: null, connected: false, designerMissing: false, designerNodeId: null };
     }
     const src = nodes.find((n) => n.id === edge.source);
     if (!src || src.type !== "designer") {
-      return { pages: null, connected: true, designerMissing: true };
+      return { pages: null, connected: true, designerMissing: true, designerNodeId: null };
     }
     const data = src.data as { pages?: DesignerPageState[] };
     const pages = Array.isArray(data.pages) && data.pages.length > 0 ? data.pages : null;
-    return { pages, connected: true, designerMissing: false };
+    return { pages, connected: true, designerMissing: false, designerNodeId: src.id };
   }, [edges, nodes, presenterId]);
 }
 
@@ -60,7 +61,7 @@ export const PresenterNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const nodeData = data as PresenterNodeData;
   const { setNodes } = useReactFlow();
   const [studioOpen, setStudioOpen] = useState(false);
-  const { pages, connected, designerMissing } = useDesignerDocumentPages(id);
+  const { pages, connected, designerMissing, designerNodeId } = useDesignerDocumentPages(id);
 
   const slideCount = pages?.length ?? 0;
 
@@ -71,6 +72,21 @@ export const PresenterNode = memo(({ id, data, selected }: NodeProps<any>) => {
       );
     },
     [id, setNodes],
+  );
+
+  const patchDesignerPage = useCallback(
+    (pageId: string, patch: Partial<DesignerPageState>) => {
+      if (!designerNodeId) return;
+      setNodes((nds) =>
+        nds.map((n) => {
+          if (n.id !== designerNodeId || n.type !== "designer") return n;
+          const d = n.data as DesignerNodeData;
+          const nextPages = (d.pages ?? []).map((p) => (p.id === pageId ? { ...p, ...patch } : p));
+          return { ...n, data: { ...d, pages: nextPages } };
+        }),
+      );
+    },
+    [designerNodeId, setNodes],
   );
 
   return (
@@ -127,7 +143,18 @@ export const PresenterNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
       {studioOpen && pages && pages.length > 0 &&
         typeof document !== "undefined" &&
-        createPortal(<PresenterStudio pages={pages} onClose={() => setStudioOpen(false)} />, document.body)}
+        createPortal(
+          <PresenterStudio
+            pages={pages}
+            onClose={() => setStudioOpen(false)}
+            onPresenterPagePatch={patchDesignerPage}
+            shareContext={{
+              deckKey: designerNodeId ? `${designerNodeId}::${id}` : `presenter::${id}`,
+              deckTitle: nodeData.label?.trim() || "Presentation",
+            }}
+          />,
+          document.body,
+        )}
     </div>
   );
 });
