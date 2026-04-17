@@ -20,3 +20,4 @@ export {
   type DesignerViewport,
 } from "./DesignerCanvasRulers";
 export type { DesignerOptimizeProgressState } from "./useDesignerImagePipeline";
+export { useDesignerTextFrameLayoutSync } from "./useDesignerTextFrameLayoutSync";

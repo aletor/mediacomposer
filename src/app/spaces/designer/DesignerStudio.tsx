@@ -50,6 +50,8 @@ import { DesignerFormatModal, type DesignerFormatModalState } from "./DesignerFo
 import { DesignerPagesRail } from "./DesignerPagesRail";
 import { DesignerStudioPageBar } from "./DesignerStudioPageBar";
 import { useDesignerImagePipeline } from "./useDesignerImagePipeline";
+import { useDesignerTextFrameLayoutSync } from "./useDesignerTextFrameLayoutSync";
+import type { DesignerEmbedProps } from "../freehand/designer-embed-props";
 
 interface DesignerStudioProps {
   initialPages: DesignerPageState[];
@@ -284,201 +286,13 @@ export default function DesignerStudio({
     ];
   }, [activePage, activePageIndex]);
 
-  // ── Sync text frame layouts (overflow detection + multi-frame text distribution) ──
-
-  const layoutSyncTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  /** Ref estable para forzar `syncTextFrameLayouts` antes del PDF multipágina (el efecto normal va con 60 ms de retraso). */
-  const syncTextFrameLayoutsRef = useRef<() => void>(() => {});
-
-  const syncTextFrameLayouts = useCallback(() => {
-    const api = studioApiRef.current;
-    if (!api) return;
-    const ap = pagesRef.current[activeIdxRef.current];
-    if (!ap) return;
-
-    const stories = ap.stories ?? [];
-    const textFrames = ap.textFrames ?? [];
-    if (stories.length === 0) return;
-
-    const editingId = api.getTextEditingId();
-
-    const currentObjs = api.getObjects();
-
-    /** El layout debe usar el mismo ancho/alto que el `TextObject` en el lienzo; si no, maxLines queda corto y el texto salta de marco con huecos. */
-    const textFramesForLayout = textFrames.map((tf) => {
-      const o = currentObjs.find((c) => c.id === tf.id && (c as { isTextFrame?: boolean }).isTextFrame);
-      if (!o) return tf;
-      return {
-        ...tf,
-        x: o.x,
-        y: o.y,
-        width: o.width,
-        height: o.height,
-      };
-    });
-
-    /** Si algún marco difiere de Story (p. ej. antes de sincronizar), el reparto vertical debe seguir el lienzo. */
-    const typographyForLayout = (s: Story): Typography => {
-      const typo = s.typography;
-      for (const fid of s.frames) {
-        const o = currentObjs.find((c) => c.id === fid && (c as { isTextFrame?: boolean }).isTextFrame);
-        if (!o) continue;
-        const ox = o as FreehandObject & {
-          fontFamily?: string;
-          fontSize?: number;
-          lineHeight?: number;
-          letterSpacing?: number;
-          textAlign?: string;
-          paragraphIndent?: number;
-          fontKerning?: string;
-          fontVariantCaps?: string;
-          fontWeight?: number | string;
-          fontStyle?: string;
-          fontFeatureSettings?: string;
-          fill?: unknown;
-        };
-        if (
-          ox.fontSize !== typo.fontSize ||
-          ox.fontFamily !== typo.fontFamily ||
-          ox.lineHeight !== typo.lineHeight ||
-          ox.letterSpacing !== typo.letterSpacing
-        ) {
-          const ta = ox.textAlign;
-          const align: Typography["align"] =
-            ta === "left" || ta === "center" || ta === "right" || ta === "justify" ? ta : typo.align;
-          const fillStr =
-            typeof ox.fill === "string"
-              ? ox.fill
-              : (ox.fill as { type?: string; color?: string } | undefined)?.type === "solid"
-                ? (ox.fill as { color?: string }).color
-                : null;
-          const color = fillStr && fillStr !== "none" ? fillStr : typo.color;
-          return {
-            ...typo,
-            fontFamily: ox.fontFamily ?? typo.fontFamily,
-            fontSize: typeof ox.fontSize === "number" ? ox.fontSize : typo.fontSize,
-            lineHeight: typeof ox.lineHeight === "number" ? ox.lineHeight : typo.lineHeight,
-            letterSpacing: typeof ox.letterSpacing === "number" ? ox.letterSpacing : typo.letterSpacing,
-            align,
-            color,
-            fontWeight: ox.fontWeight != null ? String(ox.fontWeight) : typo.fontWeight,
-            fontStyle: ox.fontStyle ?? typo.fontStyle,
-            paragraphIndent: typeof ox.paragraphIndent === "number" ? ox.paragraphIndent : typo.paragraphIndent,
-            fontKerning: (ox.fontKerning === "none" || ox.fontKerning === "auto" ? ox.fontKerning : null) ?? typo.fontKerning,
-            fontVariantCaps:
-              ox.fontVariantCaps === "normal" || ox.fontVariantCaps === "small-caps" ? ox.fontVariantCaps : typo.fontVariantCaps,
-            fontFeatureSettings: ox.fontFeatureSettings ?? typo.fontFeatureSettings,
-          };
-        }
-      }
-      return typo;
-    };
-
-    const storiesForLayout = stories.map((s) => ({ ...s, typography: typographyForLayout(s) }));
-    const layouts = layoutPageStories(storiesForLayout, textFramesForLayout);
-
-    // Determine the "source of truth" frame for typography: the selected frame
-    // (user may have just changed its properties, before handleUpdateObjects syncs to Story)
-    const selectedFrameId = (() => {
-      for (const o of currentObjs) {
-        if (!o.isTextFrame) continue;
-        // Can't access selectedIds from FreehandStudio, so use a heuristic:
-        // find a frame whose typography differs from Story's — that's the one being edited
-        const sid = (o as any).storyId as string | undefined;
-        if (!sid) continue;
-        const s = stories.find(st => st.id === sid);
-        if (!s) continue;
-        const typo = s.typography;
-        const a = o as any;
-        if (a.fontSize !== typo.fontSize || a.fontFamily !== typo.fontFamily ||
-            a.lineHeight !== typo.lineHeight || a.letterSpacing !== typo.letterSpacing) {
-          return o.id;
-        }
-      }
-      return null;
-    })();
-
-    // If a frame has been edited (typo differs from Story), use ITS values as source
-    let liveTypoSource: Record<string, unknown> | null = null;
-    let liveTypoStoryId: string | null = null;
-    if (selectedFrameId) {
-      const obj = currentObjs.find(o => o.id === selectedFrameId) as any;
-      if (obj) {
-        liveTypoStoryId = obj.storyId ?? null;
-        const fillStr = typeof obj.fill === "string" ? obj.fill : obj.fill?.type === "solid" ? obj.fill.color : null;
-        liveTypoSource = {
-          fontFamily: obj.fontFamily,
-          fontSize: obj.fontSize,
-          lineHeight: obj.lineHeight,
-          letterSpacing: obj.letterSpacing,
-          textAlign: obj.textAlign,
-          fontKerning: obj.fontKerning,
-          paragraphIndent: obj.paragraphIndent,
-          fontVariantCaps: obj.fontVariantCaps,
-          fontFeatureSettings: obj.fontFeatureSettings,
-          ...(fillStr && fillStr !== "none" ? { fill: fillStr } : {}),
-        };
-      }
-    }
-
-    for (const fl of layouts) {
-      const story = stories.find(s => s.id === fl.storyId);
-      const total = story?.frames.length ?? 1;
-      const index = story ? story.frames.indexOf(fl.frameId) : 0;
-      const threadInfo = total > 1 ? { index: Math.max(0, index), total } : undefined;
-
-      // Propagate typography to sibling frames (not the source frame itself)
-      const typoPatch: Record<string, unknown> = {};
-      if (story && story.frames.length > 1 && fl.frameId !== selectedFrameId) {
-        const src = (liveTypoStoryId === story.id && liveTypoSource) ? liveTypoSource : null;
-        if (src) {
-          const obj = currentObjs.find(o => o.id === fl.frameId) as any;
-          if (obj) {
-            if (src.fontFamily != null && obj.fontFamily !== src.fontFamily) typoPatch.fontFamily = src.fontFamily;
-            if (src.fontSize != null && obj.fontSize !== src.fontSize) typoPatch.fontSize = src.fontSize;
-            if (src.lineHeight != null && obj.lineHeight !== src.lineHeight) typoPatch.lineHeight = src.lineHeight;
-            if (src.letterSpacing != null && obj.letterSpacing !== src.letterSpacing) typoPatch.letterSpacing = src.letterSpacing;
-            if (src.textAlign != null && obj.textAlign !== src.textAlign) typoPatch.textAlign = src.textAlign;
-            if (src.fontKerning != null && obj.fontKerning !== src.fontKerning) typoPatch.fontKerning = src.fontKerning;
-            if (src.paragraphIndent != null && obj.paragraphIndent !== src.paragraphIndent) typoPatch.paragraphIndent = src.paragraphIndent;
-            if (src.fontVariantCaps != null && obj.fontVariantCaps !== src.fontVariantCaps) typoPatch.fontVariantCaps = src.fontVariantCaps;
-            if (src.fontFeatureSettings != null && obj.fontFeatureSettings !== src.fontFeatureSettings) typoPatch.fontFeatureSettings = src.fontFeatureSettings;
-            if (src.fill != null) {
-              const objFill = typeof obj.fill === "string" ? obj.fill : obj.fill?.type === "solid" ? obj.fill.color : null;
-              if (objFill !== src.fill) typoPatch.fill = { type: "solid", color: src.fill };
-            }
-          }
-        }
-      }
-
-      if (fl.frameId === editingId) {
-        api.patchObject(fl.frameId, { _designerOverflow: fl.hasOverflow, _designerThreadInfo: threadInfo });
-        continue;
-      }
-      if (story) {
-        const frameContent = sliceStoryContent(story.content, fl.contentRange.start, fl.contentRange.end);
-        const frameText = serializeStoryContent(frameContent);
-        const richSpans = buildRichSpansForFrame(frameContent);
-        api.patchObject(fl.frameId, {
-          text: frameText,
-          _designerOverflow: fl.hasOverflow,
-          _designerThreadInfo: threadInfo,
-          _designerRichSpans: richSpans,
-          ...typoPatch,
-        });
-      } else {
-        api.patchObject(fl.frameId, { _designerOverflow: fl.hasOverflow, _designerThreadInfo: threadInfo });
-      }
-    }
-  }, []);
-
-  syncTextFrameLayoutsRef.current = syncTextFrameLayouts;
-
-  useEffect(() => {
-    clearTimeout(layoutSyncTimerRef.current);
-    layoutSyncTimerRef.current = setTimeout(syncTextFrameLayouts, 60);
-    return () => clearTimeout(layoutSyncTimerRef.current);
-  }, [pages, activePageIndex, syncTextFrameLayouts]);
+  const { syncTextFrameLayoutsRef } = useDesignerTextFrameLayoutSync({
+    studioApiRef,
+    pagesRef,
+    activeIdxRef,
+    pages,
+    activePageIndex,
+  });
 
   // ── Object sync (FreehandStudio → pages state) ──
 
@@ -1437,12 +1251,81 @@ export default function DesignerStudio({
     ],
   );
 
+  const designerFreehandProps: DesignerEmbedProps = {
+    designerMode: true,
+    designerSkipAutoNodeExportOnClose: true,
+    designerPageEnterDirection,
+    onDesignerTextFrameCreate: handleDesignerTextFrameCreate,
+    onDesignerImageFramePlace: handleDesignerImageFramePlace,
+    onDesignerImageFrameImportFile: (frameId, file) => {
+      imageFrameTargetIdRef.current = frameId;
+      void handleImageFileSelected(file);
+    },
+    studioApiRef,
+    onDesignerTextFrameEdit: handleDesignerTextFrameEdit,
+    onDesignerAppendThreadedFrame: handleAppendThreadedFrame,
+    designerStoryMap,
+    designerStoryHtmlMap,
+    onDesignerStoryTextChange: handleDesignerStoryTextChange,
+    onDesignerStoryRichChange: handleDesignerStoryRichChange,
+    onDesignerUnlinkTextFrame: handleDesignerUnlinkTextFrame,
+    onDesignerTypographyChange: handleDesignerTypographyChange,
+    designerHistoryBridge,
+    designerClipboardRef,
+    designerActivePageId: activePage?.id ?? null,
+    designerClipboardSourcePageIdRef,
+    onDesignerNavigatePage: handleDesignerNavigatePage,
+    designerMultipageVectorPdfExport: {
+      pageCount: pages.length,
+      busy: multiPdfBusy,
+      onExport: handleExportMultiPageVectorPdf,
+    },
+    designerDeDocument: {
+      onExport: handleExportDe,
+      onImport: () => deImportInputRef.current?.click(),
+      busy: deExportBusy || deImportHydrating,
+    },
+    designerAutoOptimizeSwitch: {
+      enabled: autoImageOptimization,
+      onChange: (v) => onAutoImageOptimizationChange?.(v),
+    },
+    designerOptimizeProgress,
+    designerFitToViewNonce,
+    designerCanvasZenMode,
+    onDesignerCanvasZenModeChange: setDesignerCanvasZenMode,
+    designerPagesRail: (
+      <DesignerPagesRail
+        pages={pages}
+        activePageIndex={activePageIndex}
+        pageThumbnails={pageThumbnails}
+        scrollElRef={designerPagesRailScrollElRef}
+        onRailScroll={(top) => {
+          designerPagesRailScrollTopRef.current = top;
+        }}
+        dragPageIndexRef={dragPageIndexRef}
+        suppressPageThumbClickRef={suppressPageThumbClickRef}
+        goToDesignerPage={goToDesignerPage}
+        movePage={movePage}
+        swapOrientation={swapOrientation}
+        duplicatePage={duplicatePage}
+        deletePage={deletePage}
+        onRequestAddPageModal={() => {
+          setPendingFormat(activePage?.format ?? pages[0]?.format ?? DEFAULT_DESIGNER_PAGE_FORMAT);
+          setFormatModal({ kind: "add" });
+        }}
+        onRequestResizePageModal={(i) => {
+          setPendingFormat(pages[i]?.format ?? DEFAULT_DESIGNER_PAGE_FORMAT);
+          setFormatModal({ kind: "resize", pageIndex: i });
+        }}
+      />
+    ),
+  };
+
   return (
     <div className="fixed inset-0 z-[9999] flex flex-col bg-[#0b0d10]">
       <FreehandStudio
         key={freehandStudioInstanceKey}
         nodeId={freehandStudioInstanceKey}
-        designerPageEnterDirection={designerPageEnterDirection}
         initialObjects={activePage?.objects ?? []}
         initialArtboards={initialArtboards}
         initialLayoutGuides={activePage?.layoutGuides}
@@ -1450,72 +1333,7 @@ export default function DesignerStudio({
         onExport={onExport}
         onUpdateObjects={handleUpdateObjects}
         onUpdateLayoutGuides={handleUpdateLayoutGuides}
-        designerMode
-        designerSkipAutoNodeExportOnClose
-        onDesignerTextFrameCreate={handleDesignerTextFrameCreate}
-        onDesignerImageFramePlace={handleDesignerImageFramePlace}
-        onDesignerImageFrameImportFile={(frameId, file) => {
-          imageFrameTargetIdRef.current = frameId;
-          void handleImageFileSelected(file);
-        }}
-        studioApiRef={studioApiRef}
-        onDesignerTextFrameEdit={handleDesignerTextFrameEdit}
-        onDesignerAppendThreadedFrame={handleAppendThreadedFrame}
-        designerStoryMap={designerStoryMap}
-        designerStoryHtmlMap={designerStoryHtmlMap}
-        onDesignerStoryTextChange={handleDesignerStoryTextChange}
-        onDesignerStoryRichChange={handleDesignerStoryRichChange}
-        onDesignerUnlinkTextFrame={handleDesignerUnlinkTextFrame}
-        onDesignerTypographyChange={handleDesignerTypographyChange}
-        designerHistoryBridge={designerHistoryBridge}
-        designerClipboardRef={designerClipboardRef}
-        designerActivePageId={activePage?.id ?? null}
-        designerClipboardSourcePageIdRef={designerClipboardSourcePageIdRef}
-        onDesignerNavigatePage={handleDesignerNavigatePage}
-        designerMultipageVectorPdfExport={{
-          pageCount: pages.length,
-          busy: multiPdfBusy,
-          onExport: handleExportMultiPageVectorPdf,
-        }}
-        designerDeDocument={{
-          onExport: handleExportDe,
-          onImport: () => deImportInputRef.current?.click(),
-          busy: deExportBusy || deImportHydrating,
-        }}
-        designerAutoOptimizeSwitch={{
-          enabled: autoImageOptimization,
-          onChange: (v) => onAutoImageOptimizationChange?.(v),
-        }}
-        designerOptimizeProgress={designerOptimizeProgress}
-        designerFitToViewNonce={designerFitToViewNonce}
-        designerCanvasZenMode={designerCanvasZenMode}
-        onDesignerCanvasZenModeChange={setDesignerCanvasZenMode}
-        designerPagesRail={
-          <DesignerPagesRail
-            pages={pages}
-            activePageIndex={activePageIndex}
-            pageThumbnails={pageThumbnails}
-            scrollElRef={designerPagesRailScrollElRef}
-            onRailScroll={(top) => {
-              designerPagesRailScrollTopRef.current = top;
-            }}
-            dragPageIndexRef={dragPageIndexRef}
-            suppressPageThumbClickRef={suppressPageThumbClickRef}
-            goToDesignerPage={goToDesignerPage}
-            movePage={movePage}
-            swapOrientation={swapOrientation}
-            duplicatePage={duplicatePage}
-            deletePage={deletePage}
-            onRequestAddPageModal={() => {
-              setPendingFormat(activePage?.format ?? pages[0]?.format ?? DEFAULT_DESIGNER_PAGE_FORMAT);
-              setFormatModal({ kind: "add" });
-            }}
-            onRequestResizePageModal={(i) => {
-              setPendingFormat(pages[i]?.format ?? DEFAULT_DESIGNER_PAGE_FORMAT);
-              setFormatModal({ kind: "resize", pageIndex: i });
-            }}
-          />
-        }
+        {...designerFreehandProps}
       />
 
       {/* Hidden file input for image frame placement */}
