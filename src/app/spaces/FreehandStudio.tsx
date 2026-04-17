@@ -91,6 +91,7 @@ import {
   pickPrimaryArtboard,
   unionRects,
 } from "./freehand/artboard";
+import type { DesignerEmbedProps } from "./freehand/designer-embed-props";
 import {
   buildStandaloneSvgFromCanvasDom,
   expandExportIds,
@@ -500,7 +501,7 @@ export type FreehandObject =
   | BooleanGroupObject
   | ClippingContainerObject;
 
-interface FreehandStudioProps {
+interface FreehandStudioProps extends DesignerEmbedProps {
   nodeId: string;
   initialObjects: FreehandObject[];
   /** Pliego único (tamaño de página / área de exportación); no hay UI de “artboards”. */
@@ -511,86 +512,6 @@ interface FreehandStudioProps {
   onExport: (dataUrl: string) => void;
   onUpdateObjects: (objects: FreehandObject[]) => void;
   onUpdateLayoutGuides?: (guides: LayoutGuide[]) => void;
-  /** Designer mode: text frame, image frame tools; pliego viene del documento de páginas. */
-  designerMode?: boolean;
-  /** Called when a text frame is created/modified in designer mode. */
-  onDesignerTextFrameCreate?: (frameObj: FreehandObject) => void;
-  /** Called when an image frame needs image placement in designer mode. */
-  onDesignerImageFramePlace?: (frameId: string) => void;
-  /** Designer: colocar archivo en un marco (p. ej. arrastrar imagen sobre el marco); subida S3 como el selector de archivos. */
-  onDesignerImageFrameImportFile?: (frameId: string, file: File) => void | Promise<void>;
-  /** Imperative API ref for external object mutations (DesignerStudio ↔ FreehandStudio). */
-  studioApiRef?: React.MutableRefObject<DesignerStudioApi | null>;
-  /** Called when text editing ends on a text frame (blur). */
-  onDesignerTextFrameEdit?: (frameId: string, storyId: string, newText: string, richHtml?: string) => void;
-  /** Called when user requests a threaded continuation frame from an overflowing text frame. */
-  onDesignerAppendThreadedFrame?: (sourceFrameId: string) => void;
-  /** Serialized story content by storyId, for panel display. */
-  designerStoryMap?: Map<string, string>;
-  /** Rich HTML story content by storyId, for panel rich editor. */
-  designerStoryHtmlMap?: Map<string, string>;
-  /** Called when the full story text is changed from the panel textarea. */
-  onDesignerStoryTextChange?: (storyId: string, newText: string) => void;
-  /** Called when rich HTML story content changes from the panel editor. */
-  onDesignerStoryRichChange?: (storyId: string, richHtml: string) => void;
-  /** Called when user unlinks a text frame from its thread chain. */
-  onDesignerUnlinkTextFrame?: (frameId: string) => void;
-  /** Called when typography properties change on a text frame (to sync back to Story model). */
-  onDesignerTypographyChange?: (storyId: string, patch: Record<string, unknown>) => void;
-  /**
-   * Designer: capture/restore full document state (pages, stories, textFrames) alongside canvas objects for undo.
-   */
-  designerHistoryBridge?: {
-    capture: (canvasObjects: FreehandObject[]) => unknown;
-    restore: (snap: unknown) => void;
-  };
-  /** Designer: shared clipboard across page switches (same ref for all FreehandStudio mounts). */
-  designerClipboardRef?: React.MutableRefObject<FreehandObject[] | null>;
-  /** Designer: página activa (para pegar en la misma posición al cambiar de página). */
-  designerActivePageId?: string | null;
-  /** Designer: id de la página donde se copió al portapapeles compartido (lo escribe FreehandStudio). */
-  designerClipboardSourcePageIdRef?: React.MutableRefObject<string | null>;
-  /** Designer: narrow page rail (~110px) rendered to the right of the properties panel. */
-  designerPagesRail?: React.ReactNode;
-  /** Designer: Ctrl/Cmd + ← / → para cambiar de página del documento. */
-  onDesignerNavigatePage?: (delta: -1 | 1) => void;
-  /** Designer: dirección de la animación horizontal al mostrar otra página (multipágina). */
-  designerPageEnterDirection?: "next" | "prev" | null;
-  /** Designer: bump to request fit-to-viewport after the active page canvas is shown (e.g. user picked a page). */
-  designerFitToViewNonce?: number;
-  /** Designer: modo P (lienzo a pantalla completa) vive en el padre para sobrevivir al remount al cambiar de página. */
-  designerCanvasZenMode?: boolean;
-  onDesignerCanvasZenModeChange?: (zen: boolean) => void;
-  /** Designer: multipage vector PDF export (shown in Export modal). */
-  designerMultipageVectorPdfExport?: {
-    pageCount: number;
-    busy: boolean;
-    onExport: (opts: VectorPdfExportOptions) => void | Promise<void>;
-  } | null;
-  /** Designer: fichero autocontenido `.de` (documento + imágenes embebidas). */
-  designerDeDocument?: {
-    onExport: () => void | Promise<void>;
-    onImport: () => void;
-    busy?: boolean;
-  } | null;
-  /** Switch “Activar auto-optimización” junto a Export. */
-  designerAutoOptimizeSwitch?: {
-    enabled: boolean;
-    onChange: (enabled: boolean) => void;
-  };
-  /** Progreso de auto-optimización; el HUD visual va dentro del marco (`activeFrameId`). */
-  designerOptimizeProgress?: {
-    visible: boolean;
-    currentFileLabel: string;
-    done: number;
-    total: number;
-    activeFrameId?: string | null;
-  };
-  /**
-   * Designer: el padre (DesignerStudio) genera la miniatura de la 1.ª página al cerrar.
-   * Si true, no se ejecuta el PNG automático del lienzo actual en `handleCloseStudio`.
-   */
-  designerSkipAutoNodeExportOnClose?: boolean;
 }
 
 export interface DesignerStudioApi {

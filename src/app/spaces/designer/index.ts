@@ -19,3 +19,4 @@ export {
   DesignerRulerVertical,
   type DesignerViewport,
 } from "./DesignerCanvasRulers";
+export type { DesignerOptimizeProgressState } from "./useDesignerImagePipeline";
