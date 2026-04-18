@@ -11,6 +11,7 @@ import {
   tryResolveRemoveSelectedIds,
 } from "@/lib/assistant-remove-intent";
 import { buildAssistantSystemPrompt } from "@/lib/assistant-prompt";
+import { summarizeProjectAssetsForAssistant } from "@/app/spaces/project-assets-metadata";
 import {
   orderExecuteNodeIds,
   tryInferExecuteNodeIds,
@@ -31,21 +32,28 @@ const ASSISTANT_MODEL = process.env.OPENAI_ASSISTANT_MODEL?.trim() || "gpt-4o-mi
 
 export async function POST(req: Request) {
   try {
-    const { prompt, currentNodes = [], currentEdges = [] } = await req.json();
+    const { prompt, currentNodes = [], currentEdges = [], projectAssets } = await req.json() as {
+      prompt?: string;
+      currentNodes?: unknown;
+      currentEdges?: unknown;
+      /** `metadata.assets` del proyecto — resumen para el prompt (Brain). */
+      projectAssets?: unknown;
+    };
 
     if (!prompt) {
       return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
     }
 
+    const cn = Array.isArray(currentNodes) ? currentNodes : [];
+    const ce = Array.isArray(currentEdges) ? currentEdges : [];
+
     const openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY || "",
     });
 
-    const selectedNodes = Array.isArray(currentNodes)
-      ? (currentNodes as { id?: string; type?: string; selected?: boolean; position?: unknown; data?: unknown }[]).filter(
-          (n) => n && n.selected === true
-        )
-      : [];
+    const selectedNodes = (
+      cn as { id?: string; type?: string; selected?: boolean; position?: unknown; data?: unknown }[]
+    ).filter((n) => n && n.selected === true);
 
     const selectionBlock =
       selectedNodes.length > 0
@@ -59,10 +67,15 @@ export async function POST(req: Request) {
           )}\n`
         : "### USER FOCUS: no node selected. User should select node(s) on the canvas before vague commands (e.g. change the prompt), or name id/type explicitly.\n";
 
+    const brainBlock =
+      projectAssets !== undefined && projectAssets !== null
+        ? `### Brain / project assets (metadata)\n${summarizeProjectAssetsForAssistant(projectAssets)}\n(Stored when the user saves the project. Prefer these hex colors for brand-coherent suggestions — e.g. \`background\` \`data.color\` — when the user asks for client/brand styling. You cannot edit Brain from JSON.)\n\n`
+        : "";
+
     const contextMessage =
-      currentNodes.length > 0
-        ? `${selectionBlock}### Current Workspace State:\nNodes: ${JSON.stringify(currentNodes)}\nEdges: ${JSON.stringify(currentEdges)}`
-        : `${selectionBlock}### Workspace is currently EMPTY.`;
+      cn.length > 0
+        ? `${brainBlock}${selectionBlock}### Current Workspace State:\nNodes: ${JSON.stringify(cn)}\nEdges: ${JSON.stringify(ce)}`
+        : `${brainBlock}${selectionBlock}### Workspace is currently EMPTY.`;
 
     const systemPrompt = buildAssistantSystemPrompt();
 
@@ -123,9 +136,6 @@ export async function POST(req: Request) {
         return node;
       });
     }
-
-    const cn = Array.isArray(currentNodes) ? currentNodes : [];
-    const ce = Array.isArray(currentEdges) ? currentEdges : [];
 
     /** Evita que plantillas con ids genéricos (opt_p0, lst_ojos…) machaquen listados/prompts previos. */
     if (

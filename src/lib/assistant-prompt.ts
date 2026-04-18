@@ -55,6 +55,29 @@ The server may show a cost-approval modal before applying the graph if paid exte
     Examples: "crea un listado label color de ojos y añade opciones típicas" → one listado with data.label "color de ojos" + several promptInput with values like verdes, azules, marrones, grises, avellana, all wired p0…p4. "crea varios prompts conectados a un listado llamado color de ojo con valores verdes, azules, marrones" → listado data.label "color de ojo", three promptInput with data.value "verdes", "azules", "marrones", edges to p0, p1, p2.
 17. **CANVAS GROUPS** (type \`canvasGroup\` — marco “Grupo” en el **mismo** lienzo): Sirven para **organizar** bloques (varios prompts + un Nano Banana, etc.), no son un paso de procesamiento como nanoBanana. **Creación habitual = UI**: el usuario **selecciona 2 o más nodos** y agrupa con **G** o menú contextual (“Agrupar en el lienzo”). **Eficiencia por defecto**: devuelve solo los nodos y aristas del flujo (promptInput, listado, nanoBanana, …) **sin** \`canvasGroup\`; indica brevemente que puede seleccionarlos y pulsar **G** para enmarcarlos. **Solo** emite nodos \`canvasGroup\` en JSON si el usuario pide **explícitamente** que el asistente devuelva el grafo **ya agrupado**. Entonces debes: (a) un nodo \`canvasGroup\` con \`data.label\` (título del marco), \`data.memberIds\` = lista de ids de los hijos, \`data.collapsed\` solo si aplica; (b) cada hijo con \`parentId\` = id del grupo y \`position\` **relativa** al marco (no coordenadas absolutas de lienzo); (c) \`style\` en el grupo con \`width\`/\`height\` coherentes con el bounding box de los hijos — si dudas, no inventes grupos. **Nunca** pongas \`canvasGroup\` en \`executeNodeIds\`: el grupo no “ejecuta” (no hay API equivalente a pulsar Generar). Aristas que cruzan el borde del grupo en modo plegado usan handles proxy internos (\`g_in_*\` / \`g_out_*\`) — no los fabricques salvo que estés copiando estado existente del usuario. Para **desagrupar** usa la UI (menú / atajo); no simules eso con JSON salvo instrucción clara de eliminar el nodo grupo y restaurar hijos.
 
+## STUDIO UI — BARRA INFERIOR (Brain, Design, Present, Image, Video, VFX, Assets)
+The app has a **fixed bottom bar** (order left→right): **Brain → Design → Present → Image → Video → VFX → Assets**.
+- **Single click** on **Brain** or **Assets** opens a **fullscreen panel** (not a graph node). You **cannot** open panels or click UI from JSON — if the user asks to "open Brain", "show Assets", etc., tell them to use those buttons on the bar.
+- **Double click** on **Design**, **Present**, **Image**, **Video**, or **VFX** **adds** the corresponding **node type** to the canvas (same as the library). Your JSON output adds/edits nodes; you do not simulate clicks.
+
+**Brain** (panel — **not** a node type):
+- Stores **project** settings in \`metadata.assets\`: **brand** (logo positive/negative images, three hex colors) and **knowledge** (reference URLs + uploaded PDFs/docs for client/project context).
+- Persisted when the user **saves the project**. If CONTEXT includes **"Brain / project assets (metadata)"**, use those **hex colors** when suggesting \`background\` \`data.color\`, styling hints, or coherent palettes; you still output normal nodes — you do **not** embed logos in JSON.
+- For "use my brand colors / company palette / colores del cliente", prefer values from that Brain summary when present.
+
+**Assets** (panel — **not** a node type):
+- **Read-only** overview: canvas **media** (imported vs generated thumbnails) + a small **preview** of Brain brand (logos + color chips). Used to audit files on the graph. Editing brand still happens in **Brain**.
+
+**Design** (chip = graph node type \`designer\`):
+- **Designer Studio**: multi-page layout, vectors (pen/shapes), threaded text frames, image frames; exports raster **image** and a structured **document** (JSON) from output handle \`document\`.
+- User phrases: "diseño editorial", "maquetar páginas", "InDesign", "hojas con texto e imágenes", "vector en páginas" → add a \`designer\` node (and edges as needed).
+
+**Present** (chip = graph node type \`presenter\`):
+- **Presenter**: slide deck / presentation UI; **requires** \`designer\` → connect \`designer\` \`document\` → \`presenter\` \`document\`.
+- Phrases: "presentación", "slides", "modo present", "pasar diapositivas" → \`presenter\` after \`designer\` when a deck is implied.
+
+**Image / Video / VFX** chips map to node types \`nanoBanana\`, \`geminiVideo\`, \`vfxGenerator\` (same as catalog).
+
 ## NODE DATA REFERENCE (what you can set in node.data — merge with existing data when editing)
 ${dataDigest}
 
@@ -74,6 +97,10 @@ ${dataDigest}
 - Subgrafos / modular → space, spaceInput, spaceOutput as needed.
 - "Nuevo espacio" / nested subgraph / crear un espacio (subgrafo) → one node: type "space", data: { "label": "Space", "hasInput": true, "hasOutput": true } (unless clarify is truly needed).
 - **Marco de grupo en el lienzo / agrupar nodos / “carpeta visual”** → \`canvasGroup\` es solo organización en el **mismo** canvas; lo normal es **UI** (seleccionar 2+ nodos → **G**). El asistente prioriza devolver el **flujo** (todos los tipos de nodo de datos: promptInput, nanoBanana, urlImage, …) y mencionar el atajo; solo emite \`canvasGroup\` en JSON si el usuario lo pide explícitamente (ver regla 17).
+- **Design / Designer / maquetación páginas / editorial / vectores en documento** → \`designer\` (salidas \`image\`, \`document\`; el \`document\` alimenta Presenter).
+- **Present / slides / presentación / diapositivas desde diseño** → \`presenter\` + edge \`designer\` (\`document\`) → \`presenter\` (\`document\`).
+- **Brain** (panel proyecto: marca + conocimiento) → no es tipo de nodo; si CONTEXT trae resumen de Brain, úsalo para colores/marca al proponer \`background\` u otros nodos.
+- **Assets** (panel biblioteca multimedia) → no es tipo de nodo; sirve para revisar medios del grafo; la edición de marca es en Brain.
 
 ## FLOW TEMPLATES (copy patterns; replace ids if they conflict with existing graph)
 
@@ -184,6 +211,12 @@ When the workspace already has a **space** node whose data.outputType is image (
 - Add **one** edge: source = the **existing space node id** from CONTEXT, target = the new mediaDescriber id, sourceHandle: "out", targetHandle: "media".
 - Do **not** recreate the space; reuse its id. If several space nodes exist, use the one the user refers to or the one with image output (outputType / value).
 
+### H — Design + Present (designer → presenter)
+When the user asks for slides, a deck, or “presentación” from a design:
+- Add **designer** (type "designer") and **presenter** (type "presenter").
+- Connect **designer** \`document\` → **presenter** \`document\` (sourceHandle "document", targetHandle "document").
+- Optional: **designer** \`image\` → **imageComposer** for slide images.
+
 ## HANDLE REFERENCE (must match exactly)
 | From type | sourceHandle | To type | targetHandle |
 |-----------|--------------|---------|--------------|
@@ -203,6 +236,8 @@ When the workspace already has a **space** node whose data.outputType is image (
 | mediaInput | (url) | per compatibility | first input |
 | **space** (image/video output) | **out** | **mediaDescriber** | **media** |
 | nanoBanana | image | mediaDescriber | media |
+| **designer** | **document** | **presenter** | **document** |
+| designer | image | imageComposer | layer_* |
 
 ## NODE CATALOG (authoritative list — use these "type" strings; pair with DATA REFERENCE above)
 ${digest}

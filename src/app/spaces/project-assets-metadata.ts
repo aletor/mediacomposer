@@ -100,3 +100,17 @@ export function normalizeProjectAssets(raw: unknown): ProjectAssetsMetadata {
 
   return { brand, knowledge };
 }
+
+/** Texto compacto para el asistente del lienzo (sin data URLs de logos). */
+export function summarizeProjectAssetsForAssistant(raw: unknown): string {
+  const a = normalizeProjectAssets(raw);
+  const nUrl = a.knowledge.urls.length;
+  const nDoc = a.knowledge.documents.length;
+  const hasPos = Boolean(a.brand.logoPositive);
+  const hasNeg = Boolean(a.brand.logoNegative);
+  return [
+    `Brand colors (hex): primary ${a.brand.colorPrimary}, secondary ${a.brand.colorSecondary}, accent ${a.brand.colorAccent}.`,
+    `Logos in Brain: positive=${hasPos ? "yes" : "no"}, negative=${hasNeg ? "yes" : "no"}.`,
+    `Knowledge: ${nUrl} link(s), ${nDoc} document(s).`,
+  ].join(" ");
+}

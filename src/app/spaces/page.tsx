@@ -930,13 +930,6 @@ const SpacesContent = () => {
   }, [canvasViewMode, cardsFocusIndex, nodes, fitViewToNodeIds]);
 
   const [showWelcome, setShowWelcome] = useState(false); // triggered after auth
-  const [showEmptyShortcutsHint, setShowEmptyShortcutsHint] = useState(false);
-
-  useEffect(() => {
-    if (showEmptyShortcutsHint && nodes.length > 0) {
-      setShowEmptyShortcutsHint(false);
-    }
-  }, [nodes.length, showEmptyShortcutsHint]);
 
   /** Which node supplies `data.value` for the fullscreen viewer (opened via node header buttons). */
   const [viewerSourceNodeId, setViewerSourceNodeId] = useState<string | null>(null);
@@ -3232,6 +3225,7 @@ const SpacesContent = () => {
               prompt,
               currentNodes: nodes,
               currentEdges: edges,
+              projectAssets: metadata.assets,
             }),
           });
           const data = await readResponseJson<{
@@ -4215,14 +4209,7 @@ const SpacesContent = () => {
         showWelcome={showWelcome}
         onWelcomeAnimationEnd={() => {
           setShowWelcome(false);
-          if (liveNodesRef.current.length === 0) {
-            setShowEmptyShortcutsHint(true);
-          }
         }}
-        isAuthenticated={isAuthenticated}
-        showEmptyShortcutsHint={showEmptyShortcutsHint}
-        windowMode={windowMode}
-        nodeCount={nodes.length}
       />
 
       {/* ── WINDOW VIEWER PANEL ─────────────────────────────────────────────── */}
