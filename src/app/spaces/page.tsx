@@ -97,6 +97,7 @@ import {
 import { FOLDDER_FIT_VIEW_EASE } from '@/lib/fit-view-ease';
 import {
   enterFullscreen,
+  installPreserveDocumentFullscreenOnFilePicker,
   isDocumentFullscreen,
   subscribeFullscreenChange,
   toggleDocumentFullscreen,
@@ -152,8 +153,6 @@ import {
   Minimize2,
   LayoutGrid,
   ChevronDown,
-  Layers,
-  Move,
   Download,
   ZoomIn,
   MessageCircle,
@@ -172,62 +171,38 @@ const CANVAS_BG_STORAGE_KEY = 'foldder-canvas-bg-id';
 
 type CanvasBackgroundOption = { id: string; label: string; url: string };
 
+/** Solo orígenes que suelen permitir CORS para texturas WebGL (evita hotlinks rotos o sin ACAO). */
 const CANVAS_BACKGROUNDS: CanvasBackgroundOption[] = [
   { id: 'studio', label: 'Estudio (actual)', url: '/studio_back.jpg' },
   {
-    id: 'magicdecor-mosaic',
-    label: 'Mosaico Mughal',
-    url: 'https://cdn.magicdecor.in/com/2023/12/13184932/Mughal-Marvels-Mosaic-Wallpaper-710x488.jpg',
-  },
-  {
     id: 'unsplash-city-night',
     label: 'Ciudad nocturna',
-    url: 'https://images.unsplash.com/photo-1485470733090-0aae1788d5af?fm=jpg&q=60&w=3000&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxzZWFyY2h8MTN8fGdhbWluZyUyMHdhbGxwYXBlcnxlbnwwfHwwfHx8MA%3D%3D',
-  },
-  {
-    id: 'ftcdn-abstract',
-    label: 'Abstracto',
-    url: 'https://t3.ftcdn.net/jpg/04/83/77/82/360_F_483778295_PmGDVnK5jSPiHD0aVDVPsaycL7RDVqIr.jpg',
+    url: 'https://images.unsplash.com/photo-1485470733090-0aae1788d5af?fm=jpg&q=70&w=2400&auto=format&fit=crop',
   },
   {
     id: 'unsplash-earth-space',
-    label: 'Tierra · espacio (Unsplash)',
-    url: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?fm=jpg&q=60&w=3000&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxzZWFyY2h8NHx8Zm9uZG8lMjBkZSUyMHBhbnRhbGxhJTIwNGt8ZW58MHx8MHx8fDA%3D',
+    label: 'Tierra · espacio',
+    url: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?fm=jpg&q=70&w=2400&auto=format&fit=crop',
   },
   {
-    id: 'pixelstalk-landscape-hd',
-    label: 'Paisaje Full HD',
-    url: 'https://www.pixelstalk.net/wp-content/uploads/wallpapers/Landscape-Wallpapers-Full-HD.jpg',
+    id: 'unsplash-forest',
+    label: 'Bosque',
+    url: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?fm=jpg&q=70&w=2400&auto=format&fit=crop',
+  },
+  {
+    id: 'unsplash-abstract-gradient',
+    label: 'Gradiente suave',
+    url: 'https://images.unsplash.com/photo-1557683316-973673baf926?fm=jpg&q=70&w=2400&auto=format&fit=crop',
   },
   {
     id: 'pixabay-mountain-5242534',
-    label: 'Montañas · Pixabay',
+    label: 'Montañas',
     url: 'https://cdn.pixabay.com/photo/2020/05/31/12/41/mountain-5242534_1280.jpg',
   },
   {
-    id: 'wallpapershome-thumb-8164',
-    label: 'Miniatura HD · Wallpapershome',
-    url: 'https://wallpapershome.com/images/pages/pic_h/8164.jpg',
-  },
-  {
-    id: 'wallpaperbat-fantasy-webp',
-    label: 'Fantasía ultrahd',
-    url: 'https://wallpaperbat.com/img/12457956-beautiful-fantasy-wallpaper-ultra-hd.webp',
-  },
-  {
     id: 'pixabay-sea-3652697',
-    label: 'Mar · Pixabay',
+    label: 'Mar',
     url: 'https://cdn.pixabay.com/photo/2018/09/03/23/56/sea-3652697_1280.jpg',
-  },
-  {
-    id: 'infobae-horizon',
-    label: 'Horizonte HD',
-    url: 'https://www.infobae.com/resizer/v2/HA5THUH7O5G55D7G26I3QBQCCE.jpg?auth=6929fa20734fb29457770ab17cb4c935aa12166f0f536e0b95846e1a837c0adc&smart=true&width=1200&height=675&quality=85',
-  },
-  {
-    id: 'getwallpapers-texture-882333',
-    label: 'Textura HD',
-    url: 'https://getwallpapers.com/wallpaper/full/f/5/6/882333-full-size-texture-hd-wallpapers-1920x1080-full-hd.jpg',
   },
 ];
 
@@ -813,6 +788,10 @@ const SpacesContent = () => {
     return subscribeFullscreenChange(() => setBrowserFullscreen(isDocumentFullscreen()));
   }, []);
 
+  useEffect(() => {
+    return installPreserveDocumentFullscreenOnFilePicker();
+  }, []);
+
   const togglePageFullscreen = useCallback(() => {
     void toggleDocumentFullscreen().catch((err) => {
       console.warn('[fullscreen]', err);
@@ -851,31 +830,6 @@ const SpacesContent = () => {
   const freeLayoutSnapshotRef = useRef<Record<string, { x: number; y: number }>>({});
   const canvasViewModeRef = useRef<'free' | 'cards'>('free');
   canvasViewModeRef.current = canvasViewMode;
-
-  const enterCardsViewMode = useCallback(() => {
-    if (canvasViewModeRef.current === 'cards') return;
-    if (nodes.length === 0) return;
-    freeLayoutSnapshotRef.current = Object.fromEntries(
-      nodes.map((n) => [n.id, { ...n.position }])
-    );
-    const el = document.querySelector('.react-flow__renderer');
-    let cx = window.innerWidth / 2;
-    let cy = window.innerHeight / 2;
-    if (el) {
-      const r = el.getBoundingClientRect();
-      cx = r.left + r.width / 2;
-      cy = r.top + r.height / 2;
-    }
-    cardsAnchorRef.current = screenToFlowPosition({ x: cx, y: cy });
-    const ordered = [...nodes].sort(
-      (a, b) =>
-        a.position.y !== b.position.y ? a.position.y - b.position.y : a.position.x - b.position.x
-    );
-    const sel = nodes.find((n) => n.selected);
-    const fi = sel ? ordered.findIndex((n) => n.id === sel.id) : 0;
-    setCardsFocusIndex(fi >= 0 ? fi : 0);
-    setCanvasViewMode('cards');
-  }, [nodes, screenToFlowPosition]);
 
   const exitCardsViewMode = useCallback(() => {
     if (canvasViewModeRef.current === 'free') return;
@@ -2884,6 +2838,10 @@ const SpacesContent = () => {
       return true;
     }
     if (showNewProjectModal || showLoadModal || projectToDelete || projectDeleteInProgress) return false;
+    if (canvasViewMode === 'cards') {
+      exitCardsViewMode();
+      return true;
+    }
     if (windowMode) {
       setWindowMode(false);
       setViewerSourceNodeId(null);
@@ -2905,6 +2863,8 @@ const SpacesContent = () => {
     showLoadModal,
     projectToDelete,
     projectDeleteInProgress,
+    canvasViewMode,
+    exitCardsViewMode,
     windowMode,
     contextMenu,
     activeSpaceId,
@@ -4865,73 +4825,81 @@ const SpacesContent = () => {
             ? { position: 'fixed', top: 8, left: 16, right: 16, zIndex: 100 }
             : { position: 'absolute', top: 24, left: 24, right: 24, zIndex: 100 }}
         >
-          <div className="flex w-full min-w-0 max-w-full items-center gap-2 sm:gap-3">
+          <div className="relative flex w-full min-w-0 max-w-full items-center gap-2 sm:gap-3">
             {isAuthenticated && !windowMode && (
-              <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
-                <div className="flex shrink-0 items-center self-center" aria-hidden>
-                  <svg
-                    width={34}
-                    height={34}
-                    viewBox="0 0 60 60"
-                    fill="none"
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="block shrink-0 drop-shadow-md"
-                  >
-                    <path
-                      d="M4 8 Q4 4 8 4 L48 4 L56 12 L56 52 Q56 56 52 56 L8 56 Q4 56 4 52 Z"
-                      fill="#6C5CE7"
+              <>
+                <div className="pointer-events-auto relative z-[5] flex min-h-[40px] min-w-0 shrink-0 items-center gap-2 sm:gap-3 md:gap-4">
+                  <div className="flex shrink-0 items-center self-center" aria-hidden>
+                    <svg
+                      width={34}
+                      height={34}
+                      viewBox="0 0 60 60"
+                      fill="none"
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="block shrink-0 drop-shadow-md"
+                    >
+                      <path
+                        d="M4 8 Q4 4 8 4 L48 4 L56 12 L56 52 Q56 56 52 56 L8 56 Q4 56 4 52 Z"
+                        fill="#6C5CE7"
+                      />
+                      <path d="M48 4 L56 12 L48 12 Z" fill="rgba(0,0,0,0.25)" />
+                      <rect x="17" y="18" width="5" height="24" rx="2" fill="white" />
+                      <rect x="17" y="18" width="20" height="5" rx="2" fill="white" />
+                      <rect x="17" y="28" width="15" height="5" rx="2" fill="white" />
+                    </svg>
+                  </div>
+                  {/* +20% ancho respecto a 18rem / 20rem / 22rem */}
+                  <div className="flex min-h-[40px] w-full min-w-0 max-w-[min(100%,21.6rem)] shrink sm:max-w-[24rem] md:max-w-[26.5rem] items-center rounded-xl border border-white/25 bg-white/[0.08] px-2 py-1 shadow-sm backdrop-blur-xl">
+                    <AgentHUD
+                      variant="topbar"
+                      onGenerate={onGenerateAssistant}
+                      isGenerating={isGeneratingAssistant}
+                      selectedNodeCount={nodes.filter((n) => n.selected).length}
                     />
-                    <path d="M48 4 L56 12 L48 12 Z" fill="rgba(0,0,0,0.25)" />
-                    <rect x="17" y="18" width="5" height="24" rx="2" fill="white" />
-                    <rect x="17" y="18" width="20" height="5" rx="2" fill="white" />
-                    <rect x="17" y="28" width="15" height="5" rx="2" fill="white" />
-                  </svg>
+                  </div>
                 </div>
-                <div className="flex min-h-[40px] min-w-0 flex-1 items-center rounded-xl border border-white/25 bg-white/[0.08] px-2 py-1 shadow-sm backdrop-blur-xl">
-                  <AgentHUD
-                    variant="topbar"
-                    onGenerate={onGenerateAssistant}
-                    isGenerating={isGeneratingAssistant}
-                    selectedNodeCount={nodes.filter((n) => n.selected).length}
-                  />
+                <div className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center px-[clamp(5.5rem,22vw,14rem)]">
+                  <div className="pointer-events-auto flex min-h-[40px] w-full max-w-[min(88vw,17rem)] items-center justify-center rounded-xl bg-white/[0.08] px-2.5 py-1.5 text-center shadow-sm backdrop-blur-xl sm:max-w-[18rem]">
+                    <label htmlFor="foldder-hud-project-name" className="sr-only">
+                      Nombre del proyecto
+                    </label>
+                    <input
+                      id="foldder-hud-project-name"
+                      type="text"
+                      value={currentName}
+                      onChange={(e) => setCurrentName(e.target.value)}
+                      onBlur={() => {
+                        if (!activeProjectId) return;
+                        const t = currentName.trim();
+                        if (!t) return;
+                        const prev = savedProjects.find((p) => p.id === activeProjectId)?.name;
+                        if (prev === t) return;
+                        void renameProject(activeProjectId, t);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                      }}
+                      placeholder="Nombre del proyecto"
+                      title={
+                        activeProjectId
+                          ? 'Nombre del proyecto (se guarda al salir del campo)'
+                          : 'Crea o abre un proyecto para guardar el nombre'
+                      }
+                      className="min-w-0 w-full bg-transparent text-center text-[13px] font-semibold leading-snug text-white placeholder:text-white/45 focus:outline-none focus:ring-0"
+                    />
+                  </div>
                 </div>
-              </div>
+              </>
             )}
             <div
               className={
                 isAuthenticated && !windowMode
-                  ? 'pointer-events-auto ml-auto flex min-w-0 shrink-0 items-center gap-2 sm:gap-3'
+                  ? 'pointer-events-auto relative z-[5] ml-auto flex min-w-0 shrink-0 items-center gap-2 sm:gap-3'
                   : 'pointer-events-auto flex w-full min-w-0 flex-1 items-center justify-between gap-3'
               }
             >
-              {/* Quick Actions — Designer / Presenter / Image / Video / VFX: barra inferior (`TopbarPins`) */}
+              {/* Quick Actions — fondo / pantalla / proyectos (pins abajo en `TopbarPins`) */}
               <div className="flex shrink-0 gap-1.5">
-                <div className="flex overflow-hidden rounded-xl border border-white/25 bg-white/[0.08] shadow-sm backdrop-blur-xl">
-                  <button
-                    type="button"
-                    onClick={exitCardsViewMode}
-                    title="Modo lienzo: arrastra y redimensiona nodos"
-                    className={`flex h-10 w-10 items-center justify-center transition-all ${
-                      canvasViewMode === 'free'
-                        ? 'bg-slate-800/95 text-white shadow-inner backdrop-blur-sm'
-                        : 'text-slate-700 hover:bg-white/[0.18] hover:text-slate-900'
-                    }`}
-                  >
-                    <Move size={16} className={canvasViewMode === 'free' ? 'text-white' : 'text-slate-700'} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={enterCardsViewMode}
-                    title="Modo cartas: un nodo a pantalla completa; ← → o Tab cambian la carta con zoom suave (sin cables ni conectores)."
-                    className={`flex h-10 w-10 items-center justify-center border-l border-white/20 transition-all ${
-                      canvasViewMode === 'cards'
-                        ? 'bg-slate-800/95 text-white shadow-inner backdrop-blur-sm'
-                        : 'text-slate-700 hover:bg-white/[0.18] hover:text-slate-900'
-                    }`}
-                  >
-                    <Layers size={16} className={canvasViewMode === 'cards' ? 'text-white' : 'text-slate-700'} />
-                  </button>
-                </div>
                 <div className="relative" ref={canvasBgMenuRef}>
                   <button
                     type="button"

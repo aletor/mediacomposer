@@ -83,3 +83,84 @@ export function subscribeFullscreenChange(cb: () => void): () => void {
     }
   };
 }
+
+/**
+ * Chrome/Safari suelen salir de document fullscreen al abrir el diálogo nativo de archivos.
+ * Si el usuario estaba a pantalla completa justo antes, intentamos restaurarla al elegir archivo
+ * (`change`) o al cerrar el diálogo sin elegir (`window` `focus`).
+ * Puede fallar si el motor exige un gesto de usuario para volver a entrar; en ese caso el usuario
+ * puede pulsar de nuevo el botón de pantalla completa.
+ */
+export function installPreserveDocumentFullscreenOnFilePicker(): () => void {
+  let pendingRestoreAfterPicker = false;
+  let pendingClearTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const armIfFullscreenAndFileInput = (e: Event) => {
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement) || t.type !== 'file') return;
+    if (pendingClearTimer !== undefined) {
+      clearTimeout(pendingClearTimer);
+      pendingClearTimer = undefined;
+    }
+    if (isDocumentFullscreen()) {
+      pendingRestoreAfterPicker = true;
+      pendingClearTimer = setTimeout(() => {
+        pendingClearTimer = undefined;
+        pendingRestoreAfterPicker = false;
+      }, 90_000);
+    } else {
+      pendingRestoreAfterPicker = false;
+    }
+  };
+
+  const tryRestore = () => {
+    if (!pendingRestoreAfterPicker) return;
+    if (isDocumentFullscreen()) {
+      pendingRestoreAfterPicker = false;
+      if (pendingClearTimer !== undefined) {
+        clearTimeout(pendingClearTimer);
+        pendingClearTimer = undefined;
+      }
+      return;
+    }
+    pendingRestoreAfterPicker = false;
+    if (pendingClearTimer !== undefined) {
+      clearTimeout(pendingClearTimer);
+      pendingClearTimer = undefined;
+    }
+    void enterFullscreen(document.documentElement).catch(() => undefined);
+  };
+
+  /** `change` al elegir archivo; a veces basta para re-entrada con activación de usuario. */
+  const onFileInputChangeCapture = (e: Event) => {
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement) || t.type !== 'file') return;
+    tryRestore();
+  };
+
+  /**
+   * Si el usuario cancela el diálogo, no hay `change`; al volver el foco a la ventana intentamos restaurar.
+   * `document.hasFocus()` reduce falsos positivos mientras el picker sigue abierto (p. ej. alt-tab).
+   */
+  const onWindowFocus = () => {
+    if (!pendingRestoreAfterPicker) return;
+    requestAnimationFrame(() => {
+      if (!pendingRestoreAfterPicker) return;
+      if (typeof document !== 'undefined' && !document.hasFocus()) return;
+      tryRestore();
+    });
+  };
+
+  document.addEventListener('pointerdown', armIfFullscreenAndFileInput, true);
+  document.addEventListener('mousedown', armIfFullscreenAndFileInput, true);
+  document.addEventListener('change', onFileInputChangeCapture, true);
+  window.addEventListener('focus', onWindowFocus);
+
+  return () => {
+    if (pendingClearTimer !== undefined) clearTimeout(pendingClearTimer);
+    document.removeEventListener('pointerdown', armIfFullscreenAndFileInput, true);
+    document.removeEventListener('mousedown', armIfFullscreenAndFileInput, true);
+    document.removeEventListener('change', onFileInputChangeCapture, true);
+    window.removeEventListener('focus', onWindowFocus);
+  };
+}

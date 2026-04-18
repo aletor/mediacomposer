@@ -256,8 +256,17 @@ export function TopbarPins({
 
   const onRowMouseLeave = () => setMouseX(null);
 
-  /** Rápido al mover dentro del dock; más lento al salir y volver al reposo. */
-  const dockTransitionMs = mouseX === null ? 300 : 100;
+  /**
+   * Durante el seguimiento del ratón, `scales` y `left` cambian cada frame: si hay
+   * `transition` en CSS, cada icono interpola con retraso distinto y parece “desincronizado”.
+   * Sin transición mientras hay puntero; solo al salir animamos vuelta al reposo.
+   */
+  const DOCK_REST_MS = 300;
+  const dockEase = "cubic-bezier(0.25, 0.1, 0.25, 1)";
+  const tracking = mouseX !== null;
+  const dockMoveTransition = tracking ? "none" : `left ${DOCK_REST_MS}ms ${dockEase}, width ${DOCK_REST_MS}ms ${dockEase}`;
+  const dockScaleTransition = tracking ? "none" : `transform ${DOCK_REST_MS}ms ${dockEase}`;
+  const dockRowWidthTransition = tracking ? "none" : `width ${DOCK_REST_MS}ms ${dockEase}`;
 
   const captionBase =
     "mt-0.5 max-w-[4rem] text-center text-white font-medium leading-none tracking-wide uppercase";
@@ -307,7 +316,7 @@ export function TopbarPins({
         }
         style={{
           width: Math.max(totalWidth, 1),
-          transition: `width ${dockTransitionMs}ms ease-out`,
+          transition: dockRowWidthTransition,
           ...(!embedded
             ? {
                 paddingLeft: dockFramePadXPx,
@@ -330,7 +339,7 @@ export function TopbarPins({
               style={{
                 left: lefts[i],
                 width: w,
-                transition: `left ${dockTransitionMs}ms ease-out, width ${dockTransitionMs}ms ease-out`,
+                transition: dockMoveTransition,
               }}
             >
               <div className="pointer-events-none flex h-full w-full items-end justify-center">
@@ -338,7 +347,7 @@ export function TopbarPins({
                   className="pointer-events-auto origin-bottom will-change-transform"
                   style={{
                     transform: `scale(${scales[i] ?? DOCK_MIN_SCALE})`,
-                    transition: `transform ${dockTransitionMs}ms ease-out`,
+                    transition: dockScaleTransition,
                   }}
                 >
                   <TopbarPinChip
