@@ -3,13 +3,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { easeCircleOut, easeExpOut } from "d3-ease";
 import { Renderer, Program, Mesh, Triangle, Texture, Transform } from "ogl";
-
-type BgOption = { id: string; label: string; url: string };
+import type { CanvasBackgroundOption } from "./canvas-backgrounds";
 
 type Props = {
   activeId: string;
-  options: BgOption[];
+  options: CanvasBackgroundOption[];
 };
+
+function useWallpaperTargetUrl(activeId: string, options: CanvasBackgroundOption[]): string {
+  return useMemo(
+    () => (options.find((o) => o.id === activeId) ?? options[0]).url,
+    [activeId, options],
+  );
+}
 
 const CLEAR = [248 / 255, 250 / 255, 252 / 255, 1] as const;
 const TRANSITION_MS = 1120;
@@ -93,10 +99,7 @@ void main() {
 `;
 
 function CanvasWallpaperCssFallback({ activeId, options }: Props) {
-  const targetUrl = useMemo(
-    () => (options.find((o) => o.id === activeId) ?? options[0]).url,
-    [activeId, options],
-  );
+  const targetUrl = useWallpaperTargetUrl(activeId, options);
   const [displayUrl, setDisplayUrl] = useState(targetUrl);
   const [incomingUrl, setIncomingUrl] = useState<string | null>(null);
   const [animKey, setAnimKey] = useState(0);
@@ -145,10 +148,7 @@ type GlApi = {
 
 export function CanvasWallpaperTransition(props: Props) {
   const { activeId, options } = props;
-  const targetUrl = useMemo(
-    () => (options.find((o) => o.id === activeId) ?? options[0]).url,
-    [activeId, options],
-  );
+  const targetUrl = useWallpaperTargetUrl(activeId, options);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const targetUrlRef = useRef(targetUrl);

@@ -95,13 +95,16 @@ export function installPreserveDocumentFullscreenOnFilePicker(): () => void {
   let pendingRestoreAfterPicker = false;
   let pendingClearTimer: ReturnType<typeof setTimeout> | undefined;
 
+  const clearArmTimer = () => {
+    if (pendingClearTimer === undefined) return;
+    clearTimeout(pendingClearTimer);
+    pendingClearTimer = undefined;
+  };
+
   const armIfFullscreenAndFileInput = (e: Event) => {
     const t = e.target;
     if (!(t instanceof HTMLInputElement) || t.type !== 'file') return;
-    if (pendingClearTimer !== undefined) {
-      clearTimeout(pendingClearTimer);
-      pendingClearTimer = undefined;
-    }
+    clearArmTimer();
     if (isDocumentFullscreen()) {
       pendingRestoreAfterPicker = true;
       pendingClearTimer = setTimeout(() => {
@@ -117,17 +120,11 @@ export function installPreserveDocumentFullscreenOnFilePicker(): () => void {
     if (!pendingRestoreAfterPicker) return;
     if (isDocumentFullscreen()) {
       pendingRestoreAfterPicker = false;
-      if (pendingClearTimer !== undefined) {
-        clearTimeout(pendingClearTimer);
-        pendingClearTimer = undefined;
-      }
+      clearArmTimer();
       return;
     }
     pendingRestoreAfterPicker = false;
-    if (pendingClearTimer !== undefined) {
-      clearTimeout(pendingClearTimer);
-      pendingClearTimer = undefined;
-    }
+    clearArmTimer();
     void enterFullscreen(document.documentElement).catch(() => undefined);
   };
 
@@ -157,7 +154,7 @@ export function installPreserveDocumentFullscreenOnFilePicker(): () => void {
   window.addEventListener('focus', onWindowFocus);
 
   return () => {
-    if (pendingClearTimer !== undefined) clearTimeout(pendingClearTimer);
+    clearArmTimer();
     document.removeEventListener('pointerdown', armIfFullscreenAndFileInput, true);
     document.removeEventListener('mousedown', armIfFullscreenAndFileInput, true);
     document.removeEventListener('change', onFileInputChangeCapture, true);

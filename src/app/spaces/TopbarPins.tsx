@@ -19,6 +19,10 @@ const CHIP_MIN_W_REM_DEFAULT = 3.75;
 /** Hueco mínimo entre iconos adyacentes (px). Base ~gap-1.5 +40 %. */
 const DOCK_GAP_PX = 6 * 1.4;
 
+/** Vuelta al reposo del dock (sin transición durante el seguimiento del puntero). */
+const DOCK_REST_MS = 300;
+const DOCK_REST_EASE = "cubic-bezier(0.25, 0.1, 0.25, 1)";
+
 /** Alto fijo del strip (tamaño “reposo” ~ icono pequeño); el zoom crece hacia arriba con overflow visible. */
 const DOCK_STRIP_H_SIDEBAR = "min-h-[2.7rem] h-[2.7rem]";
 const DOCK_STRIP_H_DEFAULT = "min-h-[2.6rem] h-[2.6rem]";
@@ -261,18 +265,15 @@ export function TopbarPins({
    * `transition` en CSS, cada icono interpola con retraso distinto y parece “desincronizado”.
    * Sin transición mientras hay puntero; solo al salir animamos vuelta al reposo.
    */
-  const DOCK_REST_MS = 300;
-  const dockEase = "cubic-bezier(0.25, 0.1, 0.25, 1)";
   const tracking = mouseX !== null;
-  const dockMoveTransition = tracking ? "none" : `left ${DOCK_REST_MS}ms ${dockEase}, width ${DOCK_REST_MS}ms ${dockEase}`;
-  const dockScaleTransition = tracking ? "none" : `transform ${DOCK_REST_MS}ms ${dockEase}`;
-  const dockRowWidthTransition = tracking ? "none" : `width ${DOCK_REST_MS}ms ${dockEase}`;
+  const dockMoveTransition = tracking
+    ? "none"
+    : `left ${DOCK_REST_MS}ms ${DOCK_REST_EASE}, width ${DOCK_REST_MS}ms ${DOCK_REST_EASE}`;
+  const dockScaleTransition = tracking ? "none" : `transform ${DOCK_REST_MS}ms ${DOCK_REST_EASE}`;
+  const dockRowWidthTransition = tracking ? "none" : `width ${DOCK_REST_MS}ms ${DOCK_REST_EASE}`;
 
-  const captionBase =
-    "mt-0.5 max-w-[4rem] text-center text-white font-medium leading-none tracking-wide uppercase";
-
-  const captionEmbedded = captionBase + " text-[6px] sm:text-[6.5px]";
-  const captionDefault = captionBase + " text-[6px] sm:text-[6.5px]";
+  const captionClass =
+    "mt-0.5 max-w-[4rem] text-center text-[6px] font-medium leading-none tracking-wide text-white uppercase sm:text-[6.5px]";
 
   const chipEmbedded =
     "flex min-h-[3.85rem] min-w-[3.85rem] max-w-[4.25rem] cursor-pointer flex-col items-center justify-center gap-0.5 rounded-2xl border border-white/30 !bg-white/15 px-1 py-1.5 transition-all duration-150 hover:!bg-white/25 hover:ring-2 hover:ring-inset hover:ring-white/45 select-none";
@@ -356,7 +357,7 @@ export function TopbarPins({
                     shortLabel={ui.shortLabel}
                     iconSize={useSidebarChips ? TOPBAR_PIN_ICON_SIZE : 28}
                     chipClassName={useSidebarChips ? chipEmbedded : chipDefault}
-                    captionClassName={useSidebarChips ? captionEmbedded : captionDefault}
+                    captionClassName={captionClass}
                     onBrainClick={onBrainClick}
                     onAssetsClick={onAssetsClick}
                     onPinDoubleClick={onPinDoubleClick}
