@@ -105,6 +105,10 @@ import {
   getFoldderNodeHeaderTintColor,
   getFoldderNodeOutputBorderColor,
 } from './handle-type-colors';
+import {
+  FOLDDER_OPEN_GEMINI_VIDEO_WITH_IMAGE_EVENT,
+  type FoldderOpenGeminiVideoDetail,
+} from './presenter/presenter-image-video-types';
 
 /** Tamaño inicial de nodos media: ancho en ratio 16:9 respecto al alto (preview del lienzo). */
 const NANO_BANANA_DEFAULT_H = 480;
@@ -1410,6 +1414,116 @@ const SpacesContent = () => {
       fitViewToNodeIds([newId], 700);
     }, autoEdges.length > 0 ? 100 : 80);
   }, [screenToFlowPosition, nodes, edges, setNodes, setEdges, takeSnapshot, fitViewToNodeIds, updateNodeInternals, scheduleFoldderCanvasIntroEnd]);
+
+  /** Presenter: botón «Generar video con esta imagen» → Carousel + Video Generator en el grafo. `liveNodesRef` en el handler evita re-suscribir el listener en cada cambio de nodos. */
+  useEffect(() => {
+    const onPresenterOpenGemini = (ev: Event) => {
+      const d = (ev as CustomEvent<FoldderOpenGeminiVideoDetail>).detail;
+      const url = d?.imageUrl;
+      const videoPrompt = d?.videoPrompt;
+      if (typeof url !== "string" || !url.trim()) return;
+      if (typeof videoPrompt !== "string" || !videoPrompt.trim()) return;
+      const t = Date.now();
+      const promptId = `promptInput_${t}`;
+      const urlId = `urlImage_${t}`;
+      const vidId = `geminiVideo_${t}`;
+      const center = screenToFlowPosition({
+        x: window.innerWidth / 2,
+        y: window.innerHeight / 2,
+      });
+      const posVid = findEmptyPositionForNewNode("geminiVideo", liveNodesRef.current, center);
+      const posUrl = findEmptyPositionForNewNode("urlImage", liveNodesRef.current, {
+        x: posVid.x - 480,
+        y: posVid.y + 20,
+      });
+      const posPrompt = findEmptyPositionForNewNode("promptInput", liveNodesRef.current, {
+        x: posVid.x - 360,
+        y: posVid.y - 300,
+      });
+      const promptNode = {
+        id: promptId,
+        type: "promptInput" as const,
+        position: posPrompt,
+        data: withFoldderCanvasIntro("promptInput", {
+          ...defaultDataForCanvasDropNode("promptInput"),
+          label: "Video — intención",
+          value: videoPrompt.trim(),
+        }),
+      };
+      const urlNode = {
+        id: urlId,
+        type: "urlImage" as const,
+        position: posUrl,
+        data: withFoldderCanvasIntro("urlImage", {
+          ...defaultDataForCanvasDropNode("urlImage"),
+          label: "Presentación",
+          value: url.trim(),
+          urls: [url.trim()],
+          selectedIndex: 0,
+          type: "image",
+        }),
+      };
+      const vidNode = {
+        id: vidId,
+        type: "geminiVideo" as const,
+        position: posVid,
+        data: withFoldderCanvasIntro("geminiVideo", {
+          ...defaultDataForCanvasDropNode("geminiVideo"),
+          label: "Video Generator",
+          _foldderOpenVideoStudio: true,
+        }),
+        style: {
+          width: GEMINI_VIDEO_DEFAULT_W,
+          height: GEMINI_VIDEO_DEFAULT_H,
+        } as React.CSSProperties,
+      };
+      const edgePrompt = {
+        id: `ae-${promptId}-${vidId}-prompt`,
+        source: promptId,
+        sourceHandle: "prompt",
+        target: vidId,
+        targetHandle: "prompt",
+        type: "buttonEdge" as const,
+        animated: true,
+      };
+      const edgeFrame = {
+        id: `ae-${urlId}-${vidId}-image-firstFrame`,
+        source: urlId,
+        sourceHandle: "image",
+        target: vidId,
+        targetHandle: "firstFrame",
+        type: "buttonEdge" as const,
+        animated: true,
+      };
+      takeSnapshot();
+      setNodes((nds) => [...nds, promptNode, urlNode, vidNode]);
+      scheduleFoldderCanvasIntroEnd(promptId);
+      scheduleFoldderCanvasIntroEnd(urlId);
+      scheduleFoldderCanvasIntroEnd(vidId);
+      setTimeout(() => {
+        setEdges((es) => [...es, edgePrompt, edgeFrame]);
+        queueMicrotask(() => {
+          updateNodeInternals(promptId);
+          updateNodeInternals(urlId);
+          updateNodeInternals(vidId);
+        });
+      }, 50);
+      setTimeout(() => {
+        fitViewToNodeIds([promptId, urlId, vidId], 700);
+      }, 100);
+    };
+    window.addEventListener(FOLDDER_OPEN_GEMINI_VIDEO_WITH_IMAGE_EVENT, onPresenterOpenGemini as EventListener);
+    return () =>
+      window.removeEventListener(FOLDDER_OPEN_GEMINI_VIDEO_WITH_IMAGE_EVENT, onPresenterOpenGemini as EventListener);
+  }, [
+    screenToFlowPosition,
+    setNodes,
+    setEdges,
+    takeSnapshot,
+    fitViewToNodeIds,
+    updateNodeInternals,
+    scheduleFoldderCanvasIntroEnd,
+  ]);
 
   /** Doble clic en la barra inferior de accesos o en mosaico del sidebar: hueco libre (prioridad a la derecha del nodo más a la derecha) + fit */
   const addNodeFromTopbarPinDoubleClick = useCallback(

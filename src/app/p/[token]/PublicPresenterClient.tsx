@@ -7,6 +7,13 @@ import type { PlayRevealState } from "@/app/spaces/presenter/DesignerPageCanvasV
 import { mergeStepsWithPage, presenterStepKey } from "@/app/spaces/presenter/presenter-group-animations";
 import type { SlideTransitionId } from "@/app/spaces/presenter/slide-transition-types";
 import type { PresenterShareRecord } from "@/lib/presenter-share-types";
+import {
+  firstPlayableIndex,
+  isPresenterSlideSkipped,
+  lastPlayableIndex,
+  nextPlayableIndex,
+  prevPlayableIndex,
+} from "@/app/spaces/presenter/presenter-skip-slide";
 
 type PendingAnim = {
   from: number;
@@ -32,7 +39,7 @@ export function PublicPresenterClient({ initial }: Props) {
   );
   const [emailInput, setEmailInput] = useState("");
 
-  const [activeIdx, setActiveIdx] = useState(0);
+  const [activeIdx, setActiveIdx] = useState(() => firstPlayableIndex(pages) ?? 0);
   const [pendingAnim, setPendingAnim] = useState<PendingAnim | null>(null);
   const [playRevealCount, setPlayRevealCount] = useState(0);
   const [animateEnterTargetKey, setAnimateEnterTargetKey] = useState<string | null>(null);
@@ -100,12 +107,13 @@ export function PublicPresenterClient({ initial }: Props) {
       playAnimTimerRef.current = window.setTimeout(() => setAnimateEnterTargetKey(null), 520);
       return;
     }
-    if (activeIdx < maxIdx) {
-      goToIdx(activeIdx + 1);
+    const nextI = nextPlayableIndex(pages, activeIdx);
+    if (nextI !== null) {
+      goToIdx(nextI);
       setPlayRevealCount(0);
       setAnimateEnterTargetKey(null);
     }
-  }, [activeIdx, pages, playRevealCount, maxIdx, goToIdx, pendingAnim]);
+  }, [activeIdx, pages, playRevealCount, goToIdx, pendingAnim]);
 
   const playAdvanceLeft = useCallback(() => {
     if (pendingAnim) return;
@@ -114,8 +122,9 @@ export function PublicPresenterClient({ initial }: Props) {
       setAnimateEnterTargetKey(null);
       return;
     }
-    if (activeIdx > 0) goToIdx(activeIdx - 1);
-  }, [playRevealCount, activeIdx, goToIdx, pendingAnim]);
+    const prevI = prevPlayableIndex(pages, activeIdx);
+    if (prevI !== null) goToIdx(prevI);
+  }, [playRevealCount, activeIdx, pages, goToIdx, pendingAnim]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -130,16 +139,18 @@ export function PublicPresenterClient({ initial }: Props) {
       }
       if (e.key === "Home") {
         e.preventDefault();
-        goToIdx(0);
+        const f = firstPlayableIndex(pages);
+        if (f !== null) goToIdx(f);
       }
       if (e.key === "End") {
         e.preventDefault();
-        goToIdx(maxIdx);
+        const la = lastPlayableIndex(pages);
+        if (la !== null) goToIdx(la);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [gateEmail, gatePass, playAdvanceRight, playAdvanceLeft, goToIdx, maxIdx]);
+  }, [gateEmail, gatePass, playAdvanceRight, playAdvanceLeft, goToIdx, pages]);
 
   const tryPass = () => {
     if (!initial.options.requirePasscode) {
@@ -205,6 +216,17 @@ export function PublicPresenterClient({ initial }: Props) {
   const dims = page ? getPageDimensions(page) : { width: 16, height: 9 };
   const stepsLen = page ? mergeStepsWithPage(page).length : 0;
 
+  const playableIndices = useMemo(
+    () => pages.map((_, i) => i).filter((i) => !isPresenterSlideSkipped(pages[i])),
+    [pages],
+  );
+  const slideCountLabel = useMemo(() => {
+    if (playableIndices.length === 0) return "—";
+    const pos = playableIndices.indexOf(activeIdx);
+    if (pos < 0) return `${activeIdx + 1} / ${pages.length}`;
+    return `${pos + 1} / ${playableIndices.length}`;
+  }, [playableIndices, activeIdx, pages.length]);
+
   return (
     <div
       className="relative min-h-screen w-full cursor-pointer bg-black"
@@ -225,13 +247,14 @@ export function PublicPresenterClient({ initial }: Props) {
             onAnimationEnd={onAnimationEnd}
             playReveal={playRevealComputed}
             animateEnterTargetKey={animateEnterTargetKey}
+            showPresentationBounds={false}
           />
         </div>
       </div>
 
       <div className="pointer-events-none absolute bottom-6 left-0 right-0 flex justify-center">
         <div className="rounded-full border border-white/10 bg-black/50 px-4 py-1.5 text-[11px] font-medium text-white/90 backdrop-blur-md">
-          Slide {activeIdx + 1} / {pages.length}
+          Slide {slideCountLabel}
           {stepsLen > 0 ? (
             <span className="text-white/60"> · Paso {playRevealCount} / {stepsLen}</span>
           ) : null}

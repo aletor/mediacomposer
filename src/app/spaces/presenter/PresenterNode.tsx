@@ -8,10 +8,13 @@ import { FOLDDER_FIT_VIEW_EASE } from "@/lib/fit-view-ease";
 import { FoldderDataHandle } from "../FoldderDataHandle";
 import { NodeIcon } from "../foldder-icons";
 import type { DesignerNodeData, DesignerPageState } from "../designer/DesignerNode";
+import type { PresenterImageVideoPlacement } from "./presenter-image-video-types";
 import { PresenterStudio } from "./PresenterStudio";
 
 export type PresenterNodeData = {
   label?: string;
+  /** Vídeos superpuestos a imágenes en el lienzo del Presenter (no forma parte del Designer). */
+  imageVideoPlacements?: PresenterImageVideoPlacement[];
 };
 
 function useDesignerDocumentPages(presenterId: string): {
@@ -89,6 +92,19 @@ export const PresenterNode = memo(({ id, data, selected }: NodeProps<any>) => {
     [designerNodeId, setNodes],
   );
 
+  const setImageVideoPlacements = useCallback(
+    (next: PresenterImageVideoPlacement[]) => {
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.id === id && n.type === "presenter"
+            ? { ...n, data: { ...(n.data as PresenterNodeData), imageVideoPlacements: next } }
+            : n,
+        ),
+      );
+    },
+    [id, setNodes],
+  );
+
   return (
     <div className="custom-node tool-node group/node" style={{ minWidth: 260 }}>
       <PresenterNodeResizer minWidth={260} minHeight={180} maxWidth={480} maxHeight={360} isVisible={selected} />
@@ -148,6 +164,8 @@ export const PresenterNode = memo(({ id, data, selected }: NodeProps<any>) => {
             pages={pages}
             onClose={() => setStudioOpen(false)}
             onPresenterPagePatch={patchDesignerPage}
+            imageVideoPlacements={nodeData.imageVideoPlacements ?? []}
+            onImageVideoPlacementsChange={setImageVideoPlacements}
             shareContext={{
               deckKey: designerNodeId ? `${designerNodeId}::${id}` : `presenter::${id}`,
               deckTitle: nodeData.label?.trim() || "Presentation",

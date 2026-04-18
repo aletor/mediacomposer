@@ -27,6 +27,8 @@ export type DesignerPageState = {
   imageFrames?: ImageFrameRecord[];
   /** Presenter: pasos de animación en Play (persistido en la página). */
   presenterGroupSteps?: PresenterGroupStep[];
+  /** Presenter: omitir en modo Play; miniatura muy atenuada en el rail. */
+  presenterSkipSlide?: boolean;
 };
 
 export type DesignerNodeData = {

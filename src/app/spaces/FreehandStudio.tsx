@@ -1379,7 +1379,7 @@ function textSvgTransform(t: TextObject): string | undefined {
 }
 
 /** Rotación + espejo alrededor del centro del bounding box (mismo espíritu que el texto con scale). */
-function buildObjTransform(o: FreehandObject): string | undefined {
+export function buildObjTransform(o: FreehandObject): string | undefined {
   const cx = o.x + o.width / 2;
   const cy = o.y + o.height / 2;
   const fx = o.flipX ? -1 : 1;
@@ -3440,7 +3440,7 @@ export function renderObj(
             y={bg.y}
             width={bg.width}
             height={bg.height}
-            preserveAspectRatio="none"
+            preserveAspectRatio="xMidYMid meet"
             transform={transform}
             opacity={bg.opacity}
           />

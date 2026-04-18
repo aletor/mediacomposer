@@ -244,18 +244,34 @@ input *, textarea *, [contenteditable="true"] * {
   to { opacity: 1; transform: scale(1); }
 }
 
-/* Resalte al elegir en Presenter (clic en el slide): violeta = elemento suelto; ámbar = grupo (Ctrl+G) */
-.presenter-pick-highlight {
-  filter: drop-shadow(0 0 6px rgba(139, 92, 246, 0.95));
-}
-.presenter-pick-highlight-group {
-  filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.98));
-}
-
 @media (prefers-reduced-motion: reduce) {
   [class^="presenter-g-"] {
     animation: none !important;
     opacity: 1 !important;
     transform: none !important;
+  }
+}
+
+/* Presenter lienzo: marco de selección (esquinas) + marquesina — grueso y parpadeo rápido */
+@keyframes presenter-selection-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.22;
+  }
+}
+.presenter-selection-corners {
+  animation: presenter-selection-blink 0.22s ease-in-out infinite;
+}
+.presenter-marquee-rect {
+  animation: presenter-selection-blink 0.22s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .presenter-selection-corners,
+  .presenter-marquee-rect {
+    animation: none !important;
+    opacity: 1 !important;
   }
 }

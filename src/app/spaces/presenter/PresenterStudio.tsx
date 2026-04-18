@@ -7,6 +7,7 @@ import {
   ChevronRight,
   ChevronsDown,
   ChevronsUp,
+  EyeOff,
   Maximize2,
   Minimize2,
   Play,
@@ -18,7 +19,7 @@ import { PresenterShareModal } from "./PresenterShareModal";
 import { getPageDimensions } from "../indesign/page-formats";
 import type { DesignerPageState } from "../designer/DesignerNode";
 import { PresenterAnimationsPanel } from "./PresenterAnimationsPanel";
-import { mergeStepsWithPage, presenterStepKey } from "./presenter-group-animations";
+import { mergeStepsWithPage, parsePresenterStepKey, presenterStepKey } from "./presenter-group-animations";
 import {
   applySoftGroupIdToObjects,
   newPresenterSoftGroupId,
@@ -36,6 +37,13 @@ import {
   type SlideTransitionId,
 } from "./slide-transition-types";
 import { TRANSITION_THUMB_BY_ID } from "./PresenterTransitionIcons";
+import {
+  firstPlayableIndex,
+  isPresenterSlideSkipped,
+  nextPlayableIndex,
+  prevPlayableIndex,
+} from "./presenter-skip-slide";
+import type { PresenterImageVideoCanvasBinding, PresenterImageVideoPlacement } from "./presenter-image-video-types";
 
 /** Duración alineada con `.presenter-g-*` en globals.css (420–480ms) + margen. */
 const PRESENTER_EDITOR_PREVIEW_ANIM_MS = 520;
@@ -52,6 +60,9 @@ type Props = {
   shareContext: ShareContext;
   /** Persistir pasos de animación por página en el nodo Designer. */
   onPresenterPagePatch?: (pageId: string, patch: Partial<DesignerPageState>) => void;
+  /** Vídeos en imágenes (solo nodo Presenter). */
+  imageVideoPlacements?: PresenterImageVideoPlacement[];
+  onImageVideoPlacementsChange?: (next: PresenterImageVideoPlacement[]) => void;
 };
 
 type PendingAnim = {
@@ -67,7 +78,14 @@ function initTransitions(pages: DesignerPageState[]): Record<string, SlideTransi
   return o;
 }
 
-export function PresenterStudio({ pages, onClose, shareContext, onPresenterPagePatch }: Props) {
+export function PresenterStudio({
+  pages,
+  onClose,
+  shareContext,
+  onPresenterPagePatch,
+  imageVideoPlacements = [],
+  onImageVideoPlacementsChange,
+}: Props) {
   const [shareOpen, setShareOpen] = useState(false);
   const [animationsOpen, setAnimationsOpen] = useState(true);
   const [playMode, setPlayMode] = useState(false);
@@ -91,6 +109,7 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
   /** Picker anclado al botón de transición (portal fijo). */
   const [picker, setPicker] = useState<{ pageId: string; rect: DOMRect } | null>(null);
   const pickerRef = useRef<HTMLDivElement | null>(null);
+  const [videoUploadKey, setVideoUploadKey] = useState<string | null>(null);
 
   useEffect(() => {
     setTransitionsByPageId((prev) => {
@@ -155,7 +174,85 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
     setPicker({ pageId, rect });
   }, []);
 
+  const togglePresenterSkipSlide = useCallback(
+    (pageId: string) => {
+      if (!onPresenterPagePatch) return;
+      const p = pages.find((x) => x.id === pageId);
+      if (!p) return;
+      onPresenterPagePatch(pageId, { presenterSkipSlide: !p.presenterSkipSlide });
+    },
+    [onPresenterPagePatch, pages],
+  );
+
   const currentPage = pages[safeRailIdx] ?? null;
+
+  /** Alineado con el slide que pinta `PresenterSlideStage` (una sola capa). */
+  const canvasPageId = pages[activeIdx]?.id ?? "";
+
+  const onVideoUploadBusy = useCallback((key: string | null) => {
+    setVideoUploadKey(key);
+  }, []);
+
+  const onVideoUpsert = useCallback(
+    (p: PresenterImageVideoPlacement) => {
+      if (!onImageVideoPlacementsChange) return;
+      const rest = imageVideoPlacements.filter(
+        (x) => !(x.pageId === p.pageId && x.imageObjectId === p.imageObjectId),
+      );
+      onImageVideoPlacementsChange([...rest, p]);
+    },
+    [imageVideoPlacements, onImageVideoPlacementsChange],
+  );
+
+  const onVideoPatch = useCallback(
+    (placementId: string, patch: Partial<Pick<PresenterImageVideoPlacement, "rel">>) => {
+      if (!onImageVideoPlacementsChange) return;
+      onImageVideoPlacementsChange(
+        imageVideoPlacements.map((x) => (x.id === placementId ? { ...x, ...patch } : x)),
+      );
+    },
+    [imageVideoPlacements, onImageVideoPlacementsChange],
+  );
+
+  const onVideoRemove = useCallback(
+    (placementId: string) => {
+      if (!onImageVideoPlacementsChange) return;
+      onImageVideoPlacementsChange(imageVideoPlacements.filter((x) => x.id !== placementId));
+    },
+    [imageVideoPlacements, onImageVideoPlacementsChange],
+  );
+
+  const placementsForCanvasPage = useMemo(
+    () => imageVideoPlacements.filter((p) => p.pageId === canvasPageId),
+    [imageVideoPlacements, canvasPageId],
+  );
+
+  const presenterImageVideoBinding = useMemo((): PresenterImageVideoCanvasBinding | null => {
+    if (!onImageVideoPlacementsChange || !canvasPageId) return null;
+    return {
+      pageId: canvasPageId,
+      placements: placementsForCanvasPage,
+      uiMode: playMode ? "playback" : "edit",
+      uploadingKey: videoUploadKey,
+      onUploadBusy: onVideoUploadBusy,
+      onUpsert: onVideoUpsert,
+      onPatch: onVideoPatch,
+      onRemove: onVideoRemove,
+    };
+  }, [
+    onImageVideoPlacementsChange,
+    canvasPageId,
+    placementsForCanvasPage,
+    playMode,
+    videoUploadKey,
+    onVideoUploadBusy,
+    onVideoUpsert,
+    onVideoPatch,
+    onVideoRemove,
+  ]);
+
+  const presenterImageVideoForStage =
+    pendingAnim || !presenterImageVideoBinding ? null : presenterImageVideoBinding;
 
   const [animationSelectedKeys, setAnimationSelectedKeys] = useState<string[]>([]);
 
@@ -268,6 +365,42 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
     [clearEditorEnterPreview],
   );
 
+  /** Vista previa al pasar el ratón por un preset (solo 1 elemento/grupo en selección del lienzo). */
+  const handlePreviewPresetHover = useCallback(
+    (enter: PresenterGroupEnterId | null) => {
+      if (enter === null) {
+        clearEditorEnterPreview();
+        return;
+      }
+      if (!currentPage || animationSelectedKeys.length === 0) return;
+      if (enter === "none" || enter === "instant") {
+        clearEditorEnterPreview();
+        return;
+      }
+      if (animationSelectedKeys.length >= 2) {
+        clearEditorEnterPreview();
+        return;
+      }
+      const steps = mergeStepsWithPage(currentPage);
+      let next = [...steps];
+      const sel = animationSelectedKeys[0]!;
+      const idx = next.findIndex((s) => presenterStepKey(s) === sel);
+      if (idx >= 0) {
+        next[idx] = { ...next[idx], enter };
+      } else {
+        const p = parsePresenterStepKey(sel);
+        if (!p) return;
+        if (p.kind === "group") {
+          next.push({ kind: "group", groupId: p.groupId, enter, exit: "none" });
+        } else {
+          next.push({ kind: "object", objectId: p.objectId, enter, exit: "none" });
+        }
+      }
+      runPreviewAfterAssignEnter(next, animationSelectedKeys, enter);
+    },
+    [animationSelectedKeys, currentPage, clearEditorEnterPreview, runPreviewAfterAssignEnter],
+  );
+
   const applyEnterToMultiSelection = useCallback(
     (selectedKeys: string[], enter: PresenterGroupEnterId) => {
       if (!currentPage || !onPresenterPagePatch) return;
@@ -334,12 +467,13 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
       playAnimTimerRef.current = window.setTimeout(() => setAnimateEnterTargetKey(null), 520);
       return;
     }
-    if (activeIdx < maxIdx) {
-      goToIdx(activeIdx + 1);
+    const nextI = nextPlayableIndex(pages, activeIdx);
+    if (nextI !== null) {
+      goToIdx(nextI);
       setPlayRevealCount(0);
       setAnimateEnterTargetKey(null);
     }
-  }, [activeIdx, pages, playRevealCount, maxIdx, goToIdx, pendingAnim]);
+  }, [activeIdx, pages, playRevealCount, goToIdx, pendingAnim]);
 
   const playAdvanceLeft = useCallback(() => {
     if (pendingAnim) return;
@@ -348,14 +482,15 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
       setAnimateEnterTargetKey(null);
       return;
     }
-    if (activeIdx > 0) goToIdx(activeIdx - 1);
-  }, [playRevealCount, activeIdx, goToIdx, pendingAnim]);
+    const prevI = prevPlayableIndex(pages, activeIdx);
+    if (prevI !== null) goToIdx(prevI);
+  }, [playRevealCount, activeIdx, pages, goToIdx, pendingAnim]);
 
   const canGoPlayPrev = useMemo(() => {
     if (pendingAnim) return false;
     if (playRevealCount > 0) return true;
-    return activeIdx > 0;
-  }, [pendingAnim, playRevealCount, activeIdx]);
+    return prevPlayableIndex(pages, activeIdx) !== null;
+  }, [pendingAnim, playRevealCount, activeIdx, pages]);
 
   const canGoPlayNext = useMemo(() => {
     if (pendingAnim) return false;
@@ -363,16 +498,17 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
     if (!page) return false;
     const steps = mergeStepsWithPage(page);
     if (steps.length > 0 && playRevealCount < steps.length) return true;
-    return activeIdx < maxIdx;
-  }, [pendingAnim, pages, activeIdx, playRevealCount, maxIdx]);
+    return nextPlayableIndex(pages, activeIdx) !== null;
+  }, [pendingAnim, pages, activeIdx, playRevealCount]);
 
   const jumpToPlaySlide = useCallback(
     (i: number) => {
       if (pendingAnim) return;
       if (i === activeIdx) return;
+      if (playMode && isPresenterSlideSkipped(pages[i])) return;
       goToIdx(i);
     },
-    [pendingAnim, activeIdx, goToIdx],
+    [pendingAnim, activeIdx, goToIdx, playMode, pages],
   );
 
   useLayoutEffect(() => {
@@ -397,6 +533,23 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
     setPlayBarHidden(false);
     setPlayMode(true);
   }, []);
+
+  const wasPlayModeRef = useRef(false);
+  useEffect(() => {
+    if (playMode && !wasPlayModeRef.current) {
+      const cur = pages[activeIdx];
+      if (cur && isPresenterSlideSkipped(cur)) {
+        const first = firstPlayableIndex(pages);
+        if (first !== null) {
+          setPendingAnim(null);
+          setActiveIdx(first);
+          setPlayRevealCount(0);
+          setAnimateEnterTargetKey(null);
+        }
+      }
+    }
+    wasPlayModeRef.current = playMode;
+  }, [playMode, pages, activeIdx]);
 
   const togglePlayFullscreen = useCallback(() => {
     const el = playShellRef.current;
@@ -462,8 +615,18 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
   }, [playMode, playAdvanceRight, playAdvanceLeft, exitPlay]);
 
   const stageFocusIdx = pendingAnim ? pendingAnim.to : activeIdx;
-  const stagePage = pages[stageFocusIdx] ?? pages[0];
-  const stageDims = stagePage ? getPageDimensions(stagePage) : { width: 16, height: 9 };
+
+  const playableIndices = useMemo(
+    () => pages.map((_, i) => i).filter((i) => !isPresenterSlideSkipped(pages[i])),
+    [pages],
+  );
+  const playModeCounterText = useMemo(() => {
+    if (!playMode) return null;
+    if (playableIndices.length === 0) return "—";
+    const pos = playableIndices.indexOf(stageFocusIdx);
+    if (pos < 0) return `${stageFocusIdx + 1} / ${pages.length}`;
+    return `${pos + 1} / ${playableIndices.length}`;
+  }, [playMode, playableIndices, stageFocusIdx, pages.length]);
 
   return (
     <div
@@ -486,9 +649,9 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
           <button
             type="button"
             onClick={() => setAnimationsOpen((o) => !o)}
-            className={`flex items-center gap-1.5 rounded-[10px] border px-3 py-1.5 text-[11px] font-semibold transition-colors ${
+            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
               animationsOpen
-                ? "border-violet-500/45 bg-violet-500/20 text-violet-100"
+                ? "border-sky-500/45 bg-sky-500/15 text-sky-100"
                 : "border-white/15 bg-white/[0.06] text-zinc-300 hover:bg-white/10"
             }`}
             title="Animaciones por grupos"
@@ -499,7 +662,7 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
           <button
             type="button"
             onClick={enterPlay}
-            className="flex items-center gap-1.5 rounded-[10px] border border-zinc-500/45 bg-zinc-500/15 px-3 py-1.5 text-[11px] font-semibold text-zinc-200 transition-colors hover:bg-zinc-500/25"
+            className="flex items-center gap-1.5 rounded-md border border-zinc-500/45 bg-zinc-500/15 px-2.5 py-1.5 text-[11px] font-semibold text-zinc-200 transition-colors hover:bg-zinc-500/25"
             title="Modo presentación (tecla P); pantalla completa desde la barra inferior"
           >
             <Play className="h-3.5 w-3.5 shrink-0 fill-zinc-200 text-zinc-200" strokeWidth={0} aria-hidden />
@@ -508,7 +671,7 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
           <button
             type="button"
             onClick={() => setShareOpen(true)}
-            className="rounded-[10px] bg-violet-600 px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-violet-500"
+            className="rounded-md bg-sky-600 px-2.5 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-sky-500"
           >
             Share
           </button>
@@ -523,65 +686,107 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 lg:flex-row lg:gap-4 lg:p-4">
-        <aside className="flex shrink-0 flex-row gap-2 overflow-x-auto pb-1 md:w-48 md:flex-col md:overflow-y-auto md:pb-0 md:pr-0.5">
+      <div className="flex min-h-0 flex-1 flex-col gap-2 p-2 lg:flex-row lg:gap-3 lg:p-3">
+        <aside className="flex shrink-0 flex-row gap-2 overflow-x-auto pb-1 md:w-[7.25rem] md:flex-col md:overflow-y-auto md:pb-0 md:pr-0">
           {pages.map((p, i) => {
             const d = getPageDimensions(p);
-            const tid = transitionsByPageId[p.id] ?? DEFAULT_SLIDE_TRANSITION;
-            const Thumb = TRANSITION_THUMB_BY_ID[tid] ?? TRANSITION_THUMB_BY_ID.fade;
             const selected = i === safeRailIdx;
+            const nextPage = i < pages.length - 1 ? pages[i + 1] : null;
+            const nextTid = nextPage
+              ? transitionsByPageId[nextPage.id] ?? DEFAULT_SLIDE_TRANSITION
+              : DEFAULT_SLIDE_TRANSITION;
+            const NextThumb = TRANSITION_THUMB_BY_ID[nextTid] ?? TRANSITION_THUMB_BY_ID.fade;
 
+            const skipped = isPresenterSlideSkipped(p);
             return (
               <div
                 key={p.id}
-                className={`flex shrink-0 flex-col items-center gap-1.5 rounded-xl border p-2 ${
+                className={`relative flex w-full min-w-0 shrink-0 flex-col overflow-hidden rounded-[4px] border transition-colors ${
+                  nextPage ? "p-1 pb-0" : "p-1"
+                } ${
                   selected
-                    ? "border-violet-500/55 bg-violet-500/[0.08] ring-1 ring-violet-500/35"
-                    : "border-white/[0.08] bg-white/[0.04]"
+                    ? "border-sky-500/45 bg-sky-500/[0.08]"
+                    : "border-white/[0.07] bg-white/[0.03] hover:bg-white/[0.05]"
                 }`}
               >
-                <button
-                  type="button"
-                  title={`Transición al entrar en este slide: ${SLIDE_TRANSITION_OPTIONS.find((o) => o.id === tid)?.label ?? tid}. Clic para cambiar.`}
-                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border bg-white/[0.06] text-zinc-500 transition-colors hover:bg-white/10 hover:text-zinc-200 ${
-                    picker?.pageId === p.id
-                      ? "border-violet-400/60 text-violet-200 ring-1 ring-violet-400/40"
-                      : "border-white/15"
-                  }`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openPicker(p.id, e.currentTarget);
-                  }}
-                >
-                  <Thumb size={22} className="text-current" />
-                </button>
-
-                <span className="w-full text-center text-[10px] font-semibold text-zinc-400">
-                  {i + 1}. Slide
-                </span>
-
+                <div className="relative z-10 mb-0.5 flex items-center justify-center gap-0.5">
+                  <span className="min-w-0 flex-1 text-center text-[9px] font-semibold tabular-nums leading-none text-zinc-500">
+                    {i + 1}. Slide
+                  </span>
+                  <button
+                    type="button"
+                    title={
+                      skipped
+                        ? "Incluir este slide en Play"
+                        : "Omitir en Play (miniatura atenuada)"
+                    }
+                    aria-pressed={skipped}
+                    aria-label={skipped ? "Incluir slide en presentación" : "Omitir slide en presentación"}
+                    disabled={!onPresenterPagePatch}
+                    className={`shrink-0 rounded-[3px] border p-0.5 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                      skipped
+                        ? "border-amber-500/45 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25"
+                        : "border-white/12 bg-[#0e1014]/90 text-zinc-500 hover:bg-white/10 hover:text-zinc-300"
+                    }`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      togglePresenterSkipSlide(p.id);
+                    }}
+                  >
+                    <EyeOff size={11} strokeWidth={2} aria-hidden />
+                  </button>
+                </div>
                 <button
                   type="button"
                   onClick={() => goToIdx(i)}
-                  className="w-full overflow-hidden rounded-md border border-white/10 bg-[#fafafa] text-left transition-opacity hover:opacity-95"
-                  style={{
-                    aspectRatio: `${Math.max(1, d.width)} / ${Math.max(1, d.height)}`,
-                  }}
+                  className="w-full min-w-0 text-left"
+                  aria-current={selected ? "true" : undefined}
+                  aria-label={`Slide ${i + 1}`}
                 >
-                  <DesignerPageCanvasView objects={p.objects ?? []} pageWidth={d.width} pageHeight={d.height} />
+                  <div
+                    className={`w-full overflow-hidden border border-black/[0.08] bg-[#fafafa] ${
+                      nextPage ? "rounded-t-[3px] rounded-b-none" : "rounded-[3px]"
+                    }`}
+                    style={{
+                      aspectRatio: `${Math.max(1, d.width)} / ${Math.max(1, d.height)}`,
+                      opacity: skipped ? 0.05 : 1,
+                    }}
+                  >
+                    <DesignerPageCanvasView objects={p.objects ?? []} pageWidth={d.width} pageHeight={d.height} />
+                  </div>
                 </button>
+
+                {nextPage && (
+                  <button
+                    type="button"
+                    title={`Transición al entrar en slide ${i + 2}: ${SLIDE_TRANSITION_OPTIONS.find((o) => o.id === nextTid)?.label ?? nextTid}. Clic para cambiar.`}
+                    className={`-mx-1 mt-0 flex h-5 w-[calc(100%+0.5rem)] shrink-0 items-center justify-center border-t transition-colors ${
+                      picker?.pageId === nextPage.id
+                        ? "border-t-sky-500/40 bg-sky-500/10 text-sky-200 hover:bg-sky-500/15"
+                        : "border-white/[0.09] bg-white/[0.04] text-zinc-500 hover:bg-white/[0.07] hover:text-zinc-300"
+                    }`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openPicker(nextPage.id, e.currentTarget);
+                    }}
+                    aria-label={`Animación de entrada al slide ${i + 2}`}
+                  >
+                    <NextThumb size={12} className="text-current" />
+                  </button>
+                )}
               </div>
             );
           })}
         </aside>
 
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col rounded-xl border border-white/[0.08] bg-[#0e1014] p-3 shadow-inner">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <p className="text-[11px] font-medium text-zinc-400">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col rounded-md border border-white/[0.08] bg-[#0e1014] p-2 shadow-inner">
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <p className="text-[10px] font-medium text-zinc-500">
               Slide {safeRailIdx + 1} / {pages.length}
             </p>
           </div>
-          <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-white/[0.06] bg-[#fafafa]">
+          <div className="relative min-h-0 flex-1 overflow-hidden rounded-[6px] border border-white/[0.06] bg-[#fafafa]">
             <PresenterSlideStage
               pages={pages}
               activeIdx={activeIdx}
@@ -590,6 +795,8 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
               playReveal={previewPlayReveal}
               animateEnterTargetKey={previewAnimateKey}
               allowPickDuringReveal={Boolean(previewPlayReveal)}
+              showPresentationBounds={!playMode}
+              presenterImageVideo={presenterImageVideoForStage}
               pickInteraction={
                 playMode
                   ? null
@@ -601,10 +808,6 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
               }
             />
           </div>
-          <p className="mt-2 text-[10px] leading-snug text-zinc-500">
-            Arrastra en el fondo del slide para marco de selección; Ctrl/⌘+marco añade a la selección. Clic sin arrastre
-            limpia. Varios + preset = una fila Grupo en Order.
-          </p>
         </main>
 
         {animationsOpen && currentPage && (
@@ -616,7 +819,7 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
             onReplaceStepSelection={setAnimationSelectedKeys}
             onChangeSteps={commitGroupSteps}
             onApplyEnterToMultiSelection={applyEnterToMultiSelection}
-            onPreviewEnter={runPreviewAfterAssignEnter}
+            onPreviewPresetHover={handlePreviewPresetHover}
             onClose={() => setAnimationsOpen(false)}
           />
         )}
@@ -629,7 +832,7 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
             ref={pickerRef}
             role="dialog"
             aria-label="Elegir transición de slide"
-            className="fixed z-[100020] w-[min(280px,calc(100vw-24px))] rounded-2xl border border-white/20 bg-[#161a22] p-3 shadow-2xl shadow-black/50 backdrop-blur-xl"
+            className="fixed z-[100020] w-[min(280px,calc(100vw-24px))] rounded-md border border-white/20 bg-[#161a22] p-2.5 shadow-xl shadow-black/40 backdrop-blur-xl"
             style={{
               top: Math.min(picker.rect.bottom + 8, window.innerHeight - 320),
               left: Math.max(
@@ -654,7 +857,7 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
                     }}
                     className={`flex flex-col items-center gap-1 rounded-xl border px-2 py-2 transition-colors ${
                       isSel
-                        ? "border-violet-500/70 bg-violet-500/15 ring-1 ring-violet-400/35"
+                        ? "border-sky-500/60 bg-sky-500/12"
                         : "border-white/10 bg-white/[0.04] hover:border-white/20 hover:bg-white/[0.07]"
                     }`}
                   >
@@ -679,13 +882,8 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
             role="application"
             aria-label="Modo presentación"
           >
-            <div className="flex min-h-0 flex-1 items-center justify-center p-4">
-              <div
-                className="relative w-full max-w-[min(96vw,calc(85vh*16/9))] overflow-hidden rounded-lg bg-[#fafafa] shadow-2xl"
-                style={{
-                  aspectRatio: `${Math.max(1, stageDims.width)} / ${Math.max(1, stageDims.height)}`,
-                }}
-              >
+            <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center p-4">
+              <div className="relative h-full min-h-0 w-full min-w-0 overflow-hidden rounded-lg bg-[#fafafa] shadow-2xl">
                 <PresenterSlideStage
                   pages={pages}
                   activeIdx={activeIdx}
@@ -693,6 +891,8 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
                   onAnimationEnd={onAnimationEnd}
                   playReveal={playRevealForOverlay}
                   animateEnterTargetKey={animateEnterTargetKey}
+                  showPresentationBounds={false}
+                  presenterImageVideo={presenterImageVideoForStage}
                 />
               </div>
             </div>
@@ -711,7 +911,7 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
                     <ChevronLeft size={22} strokeWidth={2} aria-hidden />
                   </button>
                   <span className="min-w-[3.5rem] text-center text-[13px] font-medium tabular-nums text-white/90">
-                    {stageFocusIdx + 1} / {pages.length}
+                    {playModeCounterText ?? `${stageFocusIdx + 1} / ${pages.length}`}
                   </span>
                   <button
                     type="button"
@@ -726,7 +926,9 @@ export function PresenterStudio({ pages, onClose, shareContext, onPresenterPageP
                 </div>
 
                 <div className="flex min-h-[6px] min-w-0 flex-1 items-center gap-[3px] px-1">
-                  {pages.map((p, i) => {
+                  {playableIndices.map((i) => {
+                    const p = pages[i];
+                    if (!p) return null;
                     const isCurrent = i === stageFocusIdx;
                     return (
                       <button

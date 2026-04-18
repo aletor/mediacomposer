@@ -7827,6 +7827,22 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
   const [result, setResult] = useState<string | null>(nodeData.value || null);
   const [showStudio, setShowStudio] = useState(false);
 
+  const openVideoStudioFromPresenter = Boolean(
+    (nodeData as { _foldderOpenVideoStudio?: boolean })._foldderOpenVideoStudio,
+  );
+  useEffect(() => {
+    if (!openVideoStudioFromPresenter) return;
+    const timer = window.setTimeout(() => {
+      setShowStudio(true);
+      setNodes((nds: any) =>
+        nds.map((n: any) =>
+          n.id === id ? { ...n, data: { ...n.data, _foldderOpenVideoStudio: undefined } } : n,
+        ),
+      );
+    }, 140);
+    return () => window.clearTimeout(timer);
+  }, [id, openVideoStudioFromPresenter, setNodes]);
+
   const useSeedance = nodeData.videoModel === 'seedance2';
   const modelKey = useSeedance ? 'seedance2' : 'veo31';
 

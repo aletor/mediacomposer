@@ -1,13 +1,26 @@
 "use client";
 
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getPageDimensions } from "../indesign/page-formats";
 import type { DesignerPageState } from "../designer/DesignerNode";
 import { DesignerPageCanvasView, type PickPresenterInteraction, type PlayRevealState } from "./DesignerPageCanvasView";
+import type { PresenterImageVideoCanvasBinding } from "./presenter-image-video-types";
 import type { SlideTransitionId } from "./slide-transition-types";
 import { DEFAULT_SLIDE_TRANSITION } from "./slide-transition-types";
 
 const TRANSITION_MS = 420;
+
+/** Encaja el rectángulo lógico del slide en el área disponible sin deformar (como «contain»). Requiere un antecesor con `container-type: size` (p. ej. el contenedor del stage). */
+function slideBoxStyle(logicalW: number, logicalH: number): React.CSSProperties {
+  const lw = Math.max(1, logicalW);
+  const lh = Math.max(1, logicalH);
+  return {
+    aspectRatio: `${lw} / ${lh}`,
+    width: `min(100cqw, calc(100cqh * ${lw} / ${lh}))`,
+    maxWidth: "100%",
+    maxHeight: "100%",
+  };
+}
 
 function getSlideMotion(
   t: SlideTransitionId,
@@ -103,7 +116,92 @@ type Props = {
   pickInteraction?: PickPresenterInteraction | null;
   /** Vista previa de entrada en editor: no bloquear la selección en el lienzo. */
   allowPickDuringReveal?: boolean;
+  /**
+   * Lienzo: atenuar fuera del rectángulo real del slide + borde y etiqueta W×H (px lógicos).
+   * Desactivar en presentación a pantalla completa.
+   */
+  showPresentationBounds?: boolean;
+  /** Vídeo sobre imágenes (solo capa Presenter). Durante transición entre slides se omite. */
+  presenterImageVideo?: PresenterImageVideoCanvasBinding | null;
 };
+
+type BoundsPx = { top: number; left: number; right: number; bottom: number; slideH: number };
+
+function PresentationBoundsChrome({
+  enabled,
+  containerRef,
+  slideRef,
+  logicalW,
+  logicalH,
+}: {
+  enabled: boolean;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  slideRef: React.RefObject<HTMLDivElement | null>;
+  logicalW: number;
+  logicalH: number;
+}) {
+  const [b, setB] = useState<BoundsPx | null>(null);
+
+  const measure = useCallback(() => {
+    const c = containerRef.current;
+    const s = slideRef.current;
+    if (!c || !s) return;
+    const cr = c.getBoundingClientRect();
+    const sr = s.getBoundingClientRect();
+    setB({
+      top: Math.max(0, sr.top - cr.top),
+      left: Math.max(0, sr.left - cr.left),
+      right: Math.max(0, cr.right - sr.right),
+      bottom: Math.max(0, cr.bottom - sr.bottom),
+      slideH: sr.height,
+    });
+  }, [containerRef, slideRef]);
+
+  useLayoutEffect(() => {
+    if (!enabled) {
+      setB(null);
+      return;
+    }
+    measure();
+    const c = containerRef.current;
+    const s = slideRef.current;
+    const ro = new ResizeObserver(() => measure());
+    if (c) ro.observe(c);
+    if (s) ro.observe(s);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [enabled, measure, logicalW, logicalH]);
+
+  if (!enabled || !b || b.slideH <= 0) return null;
+
+  return (
+    <>
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 bg-zinc-900/[0.14]"
+        style={{ height: b.top }}
+        aria-hidden
+      />
+      <div
+        className="pointer-events-none absolute inset-x-0 bottom-0 bg-zinc-900/[0.14]"
+        style={{ height: b.bottom }}
+        aria-hidden
+      />
+      <div
+        className="pointer-events-none absolute left-0 bg-zinc-900/[0.14]"
+        style={{ top: b.top, width: b.left, height: b.slideH }}
+        aria-hidden
+      />
+      <div
+        className="pointer-events-none absolute right-0 bg-zinc-900/[0.14]"
+        style={{ top: b.top, width: b.right, height: b.slideH }}
+        aria-hidden
+      />
+    </>
+  );
+}
 
 export function PresenterSlideStage({
   pages,
@@ -114,9 +212,13 @@ export function PresenterSlideStage({
   animateEnterTargetKey = null,
   pickInteraction = null,
   allowPickDuringReveal = false,
+  showPresentationBounds = true,
+  presenterImageVideo = null,
 }: Props) {
   const [play, setPlay] = useState(false);
   const timerRef = useRef<number | null>(null);
+  const boundsContainerRef = useRef<HTMLDivElement | null>(null);
+  const boundsSlideRef = useRef<HTMLDivElement | null>(null);
 
   useLayoutEffect(() => {
     if (!pendingAnim) {
@@ -162,45 +264,44 @@ export function PresenterSlideStage({
     };
 
     return (
-      <div className="absolute inset-0 flex items-center justify-center p-2">
-        <div className="relative h-full w-full max-h-full max-w-full overflow-hidden">
+      <div
+        className="absolute inset-0 flex min-h-0 min-w-0 items-center justify-center p-2"
+        style={{ containerType: "size" }}
+      >
+        <div className="relative flex h-full w-full min-h-0 min-w-0 items-center justify-center overflow-hidden">
           <div
-            className="absolute inset-0 z-0 flex items-center justify-center"
+            className="absolute inset-0 z-0 flex min-h-0 min-w-0 items-center justify-center"
             style={{
               ...motion.outgoingStart,
               ...(play ? motion.outgoingEnd : {}),
               ...commonTrans,
             }}
           >
-            <div
-              className="h-full w-full max-h-full max-w-full"
-              style={{ aspectRatio: `${Math.max(1, d0.width)} / ${Math.max(1, d0.height)}` }}
-            >
+            <div className="min-h-0 min-w-0 shrink-0" style={slideBoxStyle(d0.width, d0.height)}>
               <DesignerPageCanvasView
                 objects={fromPage.objects ?? []}
                 pageWidth={d0.width}
                 pageHeight={d0.height}
                 playReveal={null}
+                presenterImageVideo={null}
               />
             </div>
           </div>
           <div
-            className="absolute inset-0 z-[1] flex items-center justify-center"
+            className="absolute inset-0 z-[1] flex min-h-0 min-w-0 items-center justify-center"
             style={{
               ...motion.incomingStart,
               ...(play ? motion.incomingEnd : {}),
               ...commonTrans,
             }}
           >
-            <div
-              className="h-full w-full max-h-full max-w-full"
-              style={{ aspectRatio: `${Math.max(1, d1.width)} / ${Math.max(1, d1.height)}` }}
-            >
+            <div className="min-h-0 min-w-0 shrink-0" style={slideBoxStyle(d1.width, d1.height)}>
               <DesignerPageCanvasView
                 objects={toPage.objects ?? []}
                 pageWidth={d1.width}
                 pageHeight={d1.height}
                 playReveal={null}
+                presenterImageVideo={null}
               />
             </div>
           </div>
@@ -212,15 +313,40 @@ export function PresenterSlideStage({
   const page = pages[activeIdx];
   if (!page) return null;
   const dims = getPageDimensions(page);
+  const lw = Math.max(1, dims.width);
+  const lh = Math.max(1, dims.height);
 
   return (
-    <div className="absolute inset-0 flex items-center justify-center p-2">
+    <div
+      ref={boundsContainerRef}
+      className="absolute inset-0 flex min-h-0 min-w-0 items-center justify-center p-2"
+      style={{ containerType: "size" }}
+    >
+      <PresentationBoundsChrome
+        enabled={showPresentationBounds}
+        containerRef={boundsContainerRef}
+        slideRef={boundsSlideRef}
+        logicalW={lw}
+        logicalH={lh}
+      />
       <div
-        className="h-full w-full max-h-full max-w-full"
+        ref={boundsSlideRef}
+        className="relative z-10 min-h-0 min-w-0 shrink-0 overflow-hidden rounded-[2px]"
         style={{
-          aspectRatio: `${Math.max(1, dims.width)} / ${Math.max(1, dims.height)}`,
+          ...slideBoxStyle(dims.width, dims.height),
+          ...(showPresentationBounds
+            ? { boxShadow: "inset 0 0 0 2px rgba(56, 189, 248, 0.5)" }
+            : undefined),
         }}
       >
+        {showPresentationBounds && (
+          <div
+            className="pointer-events-none absolute top-1.5 left-1/2 z-20 -translate-x-1/2 rounded border border-black/20 bg-black/50 px-1.5 py-0.5 font-mono text-[9px] font-medium tabular-nums text-white/95 shadow-sm backdrop-blur-[2px]"
+            aria-hidden
+          >
+            {lw} × {lh} px
+          </div>
+        )}
         <DesignerPageCanvasView
           objects={page.objects ?? []}
           pageWidth={dims.width}
@@ -229,6 +355,7 @@ export function PresenterSlideStage({
           animateEnterTargetKey={animateEnterTargetKey}
           pickInteraction={pickInteraction}
           allowPickDuringReveal={allowPickDuringReveal}
+          presenterImageVideo={presenterImageVideo}
         />
       </div>
     </div>
