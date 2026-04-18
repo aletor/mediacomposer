@@ -10650,8 +10650,8 @@
             "id": "node_1776451936798_672",
             "type": "designer",
             "position": {
-              "x": 729.5833333333334,
-              "y": 366.8055555555556
+              "x": 2183.9394315823038,
+              "y": 381.6459239050349
             },
             "data": {
               "label": "designer node",
@@ -13010,7 +13010,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451946389_3_1wj84nx_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=91000c60feb8b82c254111f9e75f82b6b258122d76849c49eb53a532de16896e&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451946389_3_1wj84nx_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=3b55100b08b4a3a65ea31b262d110fc09c27607b6bc99f8034ee87a25237cfb8&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 5841,
                         "originalHeight": 3894,
                         "scaleX": 0.08532432708215379,
@@ -13050,7 +13050,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451947042_4_1mkr7s6_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=47b33d0f356e082b693aae6f1bf8f365306cf49c98bcab24726ba61db55fb3d0&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451947042_4_1mkr7s6_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=cd79bb27bef0345a62410565f3af4927952f62db379f52d6b48123744ca2a372&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 1920,
                         "originalHeight": 1080,
                         "scaleX": 0.25957260129523974,
@@ -14661,7 +14661,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451947785_7_7yacxtt_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=f9d0bc0a14d54c0cffa4f7016989dab6e015dade3e97a903b55070fb3f41d277&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451947785_7_7yacxtt_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=c60f43c450160291c3117f2562383eef8ec96b1aad1084d06e03a1e959663b85&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 1920,
                         "originalHeight": 1080,
                         "scaleX": 0.6445593610284847,
@@ -14701,7 +14701,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451948016_8_w8ghn8t_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=eb6adebf8d47d4934c2c995afb5964342f7491b783825ca9ac42a43819b53db0&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451948016_8_w8ghn8t_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=276a3512f8109c4f68b1336d7c795a275ff7ee6e975196a1e39940470bdb413b&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 1042,
                         "originalHeight": 1856,
                         "scaleX": 0.18107857890638657,
@@ -14741,7 +14741,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451948308_9_lea7bul_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=bceb4cc7c96b32fcfd756706c95433e02f058dec19b695d662213532458d9f51&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451948308_9_lea7bul_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=f70fbb176c2855c209dc8a174e5bcf30604d22fa1697f1c6c3691b7f56e9dd47&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 4588,
                         "originalHeight": 2290,
                         "scaleX": 0.14372248003836222,
@@ -14781,7 +14781,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451948564_10_ecnj96q_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=cf4c66662795208cd73cfff2ec02ee8bfed8bbeae27427944b0218f64fcbe581&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451948564_10_ecnj96q_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=c1f2a37b0f4c2e68c49f0f583e4781e8a2247220b3724646f2e08f1ac6c7f5d3&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 1920,
                         "originalHeight": 1080,
                         "scaleX": 0.367710141058045,
@@ -14821,7 +14821,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451948836_11_qe15yfv_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=c6850b4e41b7318840eb4886d05b5e35ce38404014ee279dfe40578193202b68&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451948836_11_qe15yfv_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=cc600e8bb0d593aa28236867dbac2d98530b8c690fdc5e9e1e6acfb4bc4a2477&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 4516,
                         "originalHeight": 2272,
                         "scaleX": 0.17479179240435236,
@@ -14861,7 +14861,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451949107_12_9ze0cie_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=d1570676594c68db0dca48359608d126b8f34a1f09a60eaec74b676703ed1226&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451949107_12_9ze0cie_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=ffc5ff01bf59660df68631fdf96bda7a9b1e09d7b1cf36e23b41cdb29c2dcfd2&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 1920,
                         "originalHeight": 1080,
                         "scaleX": 0.4426748573154143,
@@ -15257,7 +15257,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451949355_13_8ktxz61_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=e20d746b805d9a6276e7c41f55031c759481e83563fd7148fc49c5fd94e08143&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451949355_13_8ktxz61_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=0fa3bd4c3529abddcf406b93541978fd6cf247249a2c235710138fb99cc63333&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 3840,
                         "originalHeight": 2160,
                         "scaleX": 0.5079478123564868,
@@ -16047,7 +16047,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451949576_14_vcx037l_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=b74a6f402729f1ae26c8995f7b8325cee02ac58e22f18e2097808e4b83c17d47&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451949576_14_vcx037l_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=851b7d328cb60488da343b0193e7a745959949760fa0a4552fa32a6b1a37fffb&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 1920,
                         "originalHeight": 1080,
                         "scaleX": 0.6022096184583164,
@@ -16087,7 +16087,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451949885_15_9q483id_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=5752b0aae3bd875ae3b37528360af4dbb7d53d9c20545dc3fed42887ad12ca37&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451949885_15_9q483id_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=149b510aa8deabe0a946c8fb5b41ad6d5c288839a9bbf5c53f1dcecc063e2aca&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 1920,
                         "originalHeight": 1080,
                         "scaleX": 0.30156122679363484,
@@ -16127,7 +16127,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451950118_16_xo7mt2w_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=2d8bd9501cbaade19b8d687e465b7e82cbd7d28c8ae965fbadd487bae652bb19&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451950118_16_xo7mt2w_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=1c075ec4f43e5d7c2fb61a3dca0c1015056c4b2e1dde8548cb9dd8220c944ea9&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 1920,
                         "originalHeight": 1080,
                         "scaleX": 0.34343684292500304,
@@ -16167,7 +16167,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451950410_17_fzf4z7w_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=d5249aa7d640315012e245192ef3599b52653b9b6154546a25d57410099560eb&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451950410_17_fzf4z7w_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=be2a618d3c7117e00daca838653c32c7feb8df41e84e9cd3f4cc4480634a9ab4&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 1920,
                         "originalHeight": 1080,
                         "scaleX": 0.367710141058045,
@@ -16207,7 +16207,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451950651_18_ucb2lkz_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=6eb5816da656df34df73ef6813570142ab14dcaadd70d0c682f1d274c00b4805&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451950651_18_ucb2lkz_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=f7dd295a15601a65329c67247349a08102cc9a3686709e20994e373e45cf9ea1&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 1920,
                         "originalHeight": 1080,
                         "scaleX": 0.367710141058045,
@@ -16247,7 +16247,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451950931_19_6jonzl8_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=440953a50b6e098e4e556076dd8519da9d398a5f38f3328612157deebc487b9c&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451950931_19_6jonzl8_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=cbf08828f2de1bb3f4e715caa40ea2836e084fd45c517c072f01827a2dbe5226&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 1920,
                         "originalHeight": 1080,
                         "scaleX": 0.4426748573154143,
@@ -16571,7 +16571,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451951232_20_ygyhx1i_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=c10a777d79c41185754cbc7260ba7389f4eb5d33e6c20b7d753c3c87fe839da0&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451951232_20_ygyhx1i_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=76e4f16467bb74ea35df342158f376b97348b83d551e0b9aaedd8c4d5ad9901d&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 6016,
                         "originalHeight": 4016,
                         "scaleX": 0.3215062307591988,
@@ -17385,7 +17385,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451951724_22_jgoe74j_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=93b8811ac6c1c492fb3894a34ba217c864827fe2470990400fe271524555764f&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451951724_22_jgoe74j_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=1b83b9510d4dee06eb0fd354cb3373bdff1a8a9b6310c98011a9967b2aec6f2b&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 5751,
                         "originalHeight": 3839,
                         "scaleX": 0.1798581492714472,
@@ -17425,7 +17425,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451952000_23_dotfhx3_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=7ee347ec617b7c78aea9615dc7c4ef2d2e1c5afa57efc6ea51fa206180d1168c&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451952000_23_dotfhx3_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=f365f6fbc667ec59e655f823e437952cb671e0403013af12b96d218c70dc5d40&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 5492,
                         "originalHeight": 3748,
                         "scaleX": 0.1545284610549024,
@@ -17465,7 +17465,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451952270_24_7kkmego_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=5b321bffc0d1f5ec7358fc996dd7822c922b48523a76249d6e68eb90a9e81f6b&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451952270_24_7kkmego_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=d668431c7be3bf4b815584a6260ad111b0048893363990a07ef42dc96c14c911&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 6016,
                         "originalHeight": 4016,
                         "scaleX": 0.09888619331242246,
@@ -17505,7 +17505,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451952552_25_3j2g73w_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=ae7d9978cbbce3759ff0be66d370c6a8aa8ba497d80d2cf4d277101d1286752b&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451952552_25_3j2g73w_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=3939db2fcf4b0995df6e9d1c69acbb1f22b08b0ef8186fd48754dbbb58e48b76&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 6016,
                         "originalHeight": 4016,
                         "scaleX": 0.09888619331242246,
@@ -17545,7 +17545,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451952900_26_zshccbz_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=5e64fae0d466e96dcd72c6e1e25baf5a534981dbe3ab57dfc1b97067eef59c48&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451952900_26_zshccbz_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=f9c00b01d5d1a6ede313dcdad166be47ffd896b1eefa002b07aec29c9798128f&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 6016,
                         "originalHeight": 4016,
                         "scaleX": 0.15671573476368725,
@@ -17911,7 +17911,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451953142_27_cc3jnrm_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=0fca22dce8963fa15c0f6812f581da78dcfdad8063603178c4f6a975d1e2b6a4&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451953142_27_cc3jnrm_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=fe0bba9d41ee786a72db525fe6f5c12987b6e9ecb3719e609a89fd2fe413ca78&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 5841,
                         "originalHeight": 3894,
                         "scaleX": 0.3311387577893066,
@@ -18631,7 +18631,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451953809_29_44u6i7l_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=9ed01d32d06cfea7de7790605526c02ffa3f3013fbb66bd53084b96b78304e9e&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451953809_29_44u6i7l_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=5d46c13e03c1e43e9f3fe77f0c7de62ea08a621dae9638eef5ed0c182434c7ce&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 4000,
                         "originalHeight": 6000,
                         "scaleX": 0.1068657710483778,
@@ -18671,7 +18671,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451954120_30_ue5glhw_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=5e6c391224727ddfeb488f04df04cd219fe19249ebc387c231a153e52f488351&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451954120_30_ue5glhw_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=97fa9b30cc80102ab18b70474a84a490e95fec32079de9b7165c73e2c93912a9&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 4000,
                         "originalHeight": 6000,
                         "scaleX": 0.10707046968825493,
@@ -18711,7 +18711,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451954383_31_i59cquc_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=caea4b92c6250e9297ab9fbee0cd49db89811e878edae0f28b7f96756e021932&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451954383_31_i59cquc_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=9b5136125d13f76baea3538618047f9e98adb4c091853979628ab19072901538&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 5760,
                         "originalHeight": 3840,
                         "scaleX": 0.1671624294257872,
@@ -18751,7 +18751,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451954702_32_4m9ny1k_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=0221769e74072242155115b633b22602d189fc5c55bf7170d399324ebe94744c&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451954702_32_4m9ny1k_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=9c4016ac4cde30cc401640ea8bf4aad549499508a76f6f17cd2186190b114a32&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 5877,
                         "originalHeight": 3762,
                         "scaleX": 0.320008901175538,
@@ -18791,7 +18791,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451955013_33_c76w8fg_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=3db086027cee608932da7c8603a08d02137acd1ae4780735a8b30e45d5aa6342&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451955013_33_c76w8fg_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=7d10aeade8335cd914e9169029015a8d08317d006b74f7c97fb1d828cd01b001&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 6000,
                         "originalHeight": 4000,
                         "scaleX": 0.16047593224875573,
@@ -19121,7 +19121,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451955353_34_qw5p37l_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=77dd939b98658e65e9f7dd61368aee2d2668d68354ac3657e6dc0777cd79aff8&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451955353_34_qw5p37l_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=cb358890eb8615321670160dc501dcbb65eb5300fa2c2bf92ad5119681f1b7e8&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 1920,
                         "originalHeight": 1080,
                         "scaleX": 0.16882494004796159,
@@ -19161,7 +19161,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451955653_35_mr01t9x_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=a9c35eb447bb7660c703e3f4f3096ebdf31447b74a6157875991d8427d64d1f3&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451955653_35_mr01t9x_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=8b65a443e99f88e0efd37ce1a45964253aad8e6cd65787f72f4f6fabfaaa042e&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 3840,
                         "originalHeight": 2160,
                         "scaleX": 0.08441247002398079,
@@ -19201,7 +19201,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451955886_36_5b69hgu_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=cf7c8396dbe85dc4cce92565584b7eb88c06622f10cd6145f3d44cab9a1962ff&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451955886_36_5b69hgu_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=26f5bee2e1f990633c5d26bb67946601e4ca384fdd2f6398a7bdd3ac16538201&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 4096,
                         "originalHeight": 2160,
                         "scaleX": 0.09035212248214221,
@@ -19241,7 +19241,7 @@
                       "rx": 0,
                       "isImageFrame": true,
                       "imageFrameContent": {
-                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451956174_37_bwbh8wp_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260417%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260417T185236Z&X-Amz-Expires=3600&X-Amz-Signature=d91e60cdc29f84e30ab4edb52d7f915975722bf7f4a94e9f63e2392af59f4b98&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                        "src": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/knowledge-files/spaces/orphan/designer/ds_1776451956174_37_bwbh8wp_OPT.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083022Z&X-Amz-Expires=3600&X-Amz-Signature=46bf14df88500b600c8987ede1bc8238fed5d06c197ef87ba0708fe36d463a38&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
                         "originalWidth": 3840,
                         "originalHeight": 2160,
                         "scaleX": 0.08441247002398079,
@@ -21215,25 +21215,52 @@
               "--foldder-node-output-color": "#6C5CE7",
               "--foldder-node-header-tint-color": "#94a3b8"
             },
-            "className": "foldder-node-canvas-intro foldder-node-canvas-intro"
+            "className": "foldder-node-canvas-intro foldder-node-canvas-intro",
+            "dragging": false
           },
           {
             "id": "node_1776451970611_495",
             "type": "presenter",
             "position": {
-              "x": 1209.5833333333335,
-              "y": 375.8055555555556
+              "x": 2663.9394315823038,
+              "y": 390.6459239050349
             },
             "data": {
               "label": "presenter node",
-              "value": ""
+              "value": "",
+              "imageVideoPlacements": [
+                {
+                  "id": "9653dbc7-6c0c-4765-bc02-43417c041725",
+                  "pageId": "dpg_1776272335075_1",
+                  "imageObjectId": "fh_1776272336096_6",
+                  "videoUrl": "https://content-engine-ai-docs-832666711966.s3.us-east-1.amazonaws.com/spaces/presenter-videos/b21ee677-d35a-4653-be11-84fd180260d7.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIA4DXWNW6PO45C3WGO%2F20260418%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260418T083103Z&X-Amz-Expires=3600&X-Amz-Signature=8989860f778b2233d95c54e70318d38dd83b418148edfe0efcfc51fad309aac2&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+                  "s3Key": "spaces/presenter-videos/b21ee677-d35a-4653-be11-84fd180260d7.mp4",
+                  "rel": {
+                    "x": 0,
+                    "y": 0,
+                    "w": 1,
+                    "h": 1
+                  },
+                  "autoplay": true,
+                  "loop": false,
+                  "mute": false,
+                  "posterTimeSec": 0,
+                  "videoFittingMode": "fill-proportional",
+                  "videoContentAlignment": "center"
+                }
+              ]
             },
             "measured": {
               "width": 260,
               "height": 202
             },
             "selected": true,
-            "zIndex": 7
+            "zIndex": 5,
+            "dragging": false,
+            "style": {
+              "--foldder-node-output-color": "#94a3b8",
+              "--foldder-node-header-tint-color": "#94a3b8"
+            }
           }
         ],
         "edges": [
@@ -21244,7 +21271,8 @@
             "sourceHandle": "document",
             "target": "node_1776451970611_495",
             "targetHandle": "document",
-            "id": "e-node_1776451936798_672-node_1776451970611_495-document-document-q37u"
+            "id": "e-node_1776451936798_672-node_1776451970611_495-document-document-q37u",
+            "selected": false
           }
         ],
         "outputType": "url",
@@ -21252,7 +21280,7 @@
         "hasInput": false,
         "hasOutput": false,
         "internalCategories": [],
-        "updatedAt": "2026-04-17T18:53:01.955Z",
+        "updatedAt": "2026-04-18T08:31:10.114Z",
         "name": "Space"
       }
     },
@@ -21262,9 +21290,9 @@
         "canvasViewMode": "free",
         "cardsFocusIndex": 0,
         "viewport": {
-          "x": -2416.0367161716167,
-          "y": -700.1428767876787,
-          "zoom": 2.3712871287128707
+          "x": -2134.261303787576,
+          "y": -171.39188160082324,
+          "zoom": 1.1297297297297297
         },
         "navigationStack": [],
         "activeSpaceId": "root",
@@ -21272,9 +21300,9 @@
         "windowMode": false,
         "viewerSourceNodeId": null
       },
-      "savedAt": "2026-04-17T18:53:01.957Z"
+      "savedAt": "2026-04-18T08:31:10.115Z"
     },
     "createdAt": "2026-04-17T18:53:01.979Z",
-    "updatedAt": "2026-04-17T18:53:01.979Z"
+    "updatedAt": "2026-04-18T08:31:10.140Z"
   }
 ]

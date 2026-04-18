@@ -160,6 +160,52 @@ export function TopbarGlyphIndesign({ size = 26, className }: GlyphProps) {
   );
 }
 
+/** Files — carpeta + hoja (biblioteca multimedia del proyecto; no es nodo del grafo). */
+export function TopbarGlyphFiles({ size = 26, className }: GlyphProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      className={className}
+      aria-hidden
+    >
+      <path
+        d="M4.25 7.75h4.35l1.35 2.15h9.8v8.35a1.35 1.35 0 01-1.35 1.35H4.25a1.35 1.35 0 01-1.35-1.35V9.1a1.35 1.35 0 011.35-1.35z"
+        stroke="currentColor"
+        strokeWidth={sw}
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4.25 7.75V6.6a1.35 1.35 0 011.35-1.35h4.2l1.35 2.15"
+        stroke="currentColor"
+        strokeWidth={sw}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity={0.45}
+      />
+      <rect
+        x="8.85"
+        y="12.15"
+        width="6.3"
+        height="4.85"
+        rx="0.65"
+        stroke="currentColor"
+        strokeWidth={1.15}
+        opacity={0.55}
+      />
+      <path
+        d="M10.35 14.1h3.3M10.35 15.65h2.1"
+        stroke="currentColor"
+        strokeWidth={1.05}
+        strokeLinecap="round"
+        opacity={0.45}
+      />
+    </svg>
+  );
+}
+
 /** VFX Generator — capas apiladas + onda / impacto (efectos sobre vídeo). */
 export function TopbarGlyphVfxGenerator({ size = 26, className }: GlyphProps) {
   return (
@@ -202,9 +248,10 @@ export function TopbarGlyphVfxGenerator({ size = 26, className }: GlyphProps) {
 }
 
 export const TOPBAR_GLYPH_BY_NODE_TYPE: Record<
-  "designer" | "presenter" | "nanoBanana" | "geminiVideo" | "vfxGenerator",
+  "files" | "designer" | "presenter" | "nanoBanana" | "geminiVideo" | "vfxGenerator",
   React.FC<GlyphProps>
 > = {
+  files: TopbarGlyphFiles,
   designer: TopbarGlyphIndesign,
   presenter: TopbarGlyphPresenter,
   nanoBanana: TopbarGlyphImageGenerator,

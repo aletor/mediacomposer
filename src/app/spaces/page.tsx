@@ -76,6 +76,7 @@ import { HandleTypeLegend } from './HandleTypeLegend';
 import { AiRequestHud } from './AiRequestHud';
 import { ExternalApiBlockedModal } from './ExternalApiBlockedModal';
 import { TopbarPins } from './TopbarPins';
+import { ProjectFilesFullscreen } from './ProjectFilesFullscreen';
 import {
   resolveHandleMetaForCanvasDrop,
   pickNewNodeTypeForCanvasDrop,
@@ -716,6 +717,7 @@ const SpacesContent = () => {
   const libraryCanvasDropSucceededRef = useRef(false);
   /** Arrastre activo desde la librería: oculta tooltips rollover y evita solapes de UI */
   const [paletteDragActive, setPaletteDragActive] = useState(false);
+  const [projectFilesOpen, setProjectFilesOpen] = useState(false);
 
   useEffect(() => {
     try {
@@ -4939,15 +4941,20 @@ const SpacesContent = () => {
         {isAuthenticated && !windowMode && (
           <div
             data-foldder-top-hud
-            className="pointer-events-none absolute bottom-6 left-0 right-0 z-[120] flex justify-center overflow-visible px-4"
+            className="pointer-events-none absolute bottom-6 left-0 right-0 z-[120] flex items-end justify-center overflow-visible px-4"
           >
             <TopbarPins
               embedded
               fullWidthRow
+              onFilesClick={() => setProjectFilesOpen(true)}
               onPinDoubleClick={addNodeFromTopbarPinDoubleClick}
               paletteDragActive={paletteDragActive}
             />
           </div>
+        )}
+
+        {isAuthenticated && (
+          <ProjectFilesFullscreen open={projectFilesOpen} onClose={() => setProjectFilesOpen(false)} nodes={nodes} />
         )}
 
         {assistantClarify && (

@@ -7,10 +7,11 @@ import { TOPBAR_GLYPH_BY_NODE_TYPE } from "./TopbarPinIcons";
 export const TOPBAR_PIN_ICON_SIZE = 32;
 
 /**
- * Accesos fijos (no personalizables): Designer → Presenter → Image → Video → VFX.
- * Orden estable; no se persiste ni se admite drag-and-drop sobre la barra.
+ * Accesos fijos (no personalizables): Files (biblioteca) → Designer → Presenter → Image → Video → VFX.
+ * Files no añade nodo; abre la vista fullscreen de multimedia. Orden estable.
  */
 export const TOPBAR_FIXED_PIN_TYPES = [
+  "files",
   "designer",
   "presenter",
   "nanoBanana",
@@ -23,6 +24,7 @@ const TOPBAR_PIN_UI: Record<
   (typeof TOPBAR_FIXED_PIN_TYPES)[number],
   { title: string; shortLabel: string }
 > = {
+  files: { title: "Archivos del proyecto", shortLabel: "Files" },
   designer: { title: "Designer Studio", shortLabel: "Design" },
   presenter: { title: "Presenter", shortLabel: "Present" },
   nanoBanana: { title: "Image Generator", shortLabel: "Image" },
@@ -31,7 +33,9 @@ const TOPBAR_PIN_UI: Record<
 };
 
 type TopbarPinsProps = {
-  /** Doble clic: añadir nodo al lienzo en hueco y encuadrar */
+  /** Clic en «Files»: abrir biblioteca multimedia (fullscreen). No añade nodo. */
+  onFilesClick?: () => void;
+  /** Doble clic: añadir nodo al lienzo en hueco y encuadrar (no aplica a «Files»). */
   onPinDoubleClick?: (nodeType: string) => void;
   /** Arrastre desde la librería: sin tooltip hover encima de la barra */
   paletteDragActive?: boolean;
@@ -65,6 +69,7 @@ type PinChipProps = {
   iconSize: number;
   chipClassName: string;
   captionClassName: string;
+  onFilesClick?: () => void;
   onPinDoubleClick?: (nodeType: string) => void;
   paletteDragActive?: boolean;
 };
@@ -76,22 +81,41 @@ function TopbarPinChip({
   iconSize,
   chipClassName,
   captionClassName,
+  onFilesClick,
   onPinDoubleClick,
   paletteDragActive = false,
 }: PinChipProps) {
   const Glyph = TOPBAR_GLYPH_BY_NODE_TYPE[type];
+  const isFiles = type === "files";
 
   return (
     <div className="relative shrink-0 group/pin pt-3 -mt-3 pb-0.5 overflow-visible">
       <button
         type="button"
-        className={chipClassName}
-        aria-label={`${title}. Doble clic para añadir al lienzo.`}
-        onDoubleClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onPinDoubleClick?.(type);
-        }}
+        className={`${chipClassName}${isFiles ? " !cursor-pointer" : ""}`}
+        aria-label={
+          isFiles
+            ? `${title}. Clic para abrir la biblioteca de multimedia del proyecto.`
+            : `${title}. Doble clic para añadir al lienzo.`
+        }
+        onClick={
+          isFiles
+            ? (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onFilesClick?.();
+              }
+            : undefined
+        }
+        onDoubleClick={
+          isFiles
+            ? undefined
+            : (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onPinDoubleClick?.(type);
+              }
+        }
       >
         <Glyph size={iconSize} className="shrink-0 text-white" />
         <span className={captionClassName}>{shortLabel}</span>
@@ -102,6 +126,7 @@ function TopbarPinChip({
 }
 
 export function TopbarPins({
+  onFilesClick,
   onPinDoubleClick,
   paletteDragActive = false,
   embedded = false,
@@ -140,7 +165,7 @@ export function TopbarPins({
               : "flex min-h-[36px] w-full max-w-[min(520px,92vw)] flex-wrap items-center justify-center gap-1.5 rounded-xl border border-white/25 bg-white/[0.08] px-2 py-1 shadow-sm backdrop-blur-xl"
         }
         role="toolbar"
-        aria-label="Accesos directos: Designer, Presenter, Image, Video, VFX. Doble clic para añadir al lienzo."
+        aria-label="Accesos directos: Files, Designer, Presenter, Image, Video, VFX. Files abre la biblioteca; en el resto, doble clic para añadir al lienzo."
       >
         {TOPBAR_FIXED_PIN_TYPES.map((type) => {
           const ui = TOPBAR_PIN_UI[type];
@@ -155,6 +180,7 @@ export function TopbarPins({
                 iconSize={TOPBAR_PIN_ICON_SIZE}
                 chipClassName={chipEmbedded}
                 captionClassName={captionEmbedded}
+                onFilesClick={onFilesClick}
                 onPinDoubleClick={onPinDoubleClick}
                 paletteDragActive={paletteDragActive}
               />
@@ -170,6 +196,7 @@ export function TopbarPins({
               iconSize={28}
               chipClassName={chipDefault}
               captionClassName={captionDefault}
+              onFilesClick={onFilesClick}
               onPinDoubleClick={onPinDoubleClick}
               paletteDragActive={paletteDragActive}
             />
