@@ -1,13 +1,13 @@
 /* Spaces Workspace Styling */
+/* Fondo real: `CanvasWallpaperTransition` detrás del lienzo (transición al cambiar imagen). */
 .spaces-canvas {
-  background-color: #f8fafc;
-  background-image: url('/studio_back.jpg');
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-attachment: fixed;
+  background-color: transparent;
+  background-image: none;
   width: 100%;
   height: 100%;
+  position: relative;
+  /* Por encima de `CanvasWallpaperTransition` (z-0): el blur del fondo no debe tapar nodos/aristas */
+  z-index: 10;
 }
 
 /* Sin espacio: arrastre = selección (no mano). Con espacio: pan */
@@ -1268,4 +1268,38 @@ body.nb-studio-open [data-foldder-reactflow-zoom-badge] {
   min-width: 6px;
   background: linear-gradient(90deg, rgba(124, 58, 237, 0.85), rgba(196, 181, 253, 0.95));
   box-shadow: 0 0 8px rgba(167, 139, 250, 0.45);
+}
+
+/* ── Fondo del lienzo: transición al cambiar de imagen (distorsión / convergencia) ── */
+@keyframes foldderCanvasBgDistortIn {
+  0% {
+    opacity: 0.16;
+    filter: blur(26px) saturate(1.7) contrast(1.12) brightness(1.1) hue-rotate(12deg);
+    transform: scale(1.1);
+  }
+  38% {
+    opacity: 0.82;
+    filter: blur(10px) saturate(1.32) contrast(1.05) brightness(1.03) hue-rotate(4deg);
+    transform: scale(1.03);
+  }
+  100% {
+    opacity: 1;
+    filter: blur(0) saturate(1) contrast(1) brightness(1) hue-rotate(0);
+    transform: scale(1);
+  }
+}
+
+.foldder-canvas-bg-incoming {
+  animation: foldderCanvasBgDistortIn 1.12s cubic-bezier(0.2, 0.85, 0.22, 1) forwards;
+  transform-origin: center center;
+  will-change: transform, filter, opacity;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .foldder-canvas-bg-incoming {
+    animation-duration: 0.28s;
+    animation-timing-function: ease-out;
+  }
 }

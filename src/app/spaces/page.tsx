@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useCallback, useMemo, useRef, useEffect, useLayoutEffect } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import {
   ReactFlow,
   Controls,
@@ -96,6 +96,7 @@ import {
 } from '@/lib/ai-job-notifications';
 import { FOLDDER_FIT_VIEW_EASE } from '@/lib/fit-view-ease';
 import {
+  enterFullscreen,
   isDocumentFullscreen,
   subscribeFullscreenChange,
   toggleDocumentFullscreen,
@@ -134,7 +135,7 @@ import {
 } from './connection-utils';
 import { NodeIconMono } from './foldder-icons';
 import { 
-  Save, 
+  FolderPlus,
   FolderOpen, 
   Trash2, 
   Check, 
@@ -160,6 +161,7 @@ import {
   AlertCircle,
   Wallet,
 } from 'lucide-react';
+import { CanvasWallpaperTransition } from './CanvasWallpaperTransition';
 import { SpacesWelcomeChrome } from './SpacesWelcomeChrome';
 import { SpacesPasswordOverlay } from './SpacesPasswordOverlay';
 
@@ -658,7 +660,8 @@ const SpacesContent = () => {
   const [metadata, setMetadata] = useState<any>({});
   
   const [isSaving, setIsSaving] = useState(false);
-  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [showNewProjectModal, setShowNewProjectModal] = useState(false);
+  const [newProjectNameInput, setNewProjectNameInput] = useState('');
   const [showLoadModal, setShowLoadModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
@@ -695,6 +698,9 @@ const SpacesContent = () => {
   const [canvasZoom, setCanvasZoom] = useState(0.7);
   /** Panel de uso de APIs: oculto hasta pulsar el control de zoom */
   const [apiUsagePanelOpen, setApiUsagePanelOpen] = useState(false);
+  /** Indicador visual breve tras guardado automático (intervalo 1 min) */
+  const [showAutosavePulse, setShowAutosavePulse] = useState(false);
+  const autosavePulseTimerRef = useRef<number | null>(null);
 
   /** Avisos poco intrusivos al terminar trabajos de IA en segundo plano */
   const [aiJobToasts, setAiJobToasts] = useState<Array<{ id: string } & AiJobCompleteDetail>>([]);
@@ -751,17 +757,13 @@ const SpacesContent = () => {
     return () => document.removeEventListener('mousedown', onDown);
   }, [canvasBgMenuOpen]);
 
-  const reactFlowCanvasStyle = useMemo((): React.CSSProperties => {
-    const bg = CANVAS_BACKGROUNDS.find((b) => b.id === canvasBgId) ?? CANVAS_BACKGROUNDS[0];
-    return {
-      backgroundColor: '#f8fafc',
-      backgroundImage: `url("${bg.url}")`,
-      backgroundSize: 'cover',
-      backgroundPosition: 'center',
-      backgroundRepeat: 'no-repeat',
-      backgroundAttachment: 'fixed',
-    };
-  }, [canvasBgId]);
+  /** Fondo en `CanvasWallpaperTransition`; el lienzo XY Flow va transparente para ver la transición. */
+  const reactFlowCanvasStyle = useMemo(
+    (): React.CSSProperties => ({
+      backgroundColor: 'transparent',
+    }),
+    [],
+  );
 
   const handleLibraryDragStart = useCallback(
     (nodeType: string) => {
@@ -2494,6 +2496,8 @@ const SpacesContent = () => {
       setIsAuthenticated(true);
       // Trigger welcome splash — output node appears when splash finishes
       setShowWelcome(true);
+      // Mismo gesto que el input: intentar lienzo a pantalla completa (puede fallar en iOS / si el usuario lo bloqueó).
+      void enterFullscreen(document.documentElement).catch(() => undefined);
     } else if (val.length === 4) {
       setPassError(true);
       setTimeout(() => {
@@ -2507,6 +2511,41 @@ const SpacesContent = () => {
     if (!isAuthenticated) return;
     return installAiFetchOverlay();
   }, [isAuthenticated]);
+
+  /** Al entrar o salir de pantalla completa (navegador), reencuadrar el grafo al nuevo tamaño de viewport. */
+  const prevBrowserFullscreenRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (windowMode) return;
+    if (canvasViewMode === 'cards') return;
+
+    if (prevBrowserFullscreenRef.current === null) {
+      prevBrowserFullscreenRef.current = browserFullscreen;
+      return;
+    }
+    if (prevBrowserFullscreenRef.current === browserFullscreen) return;
+    prevBrowserFullscreenRef.current = browserFullscreen;
+
+    if (nodes.length === 0) return;
+
+    const t = window.setTimeout(() => {
+      void fitView({
+        padding: FIT_VIEW_PADDING,
+        duration: fitAnim(700),
+        interpolate: 'smooth',
+        ...FOLDDER_FIT_VIEW_EASE,
+      });
+    }, 160);
+
+    return () => clearTimeout(t);
+  }, [
+    browserFullscreen,
+    isAuthenticated,
+    windowMode,
+    canvasViewMode,
+    nodes.length,
+    fitView,
+  ]);
 
   // Helper to detect structure and data output from a space
   const analyzeSpaceStructure = (nodes: any[], edges: any[]): { 
@@ -2844,7 +2883,7 @@ const SpacesContent = () => {
       setAssistantCostApproval(null);
       return true;
     }
-    if (showSaveModal || showLoadModal || projectToDelete || projectDeleteInProgress) return false;
+    if (showNewProjectModal || showLoadModal || projectToDelete || projectDeleteInProgress) return false;
     if (windowMode) {
       setWindowMode(false);
       setViewerSourceNodeId(null);
@@ -2862,7 +2901,7 @@ const SpacesContent = () => {
   }, [
     assistantClarify,
     assistantCostApproval,
-    showSaveModal,
+    showNewProjectModal,
     showLoadModal,
     projectToDelete,
     projectDeleteInProgress,
@@ -2903,7 +2942,10 @@ const SpacesContent = () => {
     })();
   }, []);
 
-  const saveProject = async (nameToSave?: string) => {
+  const saveProject = async (
+    nameToSave?: string,
+    options?: { silentError?: boolean }
+  ): Promise<boolean> => {
     setIsSaving(true);
     try {
       // Apilado XY Flow: persistir `node.zIndex`, no `style.zIndex` (evita hijos detrás del marco al recargar).
@@ -2951,28 +2993,126 @@ const SpacesContent = () => {
       
       const updatedList = await readResponseJson<any[]>(res, 'POST /api/spaces (save)');
       
-      if (Array.isArray(updatedList)) {
-        setSavedProjects(updatedList);
-        
-        // If we were saving a new project, we need the active IDs from the server's last added project
-        if (!activeProjectId) {
-           const newest = updatedList[updatedList.length - 1];
-           setActiveProjectId(newest.id);
-           setActiveSpaceId(activeSpaceId);
-           setCurrentName(newest.name);
-           setSpacesMap(newest.spaces || spacesToSave);
-        } else {
-           setSpacesMap(spacesToSave as Record<string, unknown>);
-        }
+      if (!Array.isArray(updatedList)) {
+        return false;
       }
-      setShowSaveModal(false);
+      setSavedProjects(updatedList);
+
+      // If we were saving a new project, we need the active IDs from the server's last added project
+      if (!activeProjectId) {
+        const newest = updatedList[updatedList.length - 1];
+        setActiveProjectId(newest.id);
+        setActiveSpaceId(activeSpaceId);
+        setCurrentName(newest.name);
+        setSpacesMap(newest.spaces || spacesToSave);
+      } else {
+        setSpacesMap(spacesToSave as Record<string, unknown>);
+      }
+      return true;
     } catch (err) {
       console.error('Save error:', err);
-      alert('Error saving project. Check console for details.');
+      if (!options?.silentError) {
+        alert('Error saving project. Check console for details.');
+      }
+      return false;
     } finally {
       setIsSaving(false);
     }
   };
+
+  const flashAutosavePulse = useCallback(() => {
+    setShowAutosavePulse(true);
+    if (autosavePulseTimerRef.current) window.clearTimeout(autosavePulseTimerRef.current);
+    autosavePulseTimerRef.current = window.setTimeout(() => {
+      setShowAutosavePulse(false);
+      autosavePulseTimerRef.current = null;
+    }, 2200);
+  }, []);
+
+  const flashAutosavePulseRef = useRef(flashAutosavePulse);
+  flashAutosavePulseRef.current = flashAutosavePulse;
+
+  const saveProjectRef = useRef(saveProject);
+  saveProjectRef.current = saveProject;
+  const isSavingRef = useRef(false);
+  isSavingRef.current = isSaving;
+
+  const autosaveGateRef = useRef({
+    authenticated: false,
+    hasProject: false,
+    openLoad: false,
+    openNew: false,
+    deleting: false,
+  });
+  autosaveGateRef.current = {
+    authenticated: isAuthenticated,
+    hasProject: !!activeProjectId,
+    openLoad: showLoadModal,
+    openNew: showNewProjectModal,
+    deleting: !!projectDeleteInProgress,
+  };
+
+  /**
+   * Autosave cada 60s solo con sesión + proyecto persistible (`activeProjectId`).
+   * El efecto depende de eso para reiniciar el reloj al cargar/crear proyecto (no solo al montar la página).
+   */
+  useEffect(() => {
+    if (!isAuthenticated || !activeProjectId) return;
+
+    const tick = () => {
+      const g = autosaveGateRef.current;
+      if (g.openLoad || g.openNew || g.deleting || isSavingRef.current) {
+        return;
+      }
+      void (async () => {
+        const ok = await saveProjectRef.current(undefined, { silentError: true });
+        if (ok) {
+          flashAutosavePulseRef.current();
+        } else {
+          console.warn(
+            '[FOLDDER autosave] No se pudo guardar (revisa red, API /api/spaces o que el proyecto exista en el servidor).'
+          );
+        }
+      })();
+    };
+
+    const id = window.setInterval(tick, 60_000);
+    return () => window.clearInterval(id);
+  }, [isAuthenticated, activeProjectId]);
+
+  useEffect(() => {
+    return () => {
+      if (autosavePulseTimerRef.current) window.clearTimeout(autosavePulseTimerRef.current);
+    };
+  }, []);
+
+  const submitNewProject = useCallback(async () => {
+    const trimmed = newProjectNameInput.trim();
+    if (!trimmed) {
+      alert('Introduce un nombre para el proyecto.');
+      return;
+    }
+    if (projectDeleteInProgress) return;
+    flushSync(() => {
+      setNodes([]);
+      setEdges([]);
+      setActiveSpaceId('root');
+      setNavigationStack([]);
+      setSpacesMap({});
+      setActiveProjectId(null);
+      setMetadata({});
+      setCurrentName(trimmed);
+      setWindowMode(false);
+      setViewerSourceNodeId(null);
+      setCardsFocusIndex(0);
+      setCanvasViewMode('free');
+    });
+    const ok = await saveProjectRef.current(trimmed);
+    if (ok) {
+      setShowNewProjectModal(false);
+      setNewProjectNameInput('');
+    }
+  }, [newProjectNameInput, projectDeleteInProgress, setNodes, setEdges]);
 
   const loadProject = (project: any) => {
     void (async () => {
@@ -3067,20 +3207,12 @@ const SpacesContent = () => {
       setShowLoadModal(false);
 
       setTimeout(() => {
-        const vp = ui?.viewport;
-        if (
-          vp &&
-          typeof vp.x === 'number' &&
-          typeof vp.y === 'number' &&
-          typeof vp.zoom === 'number' &&
-          Number.isFinite(vp.x) &&
-          Number.isFinite(vp.y) &&
-          Number.isFinite(vp.zoom)
-        ) {
-          setViewport({ x: vp.x, y: vp.y, zoom: vp.zoom });
-        } else {
-          fitView({ padding: FIT_VIEW_PADDING, duration: fitAnim(800), ...FOLDDER_FIT_VIEW_EASE });
-        }
+        void fitView({
+          padding: FIT_VIEW_PADDING,
+          duration: fitAnim(800),
+          interpolate: 'smooth',
+          ...FOLDDER_FIT_VIEW_EASE,
+        });
       }, 100);
     })();
   };
@@ -4400,6 +4532,7 @@ const SpacesContent = () => {
         </div>
       )}
       <div className="flex-1 relative" onContextMenu={(e) => e.preventDefault()} style={{ marginLeft: 0 }}>
+        <CanvasWallpaperTransition activeId={canvasBgId} options={CANVAS_BACKGROUNDS} />
         {/* Dentro de un Space anidado: viñeta + bordes laterales borrosos (se quita al volver a root) */}
         {isAuthenticated && activeSpaceId !== 'root' && (
           <div
@@ -4608,19 +4741,28 @@ const SpacesContent = () => {
             )}
             {apiUsagePanelOpen && <ApiUsageHud />}
             <AiRequestHud />
-            <button
-              type="button"
-              data-foldder-reactflow-zoom-badge
-              className="pointer-events-auto flex select-none items-center gap-1 rounded-md border border-white/25 bg-black/55 px-2 py-1.5 font-mono text-[11px] font-medium tabular-nums text-white shadow-md backdrop-blur-md hover:bg-black/70"
-              aria-expanded={apiUsagePanelOpen}
-              aria-controls="foldder-api-usage-panel"
-              aria-live="polite"
-              title={apiUsagePanelOpen ? 'Ocultar uso de APIs' : 'Ver uso de APIs (zoom del lienzo)'}
-              onClick={() => setApiUsagePanelOpen((v) => !v)}
-            >
-              <ZoomIn className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2} aria-hidden />
-              <span className="text-white">{(canvasZoom * 100).toFixed(0)}%</span>
-            </button>
+            <div className="pointer-events-auto flex items-center gap-2">
+              {showAutosavePulse && (
+                <span
+                  className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)]"
+                  aria-hidden
+                  title="Guardado automático"
+                />
+              )}
+              <button
+                type="button"
+                data-foldder-reactflow-zoom-badge
+                className="flex select-none items-center gap-1 rounded-md border border-white/25 bg-black/55 px-2 py-1.5 font-mono text-[11px] font-medium tabular-nums text-white shadow-md backdrop-blur-md hover:bg-black/70"
+                aria-expanded={apiUsagePanelOpen}
+                aria-controls="foldder-api-usage-panel"
+                aria-live="polite"
+                title={apiUsagePanelOpen ? 'Ocultar uso de APIs' : 'Ver uso de APIs (zoom del lienzo)'}
+                onClick={() => setApiUsagePanelOpen((v) => !v)}
+              >
+                <ZoomIn className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2} aria-hidden />
+                <span className="text-white">{(canvasZoom * 100).toFixed(0)}%</span>
+              </button>
+            </div>
           </div>
         )}
 
@@ -4881,25 +5023,25 @@ const SpacesContent = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={() =>
-                    !projectDeleteInProgress && (activeProjectId ? void saveProject() : setShowSaveModal(true))
-                  }
+                  onClick={() => {
+                    if (projectDeleteInProgress) return;
+                    setNewProjectNameInput('');
+                    setShowNewProjectModal(true);
+                  }}
                   disabled={isSaving || !!projectDeleteInProgress}
                   title={
                     projectDeleteInProgress
                       ? 'Espera a que termine el borrado'
-                      : activeProjectId
-                        ? 'Guardar cambios en el proyecto actual'
-                        : 'Guardar proyecto (elige nombre si es nuevo)'
+                      : 'Crear un proyecto nuevo (el lienzo actual no guardado se reemplaza; el actual se guarda solo cada minuto)'
                   }
-                  className={`flex h-10 items-center gap-2 rounded-xl border px-4 text-[9px] font-black uppercase tracking-widest shadow-sm backdrop-blur-xl transition-all hover:scale-105 disabled:opacity-50 ${
-                    activeProjectId
-                      ? 'border-rose-400/45 bg-rose-500/[0.10] text-rose-900 hover:bg-rose-500/[0.18]'
-                      : 'border-rose-400/35 bg-rose-600/88 text-white hover:bg-rose-600'
-                  }`}
+                  className="flex h-10 items-center gap-2 rounded-xl border border-blue-500/45 bg-blue-600 px-4 text-[9px] font-black uppercase tracking-widest text-white shadow-sm shadow-blue-900/20 backdrop-blur-xl transition-all hover:scale-105 hover:bg-blue-500 disabled:opacity-50"
                 >
-                  {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} className={activeProjectId ? 'text-rose-800' : ''} />}
-                  <span className="hidden sm:inline">Guardar</span>
+                  {isSaving ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <FolderPlus size={14} className="text-white" />
+                  )}
+                  <span className="hidden sm:inline">Nuevo proyecto</span>
                 </button>
               </div>
             </div>
@@ -5081,53 +5223,58 @@ const SpacesContent = () => {
         )}
 
         {/* Modals — mismo estilo que tarjetas Lógica en Sidebar (borde blanco /25, fondo white/20, slate-700) */}
-        {showSaveModal && (
+        {showNewProjectModal && (
           <div className="fixed inset-0 z-[10004] flex items-center justify-center p-4">
             <div
               className="absolute inset-0 bg-black/45 backdrop-blur-xl"
-              onClick={() => setShowSaveModal(false)}
+              onClick={() => !isSaving && setShowNewProjectModal(false)}
               aria-hidden
             />
             <div className="relative z-10 w-full max-w-md rounded-3xl border border-white/25 bg-white/20 p-8 shadow-2xl shadow-black/20 backdrop-blur-xl">
               <div className="mb-6 flex items-center justify-between">
                 <h2 className="flex items-center gap-3 text-xl font-black uppercase tracking-wide text-slate-800">
-                  <Save size={20} className="text-cyan-500" /> Save Workspace
+                  <FolderPlus size={20} className="text-blue-600" /> Nuevo proyecto
                 </h2>
                 <button
                   type="button"
-                  onClick={() => setShowSaveModal(false)}
+                  onClick={() => !isSaving && setShowNewProjectModal(false)}
                   className="rounded-full p-2 text-slate-500 transition-colors hover:bg-white/40 hover:text-slate-800"
-                  aria-label="Close"
+                  aria-label="Cerrar"
                 >
                   <X size={16} />
                 </button>
               </div>
+              <p className="mb-4 text-sm leading-relaxed text-slate-600">
+                Elige un nombre. Se creará un lienzo vacío y se guardará en el servidor; a partir de ahí el proyecto se
+                guardará solo cada minuto.
+              </p>
               <input
                 type="text"
                 autoFocus
-                placeholder="Give your project a name..."
-                value={currentName}
-                onChange={(e) => setCurrentName(e.target.value)}
+                placeholder="Nombre del proyecto"
+                value={newProjectNameInput}
+                onChange={(e) => setNewProjectNameInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') saveProject();
-                  if (e.key === 'Escape') setShowSaveModal(false);
+                  if (e.key === 'Enter') void submitNewProject();
+                  if (e.key === 'Escape' && !isSaving) setShowNewProjectModal(false);
                 }}
-                className="mb-6 w-full rounded-2xl border border-white/25 bg-white/25 px-4 py-3 text-sm font-bold text-slate-800 shadow-inner outline-none backdrop-blur-sm transition-all placeholder:text-slate-500 focus:border-cyan-400/60 focus:ring-2 focus:ring-cyan-400/25"
+                className="mb-6 w-full rounded-2xl border border-white/25 bg-white/25 px-4 py-3 text-sm font-bold text-slate-800 shadow-inner outline-none backdrop-blur-sm transition-all placeholder:text-slate-500 focus:border-blue-400/60 focus:ring-2 focus:ring-blue-400/25"
               />
               <div className="flex justify-end gap-3">
                 <button
                   type="button"
-                  onClick={() => setShowSaveModal(false)}
+                  onClick={() => !isSaving && setShowNewProjectModal(false)}
                   className="rounded-2xl border border-white/25 bg-white/15 px-6 py-2.5 font-black text-[11px] uppercase tracking-widest text-slate-700 transition-all hover:bg-white/35"
                 >
-                  Cancel
+                  Cancelar
                 </button>
                 <button
                   type="button"
-                  onClick={() => saveProject()}
-                  className="flex items-center gap-2 rounded-2xl border border-cyan-400/40 bg-cyan-500 px-6 py-2.5 font-black text-[11px] uppercase tracking-widest text-white shadow-lg shadow-cyan-500/25 transition-all hover:bg-cyan-400"
+                  onClick={() => void submitNewProject()}
+                  disabled={isSaving}
+                  className="flex items-center gap-2 rounded-2xl border border-blue-500/45 bg-blue-600 px-6 py-2.5 font-black text-[11px] uppercase tracking-widest text-white shadow-lg shadow-blue-900/25 transition-all hover:bg-blue-500 disabled:opacity-50"
                 >
-                  {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save Project
+                  {isSaving ? <Loader2 size={14} className="animate-spin" /> : <FolderPlus size={14} />} Crear
                 </button>
               </div>
             </div>
