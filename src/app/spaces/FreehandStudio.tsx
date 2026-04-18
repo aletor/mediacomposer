@@ -3102,6 +3102,11 @@ export type RenderObjOpts = {
   textEditingId?: string | null;
   /** Designer: marco cuyo asset se está optimizando (HUD con fade en el lienzo). */
   imageFrameOptimizeShowFrameId?: string | null;
+  /**
+   * Presenter: no pintar bitmap (imagen suelta, contenido de marco, boolean raster) en estos ids
+   * cuando ya hay vídeo superpuesto en el mismo ancla.
+   */
+  presenterSuppressBitmapObjectIds?: ReadonlySet<string>;
 };
 
 export function renderObj(
@@ -3129,6 +3134,7 @@ export function renderObj(
           !!opts?.designerMode &&
           opts?.imageFrameOptimizeShowFrameId != null &&
           opts.imageFrameOptimizeShowFrameId === rObj.id;
+        const suppressPresenterBitmap = opts?.presenterSuppressBitmapObjectIds?.has(rObj.id) ?? false;
         return (
           <g key={rObj.id} transform={transform} opacity={rObj.opacity}>
             <defs>
@@ -3142,12 +3148,14 @@ export function renderObj(
               width={rObj.width}
               height={rObj.height}
               rx={rObj.rx}
-              fill={fillAttr}
+              fill={suppressPresenterBitmap ? "none" : fillAttr}
               stroke={frameSelected ? rObj.stroke : "none"}
               strokeWidth={frameSelected ? rObj.strokeWidth : 0}
               strokeDasharray={frameSelected ? svgStrokeDashArray(rObj.strokeDasharray) : undefined}
+              {...(suppressPresenterBitmap ? { pointerEvents: "all" as const } : {})}
             />
-            {ifc?.src ? (
+            {ifc?.src &&
+            !(opts?.presenterSuppressBitmapObjectIds?.has(rObj.id) ?? false) ? (
               <image
                 clipPath={`url(#${cid})`}
                 href={ifc.src}
@@ -3159,12 +3167,12 @@ export function renderObj(
                   Math.abs(ifc.scaleX - ifc.scaleY) < 1e-5 ? "xMidYMid meet" : "none"
                 }
               />
-            ) : (
+            ) : !ifc?.src ? (
               <g clipPath={`url(#${cid})`} opacity={0.3}>
                 <line x1={rObj.x} y1={rObj.y} x2={rObj.x + rObj.width} y2={rObj.y + rObj.height} stroke={rObj.stroke || "#888"} strokeWidth={0.5} />
                 <line x1={rObj.x + rObj.width} y1={rObj.y} x2={rObj.x} y2={rObj.y + rObj.height} stroke={rObj.stroke || "#888"} strokeWidth={0.5} />
               </g>
-            )}
+            ) : null}
             {opts?.designerMode ? (
               <DesignerImageFrameOptimizeOverlay
                 x={rObj.x}
@@ -3177,13 +3185,43 @@ export function renderObj(
           </g>
         );
       }
-      return <rect key={obj.id} x={obj.x} y={obj.y} width={obj.width} height={obj.height} rx={rObj.rx} fill={fillAttr} transform={transform} {...strokeProps} />;
+      const suppressPresenterRectFill = opts?.presenterSuppressBitmapObjectIds?.has(rObj.id) ?? false;
+      return (
+        <rect
+          key={obj.id}
+          x={obj.x}
+          y={obj.y}
+          width={obj.width}
+          height={obj.height}
+          rx={rObj.rx}
+          fill={suppressPresenterRectFill ? "none" : fillAttr}
+          transform={transform}
+          {...strokeProps}
+          {...(suppressPresenterRectFill ? { pointerEvents: "all" as const } : {})}
+        />
+      );
     }
-    case "ellipse":
-      return <ellipse key={obj.id} cx={obj.x + obj.width / 2} cy={obj.y + obj.height / 2} rx={obj.width / 2} ry={obj.height / 2} fill={fillAttr} transform={transform} {...strokeProps} />;
+    case "ellipse": {
+      const suppressPresenterEllipseFill = opts?.presenterSuppressBitmapObjectIds?.has(obj.id) ?? false;
+      return (
+        <ellipse
+          key={obj.id}
+          cx={obj.x + obj.width / 2}
+          cy={obj.y + obj.height / 2}
+          rx={obj.width / 2}
+          ry={obj.height / 2}
+          fill={suppressPresenterEllipseFill ? "none" : fillAttr}
+          transform={transform}
+          {...strokeProps}
+          {...(suppressPresenterEllipseFill ? { pointerEvents: "all" as const } : {})}
+        />
+      );
+    }
     case "path": {
       const p = obj as PathObject;
-      const fp = p.closed && fillHasPaint(fill) ? fillAttr : "none";
+      const suppressPresenterPathFill = opts?.presenterSuppressBitmapObjectIds?.has(obj.id) ?? false;
+      const fp =
+        suppressPresenterPathFill ? "none" : p.closed && fillHasPaint(fill) ? fillAttr : "none";
       const d = pathObjToD(p);
       const strokeHex = p.stroke && p.stroke !== "none" ? p.stroke : "#94a3b8";
       const mk = pathMarkerDefsAndAttrs(p, strokeHex);
@@ -3192,6 +3230,7 @@ export function renderObj(
           ? { markerStart: mk.markerStart, markerEnd: mk.markerEnd }
           : {};
       const pathProps = { ...strokeProps, ...mProps };
+      const peHit = suppressPresenterPathFill ? ({ pointerEvents: "all" as const } as const) : {};
       const hasIntrinsic =
         p.svgPathIntrinsicW != null &&
         p.svgPathIntrinsicH != null &&
@@ -3206,7 +3245,7 @@ export function renderObj(
           <g key={obj.id} transform={transform}>
             <g transform={`translate(${obj.x} ${obj.y}) scale(${sx} ${sy})`}>
               {mk.defs}
-              <path d={d} fill={fp} {...pathProps} />
+              <path d={d} fill={fp} {...pathProps} {...peHit} />
             </g>
           </g>
         );
@@ -3220,7 +3259,7 @@ export function renderObj(
           <g key={obj.id} transform={transform}>
             <g transform={innerM}>
               {mk.defs}
-              <path d={d} fill={fp} {...pathProps} />
+              <path d={d} fill={fp} {...pathProps} {...peHit} />
             </g>
           </g>
         );
@@ -3228,10 +3267,10 @@ export function renderObj(
       return mk.defs ? (
         <g key={obj.id} transform={transform}>
           {mk.defs}
-          <path d={d} fill={fp} {...pathProps} />
+          <path d={d} fill={fp} {...pathProps} {...peHit} />
         </g>
       ) : (
-        <path key={obj.id} d={d} fill={fp} transform={transform} {...pathProps} />
+        <path key={obj.id} d={d} fill={fp} transform={transform} {...pathProps} {...peHit} />
       );
     }
     case "text": {
@@ -3404,10 +3443,28 @@ export function renderObj(
         </g>
       );
     }
-    case "image":
+    case "image": {
+      const im = obj as ImageObject;
+      if (opts?.presenterSuppressBitmapObjectIds?.has(obj.id)) {
+        /** Sin bitmap visible pero el área sigue siendo clicable para seleccionar el ancla (handles de vídeo). */
+        return (
+          <rect
+            key={obj.id}
+            x={im.x}
+            y={im.y}
+            width={im.width}
+            height={im.height}
+            fill="transparent"
+            stroke="none"
+            pointerEvents="all"
+            transform={transform}
+            opacity={im.opacity}
+          />
+        );
+      }
       return (
         <image
-          href={(obj as ImageObject).src}
+          href={im.src}
           x={obj.x}
           y={obj.y}
           width={obj.width}
@@ -3417,9 +3474,26 @@ export function renderObj(
           opacity={obj.opacity}
         />
       );
+    }
     case "booleanGroup": {
       const bg = obj as BooleanGroupObject;
       if (bg.cachedResult) {
+        if (opts?.presenterSuppressBitmapObjectIds?.has(bg.id)) {
+          return (
+            <rect
+              key={bg.id}
+              x={bg.x}
+              y={bg.y}
+              width={bg.width}
+              height={bg.height}
+              fill="transparent"
+              stroke="none"
+              pointerEvents="all"
+              transform={transform}
+              opacity={bg.opacity}
+            />
+          );
+        }
         return (
           <image
             href={bg.cachedResult}

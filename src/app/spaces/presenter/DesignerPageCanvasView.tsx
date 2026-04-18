@@ -351,6 +351,24 @@ export function DesignerPageCanvasView({
     return normalizeMarquee(marqueeBox.x0, marqueeBox.y0, marqueeBox.x1, marqueeBox.y1);
   }, [marqueeBox]);
 
+  /** Sin bitmap/relleno bajo el vídeo cuando ya hay URL colocada en ese ancla. */
+  const presenterSuppressBitmapObjectIds = useMemo(() => {
+    if (!presenterImageVideo?.placements?.length) return undefined;
+    const s = new Set<string>();
+    for (const pl of presenterImageVideo.placements) {
+      if (pl.videoUrl?.trim()) s.add(pl.imageObjectId);
+    }
+    return s.size > 0 ? s : undefined;
+  }, [presenterImageVideo?.placements]);
+
+  const presenterRenderOpts = useMemo(
+    (): RenderObjOpts => ({
+      ...PRESENTER_RENDER_OPTS,
+      ...(presenterSuppressBitmapObjectIds ? { presenterSuppressBitmapObjectIds } : {}),
+    }),
+    [presenterSuppressBitmapObjectIds],
+  );
+
   const presenterImageTargets = useMemo(
     () => (presenterImageVideo ? collectPresenterImageTargets(objects) : []),
     [objects, presenterImageVideo],
@@ -547,7 +565,7 @@ export function DesignerPageCanvasView({
                 style={pickStyle}
                 onPointerDownCapture={onPickCap}
               >
-                {renderObj(obj, objects, new Set(), PRESENTER_RENDER_OPTS)}
+                {renderObj(obj, objects, new Set(), presenterRenderOpts)}
               </g>
             </g>
           </Fragment>
@@ -583,7 +601,7 @@ export function DesignerPageCanvasView({
               >
                 {members.map((m) => (
                   <g key={m.id} data-fh-obj={m.id}>
-                    {renderObj(m, objects, new Set(), PRESENTER_RENDER_OPTS)}
+                    {renderObj(m, objects, new Set(), presenterRenderOpts)}
                   </g>
                 ))}
               </g>
