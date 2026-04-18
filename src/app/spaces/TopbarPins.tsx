@@ -7,16 +7,17 @@ import { TOPBAR_GLYPH_BY_NODE_TYPE } from "./TopbarPinIcons";
 export const TOPBAR_PIN_ICON_SIZE = 32;
 
 /**
- * Accesos fijos (no personalizables): Files (biblioteca) → Designer → Presenter → Image → Video → VFX.
- * Files no añade nodo; abre la vista fullscreen de multimedia. Orden estable.
+ * Accesos fijos (no personalizables): Brain → Design → Present → Image → Video → VFX → Assets.
+ * Brain y Assets no añaden nodo; abren paneles fullscreen. Orden estable.
  */
 export const TOPBAR_FIXED_PIN_TYPES = [
-  "files",
+  "brain",
   "designer",
   "presenter",
   "nanoBanana",
   "geminiVideo",
   "vfxGenerator",
+  "files",
 ] as const;
 
 /** Tooltip (nombre completo) vs etiqueta corta bajo el icono. */
@@ -24,18 +25,21 @@ const TOPBAR_PIN_UI: Record<
   (typeof TOPBAR_FIXED_PIN_TYPES)[number],
   { title: string; shortLabel: string }
 > = {
-  files: { title: "Archivos del proyecto", shortLabel: "Files" },
+  brain: { title: "Brain — marca y conocimiento", shortLabel: "Brain" },
   designer: { title: "Designer Studio", shortLabel: "Design" },
   presenter: { title: "Presenter", shortLabel: "Present" },
   nanoBanana: { title: "Image Generator", shortLabel: "Image" },
   geminiVideo: { title: "Video Generator", shortLabel: "Video" },
   vfxGenerator: { title: "VFX Generator", shortLabel: "VFX" },
+  files: { title: "Assets — multimedia del proyecto", shortLabel: "Assets" },
 };
 
 type TopbarPinsProps = {
-  /** Clic en «Files»: abrir biblioteca multimedia (fullscreen). No añade nodo. */
-  onFilesClick?: () => void;
-  /** Doble clic: añadir nodo al lienzo en hueco y encuadrar (no aplica a «Files»). */
+  /** Clic en «Brain»: identidad + fuente de conocimiento. */
+  onBrainClick?: () => void;
+  /** Clic en «Assets»: biblioteca multimedia (importados / generados). */
+  onAssetsClick?: () => void;
+  /** Doble clic: añadir nodo al lienzo en hueco y encuadrar (no aplica a Brain ni Assets). */
   onPinDoubleClick?: (nodeType: string) => void;
   /** Arrastre desde la librería: sin tooltip hover encima de la barra */
   paletteDragActive?: boolean;
@@ -69,7 +73,8 @@ type PinChipProps = {
   iconSize: number;
   chipClassName: string;
   captionClassName: string;
-  onFilesClick?: () => void;
+  onBrainClick?: () => void;
+  onAssetsClick?: () => void;
   onPinDoubleClick?: (nodeType: string) => void;
   paletteDragActive?: boolean;
 };
@@ -81,34 +86,45 @@ function TopbarPinChip({
   iconSize,
   chipClassName,
   captionClassName,
-  onFilesClick,
+  onBrainClick,
+  onAssetsClick,
   onPinDoubleClick,
   paletteDragActive = false,
 }: PinChipProps) {
   const Glyph = TOPBAR_GLYPH_BY_NODE_TYPE[type];
-  const isFiles = type === "files";
+  const isBrain = type === "brain";
+  const isAssets = type === "files";
+  const isPanelPin = isBrain || isAssets;
 
   return (
     <div className="relative shrink-0 group/pin pt-3 -mt-3 pb-0.5 overflow-visible">
       <button
         type="button"
-        className={`${chipClassName}${isFiles ? " !cursor-pointer" : ""}`}
+        className={`${chipClassName}${isPanelPin ? " !cursor-pointer" : ""}`}
         aria-label={
-          isFiles
-            ? `${title}. Clic para abrir la biblioteca de multimedia del proyecto.`
-            : `${title}. Doble clic para añadir al lienzo.`
+          isBrain
+            ? `${title}. Clic para abrir identidad de marca y fuente de conocimiento.`
+            : isAssets
+              ? `${title}. Clic para abrir la biblioteca multimedia del lienzo.`
+              : `${title}. Doble clic para añadir al lienzo.`
         }
         onClick={
-          isFiles
+          isBrain
             ? (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                onFilesClick?.();
+                onBrainClick?.();
               }
-            : undefined
+            : isAssets
+              ? (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onAssetsClick?.();
+                }
+              : undefined
         }
         onDoubleClick={
-          isFiles
+          isPanelPin
             ? undefined
             : (e) => {
                 e.preventDefault();
@@ -126,7 +142,8 @@ function TopbarPinChip({
 }
 
 export function TopbarPins({
-  onFilesClick,
+  onBrainClick,
+  onAssetsClick,
   onPinDoubleClick,
   paletteDragActive = false,
   embedded = false,
@@ -162,10 +179,10 @@ export function TopbarPins({
             ? "flex min-h-0 w-full min-w-0 flex-nowrap items-center justify-center gap-2 sm:gap-2.5"
             : embedded
               ? "flex min-h-[32px] w-full max-w-none flex-wrap items-center gap-1 px-0.5 py-0.5"
-              : "flex min-h-[36px] w-full max-w-[min(520px,92vw)] flex-wrap items-center justify-center gap-1.5 rounded-xl border border-white/25 bg-white/[0.08] px-2 py-1 shadow-sm backdrop-blur-xl"
+              : "flex min-h-[36px] w-full max-w-[min(640px,94vw)] flex-wrap items-center justify-center gap-1.5 rounded-xl border border-white/25 bg-white/[0.08] px-2 py-1 shadow-sm backdrop-blur-xl"
         }
         role="toolbar"
-        aria-label="Accesos directos: Files, Designer, Presenter, Image, Video, VFX. Files abre la biblioteca; en el resto, doble clic para añadir al lienzo."
+        aria-label="Accesos directos: Brain, Design, Present, Image, Video, VFX, Assets. Brain y Assets abren paneles; en el resto, doble clic para añadir al lienzo."
       >
         {TOPBAR_FIXED_PIN_TYPES.map((type) => {
           const ui = TOPBAR_PIN_UI[type];
@@ -180,7 +197,8 @@ export function TopbarPins({
                 iconSize={TOPBAR_PIN_ICON_SIZE}
                 chipClassName={chipEmbedded}
                 captionClassName={captionEmbedded}
-                onFilesClick={onFilesClick}
+                onBrainClick={onBrainClick}
+                onAssetsClick={onAssetsClick}
                 onPinDoubleClick={onPinDoubleClick}
                 paletteDragActive={paletteDragActive}
               />
@@ -196,7 +214,8 @@ export function TopbarPins({
               iconSize={28}
               chipClassName={chipDefault}
               captionClassName={captionDefault}
-              onFilesClick={onFilesClick}
+              onBrainClick={onBrainClick}
+              onAssetsClick={onAssetsClick}
               onPinDoubleClick={onPinDoubleClick}
               paletteDragActive={paletteDragActive}
             />

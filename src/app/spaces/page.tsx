@@ -76,7 +76,8 @@ import { HandleTypeLegend } from './HandleTypeLegend';
 import { AiRequestHud } from './AiRequestHud';
 import { ExternalApiBlockedModal } from './ExternalApiBlockedModal';
 import { TopbarPins } from './TopbarPins';
-import { ProjectFilesFullscreen } from './ProjectFilesFullscreen';
+import { ProjectBrainFullscreen } from './ProjectBrainFullscreen';
+import { ProjectAssetsFullscreen } from './ProjectAssetsFullscreen';
 import {
   resolveHandleMetaForCanvasDrop,
   pickNewNodeTypeForCanvasDrop,
@@ -717,7 +718,8 @@ const SpacesContent = () => {
   const libraryCanvasDropSucceededRef = useRef(false);
   /** Arrastre activo desde la librería: oculta tooltips rollover y evita solapes de UI */
   const [paletteDragActive, setPaletteDragActive] = useState(false);
-  const [projectFilesOpen, setProjectFilesOpen] = useState(false);
+  const [projectBrainOpen, setProjectBrainOpen] = useState(false);
+  const [projectAssetsOpen, setProjectAssetsOpen] = useState(false);
 
   useEffect(() => {
     try {
@@ -4937,7 +4939,7 @@ const SpacesContent = () => {
           )}
         </div>
 
-        {/* Barra inferior: accesos fijos (Designer, Presenter, Image, Video, VFX) */}
+        {/* Barra inferior: Brain, Design, Present, Image, Video, VFX, Assets */}
         {isAuthenticated && !windowMode && (
           <div
             data-foldder-top-hud
@@ -4946,7 +4948,8 @@ const SpacesContent = () => {
             <TopbarPins
               embedded
               fullWidthRow
-              onFilesClick={() => setProjectFilesOpen(true)}
+              onBrainClick={() => setProjectBrainOpen(true)}
+              onAssetsClick={() => setProjectAssetsOpen(true)}
               onPinDoubleClick={addNodeFromTopbarPinDoubleClick}
               paletteDragActive={paletteDragActive}
             />
@@ -4954,7 +4957,23 @@ const SpacesContent = () => {
         )}
 
         {isAuthenticated && (
-          <ProjectFilesFullscreen open={projectFilesOpen} onClose={() => setProjectFilesOpen(false)} nodes={nodes} />
+          <ProjectBrainFullscreen
+            open={projectBrainOpen}
+            onClose={() => setProjectBrainOpen(false)}
+            assetsMetadata={metadata.assets}
+            onAssetsMetadataChange={(next) =>
+              setMetadata((m: Record<string, unknown>) => ({ ...m, assets: next }))
+            }
+          />
+        )}
+
+        {isAuthenticated && (
+          <ProjectAssetsFullscreen
+            open={projectAssetsOpen}
+            onClose={() => setProjectAssetsOpen(false)}
+            nodes={nodes}
+            assetsMetadata={metadata.assets}
+          />
         )}
 
         {assistantClarify && (

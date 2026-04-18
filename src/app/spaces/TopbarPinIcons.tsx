@@ -160,7 +160,80 @@ export function TopbarGlyphIndesign({ size = 26, className }: GlyphProps) {
   );
 }
 
-/** Files — carpeta + hoja (biblioteca multimedia del proyecto; no es nodo del grafo). */
+/**
+ * Brain — misma geometría legible que el icono «brain» de Lucide (hemisferios + surco + circunvoluciones).
+ * Trazo alineado al resto de glifos de la barra. No es nodo del grafo.
+ */
+export function TopbarGlyphBrain({ size = 26, className }: GlyphProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      className={className}
+      aria-hidden
+    >
+      <path
+        d="M12 18V5"
+        stroke="currentColor"
+        strokeWidth={sw}
+        strokeLinecap="round"
+      />
+      <path
+        d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"
+        stroke="currentColor"
+        strokeWidth={sw}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"
+        stroke="currentColor"
+        strokeWidth={sw}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M17.997 5.125a4 4 0 0 1 2.526 5.77"
+        stroke="currentColor"
+        strokeWidth={sw}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M18 18a4 4 0 0 0 2-7.464"
+        stroke="currentColor"
+        strokeWidth={sw}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"
+        stroke="currentColor"
+        strokeWidth={sw}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M6 18a4 4 0 0 1-2-7.464"
+        stroke="currentColor"
+        strokeWidth={sw}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M6.003 5.125a4 4 0 0 0-2.526 5.77"
+        stroke="currentColor"
+        strokeWidth={sw}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/** Assets — carpeta + hoja (biblioteca multimedia del lienzo; no es nodo del grafo). */
 export function TopbarGlyphFiles({ size = 26, className }: GlyphProps) {
   return (
     <svg
@@ -248,13 +321,20 @@ export function TopbarGlyphVfxGenerator({ size = 26, className }: GlyphProps) {
 }
 
 export const TOPBAR_GLYPH_BY_NODE_TYPE: Record<
-  "files" | "designer" | "presenter" | "nanoBanana" | "geminiVideo" | "vfxGenerator",
+  | "brain"
+  | "designer"
+  | "presenter"
+  | "nanoBanana"
+  | "geminiVideo"
+  | "vfxGenerator"
+  | "files",
   React.FC<GlyphProps>
 > = {
-  files: TopbarGlyphFiles,
+  brain: TopbarGlyphBrain,
   designer: TopbarGlyphIndesign,
   presenter: TopbarGlyphPresenter,
   nanoBanana: TopbarGlyphImageGenerator,
   geminiVideo: TopbarGlyphVideoGenerator,
   vfxGenerator: TopbarGlyphVfxGenerator,
+  files: TopbarGlyphFiles,
 };

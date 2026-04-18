@@ -5,11 +5,14 @@ import { createPortal } from "react-dom";
 import type { Node } from "@xyflow/react";
 import { FolderOpen, X } from "lucide-react";
 import { collectProjectMedia, type ProjectMediaItem } from "./project-media-inventory";
+import { normalizeProjectAssets } from "./project-assets-metadata";
 
 type Props = {
   open: boolean;
   onClose: () => void;
   nodes: Node[];
+  /** Solo lectura: logos y colores definidos en Brain (`metadata.assets`). */
+  assetsMetadata: unknown;
 };
 
 function MediaTile({ item }: { item: ProjectMediaItem }) {
@@ -60,7 +63,7 @@ function MediaTile({ item }: { item: ProjectMediaItem }) {
   );
 }
 
-function Section({
+function MediaSection({
   title,
   subtitle,
   items,
@@ -78,7 +81,9 @@ function Section({
         <p className="mt-0.5 text-[11px] text-zinc-500">{subtitle}</p>
       </div>
       {items.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-8 text-center text-[12px] text-zinc-500">{emptyHint}</p>
+        <p className="rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-8 text-center text-[12px] text-zinc-500">
+          {emptyHint}
+        </p>
       ) : (
         <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {items.map((item) => (
@@ -92,7 +97,67 @@ function Section({
   );
 }
 
-export function ProjectFilesFullscreen({ open, onClose, nodes }: Props) {
+function BrandReadonlyStrip({ assetsMetadata }: { assetsMetadata: unknown }) {
+  const brand = useMemo(() => normalizeProjectAssets(assetsMetadata).brand, [assetsMetadata]);
+
+  return (
+    <section
+      className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 sm:px-5"
+      aria-label="Identidad de marca desde Brain, solo consulta"
+    >
+      <p className="mb-3 text-[10px] font-black uppercase tracking-[0.12em] text-zinc-500">
+        Marca <span className="font-medium normal-case text-zinc-600">(desde Brain · no editable aquí)</span>
+      </p>
+      <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between sm:gap-6">
+        <div className="flex flex-wrap gap-4">
+          <div className="min-w-0">
+            <p className="mb-1 text-[9px] font-semibold uppercase tracking-wide text-zinc-500">Logo +</p>
+            <div className="flex h-14 w-[4.5rem] items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-zinc-950/80">
+              {brand.logoPositive ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={brand.logoPositive} alt="" className="max-h-full max-w-full object-contain p-1" />
+              ) : (
+                <span className="text-[9px] text-zinc-600">—</span>
+              )}
+            </div>
+          </div>
+          <div className="min-w-0">
+            <p className="mb-1 text-[9px] font-semibold uppercase tracking-wide text-zinc-500">Logo −</p>
+            <div className="flex h-14 w-[4.5rem] items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-zinc-900/90">
+              {brand.logoNegative ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={brand.logoNegative} alt="" className="max-h-full max-w-full object-contain p-1" />
+              ) : (
+                <span className="text-[9px] text-zinc-600">—</span>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-end gap-3 sm:gap-4">
+          {(
+            [
+              { key: "pri", label: "Pri.", hex: brand.colorPrimary },
+              { key: "sec", label: "Sec.", hex: brand.colorSecondary },
+              { key: "acc", label: "Acento", hex: brand.colorAccent },
+            ] as const
+          ).map(({ key, label, hex }) => (
+            <div key={key} className="flex flex-col items-center gap-1">
+              <span className="text-[8px] font-medium uppercase tracking-wide text-zinc-500">{label}</span>
+              <span
+                className="h-7 w-7 shrink-0 rounded-md border border-white/15 shadow-inner ring-1 ring-black/20"
+                style={{ backgroundColor: hex }}
+                title={hex}
+              />
+              <span className="font-mono text-[8px] leading-none text-zinc-500">{hex}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function ProjectAssetsFullscreen({ open, onClose, nodes, assetsMetadata }: Props) {
   const { imported, generated } = useMemo(() => collectProjectMedia(nodes), [nodes]);
 
   useEffect(() => {
@@ -117,7 +182,7 @@ export function ProjectFilesFullscreen({ open, onClose, nodes }: Props) {
       className="fixed inset-0 z-[100080] flex flex-col bg-[#0c0e12]"
       role="dialog"
       aria-modal="true"
-      aria-labelledby="project-files-title"
+      aria-labelledby="project-assets-media-title"
     >
       <header className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-zinc-950/90 px-4 py-3 backdrop-blur-md sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
@@ -125,10 +190,12 @@ export function ProjectFilesFullscreen({ open, onClose, nodes }: Props) {
             <FolderOpen className="h-5 w-5 text-amber-300" strokeWidth={1.75} aria-hidden />
           </span>
           <div className="min-w-0">
-            <h1 id="project-files-title" className="text-base font-black uppercase tracking-wide text-zinc-100">
-              Files
+            <h1 id="project-assets-media-title" className="text-base font-black uppercase tracking-wide text-zinc-100">
+              Assets
             </h1>
-            <p className="text-[11px] text-zinc-500">Multimedia del proyecto · importados y generados en el espacio</p>
+            <p className="text-[11px] text-zinc-500">
+              Vista de marca (solo lectura) y multimedia del lienzo
+            </p>
           </div>
         </div>
         <button
@@ -142,19 +209,26 @@ export function ProjectFilesFullscreen({ open, onClose, nodes }: Props) {
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6">
-        <div className="mx-auto flex max-w-[1600px] flex-col gap-10 lg:flex-row lg:gap-12">
-          <Section
+        <div className="mx-auto flex max-w-[1600px] flex-col gap-8">
+          <BrandReadonlyStrip assetsMetadata={assetsMetadata} />
+          <div className="flex flex-col gap-10 lg:flex-row lg:gap-12">
+          <MediaSection
             title="Importados"
             subtitle="Archivos que has añadido: subidas, URLs, contenido en Designer/Presenter, etc."
             items={imported}
             emptyHint="Aún no hay elementos importados visibles en este proyecto."
           />
-          <Section
+          <MediaSection
             title="Generados"
             subtitle="Salidas del sistema: Image/Video/VFX, Grok, historial graph-run, etc."
             items={generated}
             emptyHint="Aún no hay elementos generados en este proyecto."
           />
+          </div>
+          <p className="mt-10 pb-4 text-center text-[11px] text-zinc-600">
+            Para editar logos y colores abre <span className="font-semibold text-zinc-500">Brain</span>. La lista de
+            multimedia refleja el grafo actual; guarda el proyecto para persistir.
+          </p>
         </div>
       </div>
     </div>
