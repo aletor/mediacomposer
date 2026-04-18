@@ -5,6 +5,9 @@
 
 import type { FreehandObject } from "../FreehandStudio";
 
+/** Debe coincidir con la duración en `globals.css` (`.presenter-g-fade`, `.presenter-g-slide-*`, etc.). */
+export const PRESENTER_GROUP_ENTER_ANIM_MS = 2000;
+
 export type PresenterGroupEnterId =
   | "none"
   | "instant"

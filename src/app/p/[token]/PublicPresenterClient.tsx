@@ -4,7 +4,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { getPageDimensions } from "@/app/spaces/indesign/page-formats";
 import { PresenterSlideStage, resolveIncomingTransition } from "@/app/spaces/presenter/PresenterSlideStage";
 import type { PlayRevealState } from "@/app/spaces/presenter/DesignerPageCanvasView";
-import { mergeStepsWithPage, presenterStepKey } from "@/app/spaces/presenter/presenter-group-animations";
+import {
+  mergeStepsWithPage,
+  PRESENTER_GROUP_ENTER_ANIM_MS,
+  presenterStepKey,
+} from "@/app/spaces/presenter/presenter-group-animations";
 import type { SlideTransitionId } from "@/app/spaces/presenter/slide-transition-types";
 import type { PresenterShareRecord } from "@/lib/presenter-share-types";
 import {
@@ -104,7 +108,10 @@ export function PublicPresenterClient({ initial }: Props) {
       setPlayRevealCount(next);
       if (playAnimTimerRef.current) clearTimeout(playAnimTimerRef.current);
       setAnimateEnterTargetKey(k);
-      playAnimTimerRef.current = window.setTimeout(() => setAnimateEnterTargetKey(null), 520);
+      playAnimTimerRef.current = window.setTimeout(
+        () => setAnimateEnterTargetKey(null),
+        PRESENTER_GROUP_ENTER_ANIM_MS,
+      );
       return;
     }
     const nextI = nextPlayableIndex(pages, activeIdx);
@@ -233,9 +240,9 @@ export function PublicPresenterClient({ initial }: Props) {
       onClick={() => playAdvanceRight()}
       title="Clic para avanzar · flechas: grupos y slides"
     >
-      <div className="flex min-h-screen items-center justify-center p-4">
+      <div className="flex min-h-screen items-center justify-center p-0">
         <div
-          className="relative w-full max-w-[min(96vw,calc(85vh*16/9))] overflow-hidden rounded-lg bg-[#fafafa] shadow-2xl"
+          className="relative w-full max-w-[min(96vw,calc(85vh*16/9))] overflow-hidden bg-black"
           style={{
             aspectRatio: `${Math.max(1, dims.width)} / ${Math.max(1, dims.height)}`,
           }}

@@ -1,5 +1,5 @@
-import type { FreehandObject } from "../FreehandStudio";
-import { buildObjTransform } from "../FreehandStudio";
+import type { FreehandObject, PathObject } from "../FreehandStudio";
+import { buildObjTransform, pathClosedForPresenterVideo } from "../FreehandStudio";
 import { revealTargetKey } from "./presenter-group-animations";
 
 export type PresenterImageTarget = {
@@ -61,8 +61,12 @@ function walk(objects: FreehandObject[] | undefined, acc: PresenterImageTarget[]
     if (o.type === "image") {
       pushImageLike(o, o.x, o.y, o.width, o.height, acc);
     } else if (o.type === "rect") {
-      const r = o as FreehandObject & { isImageFrame?: boolean };
-      if (r.isImageFrame) {
+      pushImageLike(o, o.x, o.y, o.width, o.height, acc);
+    } else if (o.type === "ellipse") {
+      pushImageLike(o, o.x, o.y, o.width, o.height, acc);
+    } else if (o.type === "path") {
+      const p = o as PathObject;
+      if (pathClosedForPresenterVideo(p)) {
         pushImageLike(o, o.x, o.y, o.width, o.height, acc);
       }
     } else if (o.type === "booleanGroup") {
@@ -76,7 +80,7 @@ function walk(objects: FreehandObject[] | undefined, acc: PresenterImageTarget[]
   }
 }
 
-/** Objetos con bitmap visible en el lienzo del presenter (para anclar video). */
+/** Destinos del presenter donde se puede anclar vídeo: imagen, marco con foto, boolean raster, rectángulo, elipse, path cerrado. */
 export function collectPresenterImageTargets(objects: FreehandObject[]): PresenterImageTarget[] {
   const acc: PresenterImageTarget[] = [];
   walk(objects, acc);

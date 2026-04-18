@@ -265,7 +265,7 @@ export function PresenterSlideStage({
 
     return (
       <div
-        className="absolute inset-0 flex min-h-0 min-w-0 items-center justify-center p-2"
+        className={`absolute inset-0 flex min-h-0 min-w-0 items-center justify-center ${showPresentationBounds ? "p-2" : "p-0"}`}
         style={{ containerType: "size" }}
       >
         <div className="relative flex h-full w-full min-h-0 min-w-0 items-center justify-center overflow-hidden">
@@ -319,7 +319,7 @@ export function PresenterSlideStage({
   return (
     <div
       ref={boundsContainerRef}
-      className="absolute inset-0 flex min-h-0 min-w-0 items-center justify-center p-2"
+      className={`absolute inset-0 flex min-h-0 min-w-0 items-center justify-center ${showPresentationBounds ? "p-2" : "p-0"}`}
       style={{ containerType: "size" }}
     >
       <PresentationBoundsChrome
@@ -331,7 +331,7 @@ export function PresenterSlideStage({
       />
       <div
         ref={boundsSlideRef}
-        className="relative z-10 min-h-0 min-w-0 shrink-0 overflow-hidden rounded-[2px]"
+        className={`relative z-10 min-h-0 min-w-0 shrink-0 overflow-hidden ${showPresentationBounds ? "rounded-[2px]" : "rounded-none"}`}
         style={{
           ...slideBoxStyle(dims.width, dims.height),
           ...(showPresentationBounds

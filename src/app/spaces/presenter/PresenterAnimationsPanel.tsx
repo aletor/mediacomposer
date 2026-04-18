@@ -87,6 +87,13 @@ export function PresenterAnimationsPanel({
 
   const selectedSet = useMemo(() => new Set(selectedStepKeys), [selectedStepKeys]);
 
+  /** Pasos que corresponden exactamente a las claves seleccionadas en el lienzo (para marcar el preset activo). */
+  const selectedStepsMatchingKeys = useMemo(() => {
+    return selectedStepKeys
+      .map((k) => steps.find((s) => presenterStepKey(s) === k))
+      .filter((s): s is PresenterRevealStep => s != null);
+  }, [selectedStepKeys, steps]);
+
   const setEnter = (enter: PresenterGroupEnterId) => {
     if (!selectedStepKeys.length) return;
     if (selectedStepKeys.length >= 2 && onApplyEnterToMultiSelection) {
@@ -181,8 +188,10 @@ export function PresenterAnimationsPanel({
       <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1.5">
         <div className="grid grid-cols-3 gap-1">
           {PRESENTER_GROUP_ENTER_OPTIONS.map((opt) => {
-            const selectedSteps = steps.filter((s) => selectedSet.has(presenterStepKey(s)));
-            const active = selectedSteps.length > 0 && selectedSteps.every((s) => s.enter === opt.id);
+            const assignedToSelection =
+              selectedStepKeys.length > 0 &&
+              selectedStepsMatchingKeys.length === selectedStepKeys.length &&
+              selectedStepsMatchingKeys.every((s) => s.enter === opt.id);
             return (
               <button
                 key={opt.id}
@@ -193,10 +202,20 @@ export function PresenterAnimationsPanel({
                 onMouseEnter={() => {
                   if (selectedStepKeys.length > 0) onPreviewPresetHover?.(opt.id);
                 }}
-                className="flex flex-col items-center gap-1 rounded-[6px] py-1.5 disabled:opacity-35"
+                className={`group flex flex-col items-center gap-1 rounded-[6px] border py-1.5 transition-all duration-150 disabled:opacity-35 ${
+                  assignedToSelection
+                    ? "border-sky-500/55 bg-sky-500/15 shadow-[inset_0_0_0_1px_rgba(56,189,248,0.25)]"
+                    : "border-transparent hover:border-white/20 hover:bg-white/[0.07]"
+                }`}
               >
-                <PresenterEnterAnimationIcon id={opt.id} size={52} active={active} />
-                <span className="text-[10px] font-medium leading-tight text-zinc-400">{opt.label}</span>
+                <PresenterEnterAnimationIcon id={opt.id} size={52} active={assignedToSelection} />
+                <span
+                  className={`text-[10px] font-medium leading-tight transition-colors ${
+                    assignedToSelection ? "text-sky-200" : "text-zinc-400 group-hover:text-zinc-200"
+                  }`}
+                >
+                  {opt.label}
+                </span>
               </button>
             );
           })}

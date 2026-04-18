@@ -145,65 +145,7 @@ import {
   DesignerRulerHorizontal,
   DesignerRulerVertical,
 } from "./designer/DesignerCanvasRulers";
-
-/** Iconos para la botonera de modos de ajuste del marco de imagen (panel Designer). */
-function ImageFrameFittingGlyph({ mode, className }: { mode: string; className?: string }) {
-  const cn = className ?? "h-[18px] w-[18px]";
-  const stroke = "currentColor";
-  switch (mode) {
-    case "fit-proportional":
-      /* Contener: imagen completa con bandas */
-      return (
-        <svg viewBox="0 0 24 24" className={cn} aria-hidden>
-          <rect x="2.5" y="2.5" width="19" height="19" rx="1.5" fill="none" stroke={stroke} strokeWidth="1.25" opacity={0.4} />
-          <rect x="6" y="7.5" width="12" height="9" rx="0.75" fill={stroke} opacity={0.92} />
-        </svg>
-      );
-    case "fill-proportional":
-      /* Cubrir: recorte, imagen más grande que el marco */
-      return (
-        <svg viewBox="0 0 24 24" className={cn} style={{ overflow: "hidden" }} aria-hidden>
-          <rect x="2.5" y="2.5" width="19" height="19" rx="1.5" fill="none" stroke={stroke} strokeWidth="1.25" opacity={0.4} />
-          <rect x="-1" y="5" width="26" height="14" rx="1" fill={stroke} opacity={0.92} />
-        </svg>
-      );
-    case "fit-stretch":
-      /* Estirar a la caja (proporción del marco) */
-      return (
-        <svg viewBox="0 0 24 24" className={cn} aria-hidden>
-          <rect x="2.5" y="2.5" width="19" height="19" rx="1.5" fill="none" stroke={stroke} strokeWidth="1.25" opacity={0.4} />
-          <rect x="3.5" y="3.5" width="17" height="17" rx="1" fill={stroke} opacity={0.92} />
-        </svg>
-      );
-    case "center-content":
-      /* Centrar sin escalar */
-      return (
-        <svg viewBox="0 0 24 24" className={cn} aria-hidden>
-          <rect x="2.5" y="2.5" width="19" height="19" rx="1.5" fill="none" stroke={stroke} strokeWidth="1.25" opacity={0.4} />
-          <rect x="8.5" y="9.5" width="7" height="5" rx="0.5" fill={stroke} opacity={0.92} />
-        </svg>
-      );
-    case "fill-stretch":
-      /* Rellenar sin proporción — forma distorsionada */
-      return (
-        <svg viewBox="0 0 24 24" className={cn} aria-hidden>
-          <rect x="2.5" y="2.5" width="19" height="19" rx="1.5" fill="none" stroke={stroke} strokeWidth="1.25" opacity={0.4} />
-          <path d="M4 4.5 L20 3.5 L19.5 20.5 L3.5 19.5 Z" fill={stroke} opacity={0.92} />
-        </svg>
-      );
-    case "frame-to-content":
-      /* Marco encoge al contenido */
-      return (
-        <svg viewBox="0 0 24 24" className={cn} aria-hidden>
-          <rect x="2" y="2" width="20" height="20" rx="1.5" fill="none" stroke={stroke} strokeWidth="1" strokeDasharray="2.5 2" opacity={0.28} />
-          <rect x="7" y="8.5" width="10" height="7" rx="0.75" fill={stroke} opacity={0.92} />
-          <rect x="6.5" y="8" width="11" height="8" rx="1" fill="none" stroke={stroke} strokeWidth="1.1" opacity={0.55} />
-        </svg>
-      );
-    default:
-      return <ImageIconLucide className={cn} aria-hidden />;
-  }
-}
+import { ImageFrameFittingGlyph } from "./freehand/ImageFrameFittingGlyph";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  TYPES
@@ -2759,6 +2701,51 @@ function renderPathClipMaskGeometry(p: PathObject): React.ReactNode {
     return transform ? <g transform={transform}>{inner}</g> : inner;
   }
   return <path d={d} {...pathClipProps} transform={transform} />;
+}
+
+/** Presenter: path cerrado apto para vídeo incrustado (no forma parte del nodo Designer). */
+export function pathClosedForPresenterVideo(p: PathObject): boolean {
+  if (p.svgPathD && String(p.svgPathD).trim().length > 0 && (!p.points || p.points.length < 2)) {
+    const d = String(p.svgPathD).trim();
+    return /z\s*$/i.test(d) || p.closed === true;
+  }
+  return p.closed && p.points.length >= 3;
+}
+
+/**
+ * Geometría de recorte en espacio de usuario del SVG (misma que `renderObj`) para vídeo en Presenter.
+ * No forma parte del nodo Designer.
+ */
+export function renderPresenterVideoClipShapeWorld(o: FreehandObject): React.ReactNode | null {
+  if (!o.visible) return null;
+  if (o.type === "rect") {
+    const r = o as RectObject;
+    if (r.rx < 0.01) return null;
+    const transform = buildObjTransform(o);
+    return (
+      <rect x={r.x} y={r.y} width={r.width} height={r.height} rx={r.rx} fill="#fff" transform={transform} />
+    );
+  }
+  if (o.type === "ellipse") {
+    const e = o as EllipseObject;
+    const transform = buildObjTransform(o);
+    return (
+      <ellipse
+        cx={e.x + e.width / 2}
+        cy={e.y + e.height / 2}
+        rx={e.width / 2}
+        ry={e.height / 2}
+        fill="#fff"
+        transform={transform}
+      />
+    );
+  }
+  if (o.type === "path") {
+    const p = o as PathObject;
+    if (!pathClosedForPresenterVideo(p)) return null;
+    return renderPathClipMaskGeometry(p);
+  }
+  return null;
 }
 
 function renderMaskShapeClipInner(m: ClipMaskShape): React.ReactNode {

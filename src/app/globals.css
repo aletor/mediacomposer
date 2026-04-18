@@ -192,26 +192,26 @@ input *, textarea *, [contenteditable="true"] * {
   opacity: 1;
 }
 .presenter-g-fade {
-  animation: presenter-g-fade-anim 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: presenter-g-fade-anim 2000ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .presenter-g-slide-up {
-  animation: presenter-g-slide-up-anim 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: presenter-g-slide-up-anim 2000ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .presenter-g-slide-down {
-  animation: presenter-g-slide-down-anim 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: presenter-g-slide-down-anim 2000ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .presenter-g-slide-left {
-  animation: presenter-g-slide-left-anim 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: presenter-g-slide-left-anim 2000ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .presenter-g-slide-right {
-  animation: presenter-g-slide-right-anim 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: presenter-g-slide-right-anim 2000ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .presenter-g-grow {
-  animation: presenter-g-grow-anim 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: presenter-g-grow-anim 2000ms cubic-bezier(0.22, 1, 0.36, 1) both;
   transform-origin: center center;
 }
 .presenter-g-shrink {
-  animation: presenter-g-shrink-anim 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: presenter-g-shrink-anim 2000ms cubic-bezier(0.22, 1, 0.36, 1) both;
   transform-origin: center center;
 }
 

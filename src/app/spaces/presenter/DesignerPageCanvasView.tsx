@@ -239,17 +239,21 @@ function PresenterVideoOverlaySlice({
   pageClipUrl,
   binding,
   target,
+  canvasObjects,
   onPickPresenterTarget,
 }: {
   pageClipUrl: string;
   binding: PresenterImageVideoCanvasBinding;
   target: PresenterImageTarget;
+  canvasObjects: FreehandObject[];
   onPickPresenterTarget?: (pickKey: string, mods: PickPointerModifiers) => void;
 }) {
   return (
     <g clipPath={pageClipUrl} style={{ pointerEvents: "auto" }}>
       <PresenterImageVideoOverlays
         pageId={binding.pageId}
+        canvasObjects={canvasObjects}
+        videoTransformHandlesObjectId={binding.videoTransformHandlesObjectId}
         targets={[target]}
         placements={binding.placements}
         uiMode={binding.uiMode}
@@ -359,6 +363,36 @@ export function DesignerPageCanvasView({
     }
     return m;
   }, [presenterImageTargets]);
+
+  /** Misma lógica que antes (intercalada en el mapa), pero se pinta al final del SVG encima del marco de selección. */
+  const presenterVideoOverlayTargets = useMemo((): PresenterImageTarget[] => {
+    if (!presenterImageVideo) return [];
+    const out: PresenterImageTarget[] = [];
+    const seen = new Set<string>();
+    for (const obj of objects) {
+      if (obj.isClipMask) continue;
+      if (obj.clipMaskId) continue;
+      if (!shouldPaintObject(obj, playReveal)) continue;
+      const vt = presenterImageTargetById.get(obj.id);
+      if (vt && !seen.has(vt.id)) {
+        seen.add(vt.id);
+        out.push(vt);
+      }
+    }
+    for (const [clipId, members] of clippedGroups.entries()) {
+      const mask = clipObjects.find((c) => c.id === clipId);
+      if (!mask || !shouldPaintObject(mask, playReveal)) continue;
+      if (!members.every((m) => shouldPaintObject(m, playReveal))) continue;
+      for (const m of members) {
+        const mvt = presenterImageTargetById.get(m.id);
+        if (mvt && !seen.has(mvt.id)) {
+          seen.add(mvt.id);
+          out.push(mvt);
+        }
+      }
+    }
+    return out;
+  }, [presenterImageVideo, objects, clippedGroups, clipObjects, presenterImageTargetById, playReveal]);
 
   const pageClipUrl = `url(#${pageClipPathId})`;
 
@@ -504,7 +538,6 @@ export function DesignerPageCanvasView({
         const pickStyle: React.CSSProperties | undefined = allowPick
           ? { cursor: "pointer", pointerEvents: "auto" }
           : { pointerEvents: "auto" };
-        const vt = presenterImageVideo ? presenterImageTargetById.get(obj.id) : undefined;
         return (
           <Fragment key={obj.id}>
             <g clipPath={pageClipUrl} style={{ pointerEvents: "none" }}>
@@ -517,20 +550,6 @@ export function DesignerPageCanvasView({
                 {renderObj(obj, objects, new Set(), PRESENTER_RENDER_OPTS)}
               </g>
             </g>
-            {presenterImageVideo && vt && (
-              <PresenterVideoOverlaySlice
-                pageClipUrl={pageClipUrl}
-                binding={presenterImageVideo}
-                target={vt}
-                onPickPresenterTarget={
-                  allowPick && pickInteraction
-                    ? (pickKey, mods) => {
-                        pickInteraction.onPick(pickKey, mods);
-                      }
-                    : undefined
-                }
-              />
-            )}
           </Fragment>
         );
       })}
@@ -569,26 +588,6 @@ export function DesignerPageCanvasView({
                 ))}
               </g>
             </g>
-            {presenterImageVideo &&
-              members.map((m) => {
-                const mvt = presenterImageTargetById.get(m.id);
-                if (!mvt) return null;
-                return (
-                  <PresenterVideoOverlaySlice
-                    key={`pvid-after-${m.id}`}
-                    pageClipUrl={pageClipUrl}
-                    binding={presenterImageVideo}
-                    target={mvt}
-                    onPickPresenterTarget={
-                      allowPick && pickInteraction
-                        ? (pickKey, mods) => {
-                            pickInteraction.onPick(pickKey, mods);
-                          }
-                        : undefined
-                    }
-                  />
-                );
-              })}
           </Fragment>
         );
       })}
@@ -597,6 +596,23 @@ export function DesignerPageCanvasView({
           <SelectionCornerFrame key={`sel-${r.key}`} x={r.x} y={r.y} width={r.width} height={r.height} pad={3} />
         ))}
       </g>
+      {presenterImageVideo &&
+        presenterVideoOverlayTargets.map((vt) => (
+          <PresenterVideoOverlaySlice
+            key={`pvid-top-${vt.id}`}
+            pageClipUrl={pageClipUrl}
+            binding={presenterImageVideo}
+            target={vt}
+            canvasObjects={objects}
+            onPickPresenterTarget={
+              allowPick && pickInteraction
+                ? (pickKey, mods) => {
+                    pickInteraction.onPick(pickKey, mods);
+                  }
+                : undefined
+            }
+          />
+        ))}
       {normalizedMarqueeRect && normalizedMarqueeRect.width > 0 && normalizedMarqueeRect.height > 0 && (
         <rect
           x={normalizedMarqueeRect.x}
