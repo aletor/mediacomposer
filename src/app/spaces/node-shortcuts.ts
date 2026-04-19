@@ -14,6 +14,7 @@ export const NODE_KEYS: Record<string, string> = {
   promptInput: 'p',
   background: 'b',
   urlImage: 'u',
+  pinterestSearch: '8',
   backgroundRemover: 'r',
   mediaDescriber: 'd',
   enhancer: 'h',

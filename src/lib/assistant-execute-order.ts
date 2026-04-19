@@ -48,6 +48,7 @@ export function orderExecuteNodeIds(
 
 const RUNNABLE_TYPES = new Set([
   "urlImage",
+  "pinterestSearch",
   "nanoBanana",
   "backgroundRemover",
   "geminiVideo",
@@ -88,13 +89,18 @@ export function tryInferExecuteNodeIds(
     }
   }
 
+  /** Artículo opcional: "genera una imagen", "genera el video", "quiero una foto"… */
+  const article = "(?:el|la|los|las|un|una|unos|unas)\\s+";
   const wantsRun =
+    /\bpinterest\b/.test(p) ||
     /\b(ejecuta|ejecutar|run|execute|procesa el|hazlo correr|hazlo)\b/.test(p) ||
-    /\b(genera|generar)\s+(la\s+)?(imagen|image|foto|video)\b/.test(p) ||
+    /\b(genera|generar)\s+(imagen|imagenes|image|fotos?|videos?)\b/.test(p) ||
+    new RegExp(`\\b(genera|generar)\\s+(?:${article})?(imagen|image|fotos?|video)\\b`).test(p) ||
     /\b(crea|crear)\s+(una\s+)?(imagen|image|foto|video)\b/.test(p) ||
+    /\b(hazme|haz)\s+(una\s+)?(foto|imagen|ilustracion)\b/.test(p) ||
     /\b(quita el fondo|remove background|sin fondo)\b/.test(p) ||
     /\b(guardar|save|exporta|descarga|descargar)\b/.test(p) ||
-    /\b(dame|quiero)\s+(la\s+)?(imagen|image|video|foto)\b/.test(p) ||
+    new RegExp(`\\b(dame|quiero)\\s+(?:${article})?(imagen|image|video|fotos?)\\b`).test(p) ||
     (/\b(crea|generar|genera|haz|monta|construye)\b/.test(p) &&
       /\b(nano\s*banana|gemini\s*video|\bveo\b|grok\s*imagine)\b/.test(p));
 

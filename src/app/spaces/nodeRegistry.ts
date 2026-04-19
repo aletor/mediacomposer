@@ -67,6 +67,19 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
       count: 'number (carousel size / fetch limit — default 10)'
     }
   },
+  pinterestSearch: {
+    type: 'pinterestSearch',
+    label: 'Pinterest',
+    description:
+      'Pinterest search (official API): connect a prompt node to the prompt input — that text is the search query. Main preview + thumbnails; image output is the selected pin.',
+    inputs: [{ id: 'prompt', label: 'Search query', type: 'prompt', required: true }],
+    outputs: [{ id: 'image', label: 'Selected image', type: 'image' }],
+    dataSchema: {
+      pins: '{ id, imageUrl, title? }[] (results from API)',
+      selectedIndex: 'number (0..3)',
+      value: 'string (selected image URL for downstream nodes)',
+    },
+  },
   mediaInput: {
     type: 'mediaInput',
     label: 'Media Input',
@@ -450,6 +463,8 @@ export const ASSISTANT_NODE_DATA_HINTS: Record<string, string> = {
   mediaInput: "value (URL), type, metadata, label, s3Key",
   urlImage:
     "label (consulta GIS en inglés, desambiguada), searchIntent (obligatorio: qué debe verse en la foto — verificación por visión), count, urls[], selectedIndex, value, pendingSearch",
+  pinterestSearch:
+    "conectar promptInput (o salida prompt) al handle prompt — el texto es la búsqueda; pins[], selectedIndex, value (URL imagen); PINTEREST_ACCESS_TOKEN en servidor",
   imageExport: "format (png|jpeg), label",
   imageComposer: "layersConfig, selectedLayerId",
   space: "label, hasInput, hasOutput, value",

@@ -20,6 +20,11 @@ import {
   buildCostApprovalMessage,
   estimatePaidApisForAssistantPlan,
 } from "@/lib/assistant-cost-estimate";
+import {
+  lightenNodesForAssistant,
+  lightenUnknown,
+  trimNodesToCharBudget,
+} from "@/lib/assistant-context-trim";
 import OpenAI from "openai";
 
 /**
@@ -51,20 +56,22 @@ export async function POST(req: Request) {
       apiKey: process.env.OPENAI_API_KEY || "",
     });
 
+    /** Nodos seleccionados (lógica servidor / merge) — sin recortar. */
     const selectedNodes = (
       cn as { id?: string; type?: string; selected?: boolean; position?: unknown; data?: unknown }[]
     ).filter((n) => n && n.selected === true);
 
+    /** Misma selección pero sin data URLs / blobs → cabe en el contexto del modelo. */
+    const selectionForLlm = selectedNodes.map((n) => ({
+      id: n.id,
+      type: n.type,
+      position: n.position,
+      data: lightenUnknown(n.data, 0),
+    }));
+
     const selectionBlock =
-      selectedNodes.length > 0
-        ? `### USER FOCUS — selected node(s) (user intends edits to refer to these when they say "this node", "este nodo", "selected", etc.):\n${JSON.stringify(
-            selectedNodes.map((n) => ({
-              id: n.id,
-              type: n.type,
-              position: n.position,
-              data: n.data,
-            }))
-          )}\n`
+      selectionForLlm.length > 0
+        ? `### USER FOCUS — selected node(s) (user intends edits to refer to these when they say "this node", "este nodo", "selected", etc.):\n${JSON.stringify(selectionForLlm)}\n`
         : "### USER FOCUS: no node selected. User should select node(s) on the canvas before vague commands (e.g. change the prompt), or name id/type explicitly.\n";
 
     const brainBlock =
@@ -72,9 +79,17 @@ export async function POST(req: Request) {
         ? `### Brain / project assets (metadata)\n${summarizeProjectAssetsForAssistant(projectAssets)}\n(Stored when the user saves the project. Prefer these hex colors for brand-coherent suggestions — e.g. \`background\` \`data.color\` — when the user asks for client/brand styling. You cannot edit Brain from JSON.)\n\n`
         : "";
 
+    const { nodes: cnForLlm, omitted: omittedNodes } = trimNodesToCharBudget(
+      lightenNodesForAssistant(cn)
+    );
+    const trimNote =
+      omittedNodes > 0
+        ? `\n[System: full workspace list truncated — ${omittedNodes} node(s) omitted from the tail to fit the model context. Selected nodes above are complete.]\n`
+        : "";
+
     const contextMessage =
       cn.length > 0
-        ? `${brainBlock}${selectionBlock}### Current Workspace State:\nNodes: ${JSON.stringify(cn)}\nEdges: ${JSON.stringify(ce)}`
+        ? `${brainBlock}${selectionBlock}${trimNote}### Current Workspace State:\nNodes: ${JSON.stringify(cnForLlm)}\nEdges: ${JSON.stringify(ce)}`
         : `${brainBlock}${selectionBlock}### Workspace is currently EMPTY.`;
 
     const systemPrompt = buildAssistantSystemPrompt();
@@ -88,7 +103,17 @@ export async function POST(req: Request) {
       response_format: { type: "json_object" },
     });
 
-    const result = JSON.parse(response.choices[0].message.content || "{}");
+    const rawContent = response.choices[0].message.content || "{}";
+    let result: Record<string, unknown>;
+    try {
+      result = JSON.parse(rawContent) as Record<string, unknown>;
+    } catch {
+      console.error("[Assistant] Model returned non-JSON:", rawContent.slice(0, 500));
+      return NextResponse.json(
+        { error: "El modelo no devolvió JSON válido. Reintenta o acorta el mensaje." },
+        { status: 502 }
+      );
+    }
     console.log("[Assistant] Final GPT Response:", JSON.stringify(result, null, 2));
 
     const u = response.usage;

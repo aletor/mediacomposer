@@ -242,6 +242,7 @@ const Sidebar = ({
       { type: 'promptInput',       label: 'Prompt' },
       { type: 'background',        label: 'Canvas' },
       { type: 'urlImage',          label: 'Web' },
+      { type: 'pinterestSearch',   label: 'Pin' },
       null,
       { type: 'backgroundRemover', label: 'Matting' },
       { type: 'mediaDescriber',    label: 'Eye' },
@@ -377,6 +378,7 @@ const Sidebar = ({
                   { type: 'promptInput', label: 'Prompt' },
                   { type: 'background',  label: 'Canvas' },
                   { type: 'urlImage',    label: 'Web' },
+                  { type: 'pinterestSearch', label: 'Pinterest' },
                 ].map(item => (
                   <div key={item.type}
                     className="dndnode relative flex flex-col items-center justify-center gap-1 py-3 px-2 !bg-white/20 hover:!bg-white/30 border border-white/25 hover:border-emerald-400/50 rounded-2xl cursor-grab active:scale-95 transition-all text-center aspect-square"

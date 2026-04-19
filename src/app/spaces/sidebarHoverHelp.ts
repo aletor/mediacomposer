@@ -20,6 +20,10 @@ export const SIDEBAR_HOVER_HELP: Record<string, { title: string; line: string }>
     title: 'URL Image / Carousel',
     line: 'Seleccionas imagen desde varias URLs',
   },
+  pinterestSearch: {
+    title: 'Pinterest',
+    line: 'Conecta un Prompt con la búsqueda; Buscar usa ese texto (requiere token API)',
+  },
   nanoBanana: {
     title: 'Nano Banana',
     line: 'Genera imagen desde prompt y referencias',

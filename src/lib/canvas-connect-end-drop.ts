@@ -1,6 +1,72 @@
 import { NODE_REGISTRY } from "@/app/spaces/nodeRegistry";
 
 /**
+ * Centro del conector en coordenadas del flujo (para alinear nodos creados al soltar la conexión).
+ */
+export function getHandleCenterFlowPosition(opts: {
+  nodeId: string;
+  handleId: string | null | undefined;
+  screenToFlowPosition: (p: { x: number; y: number }) => { x: number; y: number };
+}): { x: number; y: number } | null {
+  const hid = opts.handleId ?? "";
+  const nid = opts.nodeId;
+  if (!nid) return null;
+
+  const nodeEl = document.querySelector(
+    `.react-flow__node[data-id="${CSS.escape(nid)}"]`
+  );
+  if (!nodeEl) return null;
+
+  let handleEl: HTMLElement | null = null;
+  if (hid) {
+    handleEl = nodeEl.querySelector(
+      `.react-flow__handle[data-handleid="${CSS.escape(hid)}"]`
+    ) as HTMLElement | null;
+  }
+  if (!handleEl) {
+    handleEl = nodeEl.querySelector(".react-flow__handle") as HTMLElement | null;
+  }
+  if (!handleEl) {
+    const r = nodeEl.getBoundingClientRect();
+    return opts.screenToFlowPosition({
+      x: r.left + r.width / 2,
+      y: r.top + r.height / 2,
+    });
+  }
+  const r = handleEl.getBoundingClientRect();
+  return opts.screenToFlowPosition({
+    x: r.left + r.width / 2,
+    y: r.top + r.height / 2,
+  });
+}
+
+/**
+ * Rectángulo del nodo en coordenadas de flujo (evita solapar al crear un nodo
+ * a la derecha/izquierda del que arrastra la conexión).
+ */
+export function getNodeFlowRect(opts: {
+  nodeId: string;
+  screenToFlowPosition: (p: { x: number; y: number }) => { x: number; y: number };
+}): { left: number; right: number; top: number; bottom: number } | null {
+  const nid = opts.nodeId;
+  if (!nid) return null;
+  const nodeEl = document.querySelector(
+    `.react-flow__node[data-id="${CSS.escape(nid)}"]`,
+  );
+  if (!nodeEl) return null;
+  const r = nodeEl.getBoundingClientRect();
+  const tl = opts.screenToFlowPosition({ x: r.left, y: r.top });
+  const tr = opts.screenToFlowPosition({ x: r.right, y: r.top });
+  const br = opts.screenToFlowPosition({ x: r.right, y: r.bottom });
+  return {
+    left: tl.x,
+    right: tr.x,
+    top: tl.y,
+    bottom: br.y,
+  };
+}
+
+/**
  * Al soltar una conexión sobre el lienzo vacío: tipo de nodo a crear según
  * el tipo de dato del handle y si el arrastre salió de source o target.
  */
@@ -95,6 +161,8 @@ export function defaultDataForCanvasDropNode(nodeType: string): Record<string, u
   switch (nodeType) {
     case "urlImage":
       return { label: "", pendingSearch: false };
+    case "pinterestSearch":
+      return { pins: [], selectedIndex: 0, label: "Pinterest" };
     case "promptInput":
       return { label: "", value: "" };
     case "mediaInput":

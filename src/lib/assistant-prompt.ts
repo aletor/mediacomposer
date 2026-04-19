@@ -83,6 +83,7 @@ ${dataDigest}
 
 ## INTENT CHEATSHEET (map user words → nodes)
 - Buscar/descargar imagen web / stock / Google → urlImage (+ imageExport if "export").
+- Pinterest / tablero inspiración / pins por palabras clave → pinterestSearch: edge desde promptInput al handle **prompt** (el texto de búsqueda no va en data; executeNodeIds para BUSCAR si aplica).
 - Quitar fondo / recortar sujeto / matting → backgroundRemover (input media from urlImage or mediaInput).
 - Máscara manual / curvas / pen tool → bezierMask.
 - Fondo sólido / color plano / lienzo → type "background" with data.color (hex), optional width/height.

@@ -50,11 +50,13 @@ import {
   resolveHandleMetaForCanvasDrop,
   pickNewNodeTypeForCanvasDrop,
   defaultDataForCanvasDropNode,
+  getHandleCenterFlowPosition,
+  getNodeFlowRect,
 } from "@/lib/canvas-connect-end-drop";
 import { matchesClearCanvasIntent } from "@/lib/clear-canvas-intent";
 import { matchesAddSpaceNodeIntent } from "@/lib/assistant-quick-intents";
 import { installAiFetchOverlay } from "@/lib/ai-request-overlay";
-import { readResponseJson } from "@/lib/read-response-json";
+import { readJsonWithHttpError, readResponseJson } from "@/lib/read-response-json";
 import { hydrateSpacesMapWithFreshUrls } from "@/lib/s3-media-hydrate";
 import {
   AI_JOB_COMPLETE_EVENT,
@@ -2325,7 +2327,7 @@ export function SpacesContent() {
               projectAssets: metadata.assets,
             }),
           });
-          const data = await readResponseJson<{
+          const data = await readJsonWithHttpError<{
             nodes?: Node[];
             edges?: Edge[];
             clarify?: { message?: string; question?: string; options?: unknown };
@@ -2340,20 +2342,18 @@ export function SpacesContent() {
             };
           }>(res, 'POST /api/spaces/assistant');
 
-          if (data && data.clarify && typeof data.clarify === 'object') {
+          if (data.clarify && typeof data.clarify === 'object') {
             const c = data.clarify;
             const msg = (c.message ?? c.question ?? '').trim() || '¿Qué prefieres?';
-            const opts = Array.isArray(c.options)
+            let opts = Array.isArray(c.options)
               ? c.options.filter((o): o is string => typeof o === 'string' && o.trim().length > 0)
               : [];
-            if (opts.length > 0) {
-              setAssistantClarify({ message: msg, options: opts, originalPrompt: prompt });
-            }
+            if (opts.length === 0) opts = ['Entendido'];
+            setAssistantClarify({ message: msg, options: opts, originalPrompt: prompt });
             return;
           }
 
           if (
-            data &&
             data.pendingCostApproval &&
             data.costApproval &&
             Array.isArray(data.nodes)
@@ -2372,8 +2372,10 @@ export function SpacesContent() {
             return;
           }
 
-          if (data && Array.isArray(data.nodes)) {
+          if (Array.isArray(data.nodes)) {
             applyAssistantGraphPayload(data);
+          } else {
+            throw new Error('El asistente no devolvió la lista de nodos (JSON incompleto).');
           }
         }
       );
@@ -2514,20 +2516,9 @@ export function SpacesContent() {
 
     if (!newType) return;
 
-    // Convert mouse position to flow coords
-    const clientX = event.clientX ?? event.changedTouches?.[0]?.clientX ?? 0;
-    const clientY = event.changedTouches?.[0]?.clientY ?? 0;
-    const position  = screenToFlowPosition({ x: clientX, y: clientY });
     const newNodeId = `${newType}_${Date.now()}`;
-    const newNode   = {
-      id:       newNodeId,
-      type:     newType,
-      position: { x: position.x - 160, y: position.y - 80 },
-      data:     withFoldderCanvasIntro(newType, defaultDataForCanvasDropNode(newType)),
-    };
-
     const edgeId = `ae-${fromNodeId}-${newNodeId}-${fromHandleId}-${Date.now()}`;
-    const newMeta  = NODE_REGISTRY[newType];
+    const newMeta = NODE_REGISTRY[newType];
 
     // Pick the connecting handle on the new node
     const wireType =
@@ -2554,6 +2545,89 @@ export function SpacesContent() {
     }
     if (!newHandle) return;
 
+    const clientX = event.clientX ?? event.changedTouches?.[0]?.clientX ?? 0;
+    const clientY = event.clientY ?? event.changedTouches?.[0]?.clientY ?? 0;
+    const pointerFlow = screenToFlowPosition({ x: clientX, y: clientY });
+
+    const anchor = getHandleCenterFlowPosition({
+      nodeId: fromNodeId,
+      handleId: fromHandleId,
+      screenToFlowPosition,
+    });
+    const fromNodeFlowRect = getNodeFlowRect({
+      nodeId: fromNodeId,
+      screenToFlowPosition,
+    });
+    /** Separación horizontal entre centros de conectores (coords flujo). */
+    const HANDLE_GAP = 76;
+    const defaultWidthHint = 280;
+    /** Heurística offset handle izquierdo → esquina sup. izq. del nodo nuevo (el snap afina). */
+    const newNodeLeftInsetHint = 56;
+    /** Primera Y: cercana al ancla; snapNewNodeToAnchor corrige al centro real del handle en el siguiente frame. */
+    const initialPos = anchor
+      ? {
+          x:
+            fromType === 'source'
+              ? fromNodeFlowRect
+                ? fromNodeFlowRect.right + HANDLE_GAP - newNodeLeftInsetHint
+                : anchor.x + HANDLE_GAP
+              : anchor.x - HANDLE_GAP - defaultWidthHint,
+          y: anchor.y - 48,
+        }
+      : { x: pointerFlow.x - 160, y: pointerFlow.y - 80 };
+
+    const newNode = {
+      id: newNodeId,
+      type: newType,
+      position: initialPos,
+      data: withFoldderCanvasIntro(newType, defaultDataForCanvasDropNode(newType)),
+    };
+
+    /** Alinea el conector del nodo nuevo con el del origen (misma Y; X con separación HANDLE_GAP). */
+    const snapNewNodeToAnchor = () => {
+      const anchorFlow = getHandleCenterFlowPosition({
+        nodeId: fromNodeId,
+        handleId: fromHandleId,
+        screenToFlowPosition,
+      });
+      const newH = getHandleCenterFlowPosition({
+        nodeId: newNodeId,
+        handleId: newHandle,
+        screenToFlowPosition,
+      });
+      if (!anchorFlow || !newH) return;
+      const srcRectNow =
+        getNodeFlowRect({ nodeId: fromNodeId, screenToFlowPosition }) ?? fromNodeFlowRect;
+
+      setNodes((nds: any) => {
+        const n = nds.find((x: any) => x.id === newNodeId);
+        if (!n) return nds;
+        const handleOffsetX = newH.x - n.position.x;
+        let desiredX: number;
+        if (fromType === 'source') {
+          const handleToHandle = anchorFlow.x + HANDLE_GAP;
+          const clearSourceBody =
+            srcRectNow != null
+              ? srcRectNow.right + HANDLE_GAP + handleOffsetX
+              : handleToHandle;
+          desiredX = Math.max(handleToHandle, clearSourceBody);
+        } else {
+          desiredX = anchorFlow.x - HANDLE_GAP;
+        }
+        const desiredY = anchorFlow.y;
+        return nds.map((node: any) => {
+          if (node.id !== newNodeId) return node;
+          return {
+            ...node,
+            position: {
+              x: node.position.x + (desiredX - newH.x),
+              y: node.position.y + (desiredY - newH.y),
+            },
+          };
+        });
+      });
+    };
+
     takeSnapshot();
 
     const newEdge = {
@@ -2568,6 +2642,13 @@ export function SpacesContent() {
 
     setNodes((nds: any) => [...nds, newNode]);
     scheduleFoldderCanvasIntroEnd(newNodeId);
+    queueMicrotask(() => {
+      requestAnimationFrame(() => {
+        snapNewNodeToAnchor();
+        requestAnimationFrame(snapNewNodeToAnchor);
+      });
+    });
+
     // Delay edge slightly so ReactFlow's drag-cancel doesn't wipe it; luego recalcular handles (Enhancer, etc.)
     setTimeout(() => {
       setEdges((eds: any) => [...eds, newEdge]);
@@ -2578,7 +2659,11 @@ export function SpacesContent() {
       queueMicrotask(refreshHandles);
       requestAnimationFrame(() => {
         refreshHandles();
-        requestAnimationFrame(refreshHandles);
+        snapNewNodeToAnchor();
+        requestAnimationFrame(() => {
+          refreshHandles();
+          snapNewNodeToAnchor();
+        });
       });
       fitViewToNodeIds([newNodeId], 600);
     }, 30);
