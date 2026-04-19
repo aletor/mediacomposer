@@ -3796,8 +3796,13 @@ const NanoBananaStudio = memo(({
   const [showGlobalInput, setShowGlobalInput] = useState(false);
   const [globalDesc, setGlobalDesc] = useState('');
   const [showCameraMenu, setShowCameraMenu] = useState(false);
-  // Prompt cache: only re-call AI when changes actually change
-  const [cachedPromptData, setCachedPromptData] = useState<{ changesKey: string; preview: { colorMapUrl: string; fullPrompt: string } } | null>(null);
+  // Prompt cache: only re-call analyze-areas when edits change (incl. refs visuales por zona)
+  const [cachedPromptData, setCachedPromptData] = useState<{
+    changesKey: string;
+    preview: { colorMapUrl: string; fullPrompt: string };
+    /** Misma REF2 que devolvió analyze-areas (base+trazos); evitar perderla en hit de caché */
+    markedRef2: string | null;
+  } | null>(null);
   const [analyzingCall, setAnalyzingCall] = useState(false);
   const [callPreview, setCallPreview] = useState<{ colorMapUrl: string; fullPrompt: string; markedRef2?: string | null; referenceGridUrl?: string | null } | null>(null);
   const [activeChangeId, setActiveChangeId] = useState<string|null>(null);
@@ -4093,6 +4098,8 @@ const NanoBananaStudio = memo(({
           color: c.assignedColor.name,
           hasPaint: !!c.paintData,
           isGlobal: !!c.isGlobal,
+          /** Sin esto, al añadir/quitar 📎 ref visual se reutilizaba el prompt sin REF 3 */
+          refSig: c.referenceImage ? String(c.referenceImage.length) : '0',
         })),
       );
 
@@ -4101,7 +4108,7 @@ const NanoBananaStudio = memo(({
         return {
           colorMapUrl,
           fullPrompt: cachedPromptData.preview.fullPrompt,
-          markedRef2: null,
+          markedRef2: cachedPromptData.markedRef2,
           referenceGridUrl,
           changesKey,
         };
@@ -4305,7 +4312,11 @@ const NanoBananaStudio = memo(({
       }
 
       const referenceGridUrl = await buildReferenceGrid(validChanges);
-      setCachedPromptData({ changesKey, preview: { colorMapUrl, fullPrompt } });
+      setCachedPromptData({
+        changesKey,
+        preview: { colorMapUrl, fullPrompt },
+        markedRef2: markedRef2DataUrl,
+      });
       return {
         colorMapUrl,
         fullPrompt,
@@ -5016,6 +5027,7 @@ const NanoBananaStudio = memo(({
                           const reader = new FileReader();
                           reader.onload = ev => {
                             const url = ev.target?.result as string;
+                            setCachedPromptData(null);
                             setChanges(prev => prev.map(c => c.id === ch.id ? { ...c, referenceImage: url } : c));
                           };
                           reader.readAsDataURL(file);
