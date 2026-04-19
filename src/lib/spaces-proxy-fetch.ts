@@ -10,9 +10,20 @@ export async function fetchBlobViaSpacesProxy(url: string): Promise<Blob> {
   });
   if (!res.ok) {
     let detail = "";
+    const ct = res.headers.get("content-type") || "";
     try {
-      const j = (await res.json()) as { error?: string };
-      if (j?.error) detail = `: ${j.error}`;
+      if (ct.includes("application/json")) {
+        const j = (await res.json()) as {
+          error?: string;
+          upstreamStatus?: number;
+          bodySnippet?: string;
+        };
+        if (j?.error) detail = `: ${j.error}`;
+        if (typeof j?.upstreamStatus === "number") detail += ` [origen HTTP ${j.upstreamStatus}]`;
+      } else {
+        const t = await res.text();
+        if (t) detail = `: ${t.slice(0, 240)}`;
+      }
     } catch {
       if (res.statusText) detail = `: ${res.statusText}`;
     }
