@@ -16875,8 +16875,7 @@ export function FreehandStudioCanvas({
               </div>
               {layerPanelTarget && selectedObjects.length > 1 ? (
                 <p className="text-[8px] leading-tight text-zinc-500">
-                  Edición sobre la capa activa
-                  {primarySelectedId === layerPanelTarget.id ? "" : ` (${layerPanelTarget.name})`}
+                  Varias capas: fusión y opacidad se aplican a la capa activa (primaria o la primera seleccionada).
                 </p>
               ) : null}
             </div>
