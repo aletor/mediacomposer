@@ -61,6 +61,7 @@ import {
   ChevronUp,
   ChevronDown,
   ChevronRight,
+  Check,
   Loader2,
   FileType2,
   AlignLeft,
@@ -278,6 +279,77 @@ function normalizeBezierPointForVertexMode(pt: BezierPoint, mode: VertexMode): B
 
 type StrokeMarkerKind = "none" | "arrow" | "dot";
 
+/** Valores admitidos por CSS `mix-blend-mode` en SVG (fusión con capas inferiores). */
+type LayerBlendMode =
+  | "normal"
+  | "multiply"
+  | "screen"
+  | "overlay"
+  | "darken"
+  | "lighten"
+  | "color-dodge"
+  | "color-burn"
+  | "hard-light"
+  | "soft-light"
+  | "difference"
+  | "exclusion"
+  | "hue"
+  | "saturation"
+  | "color"
+  | "luminosity"
+  | "plus-lighter"
+  | "plus-darker";
+
+function layerMixBlendStyle(bm: LayerBlendMode | undefined): React.CSSProperties | undefined {
+  if (bm == null || bm === "normal") return undefined;
+  return { mixBlendMode: bm };
+}
+
+const LAYER_BLEND_MENU_GROUPS: { items: { mode: LayerBlendMode; label: string }[] }[] = [
+  { items: [{ mode: "normal", label: "Normal" }] },
+  {
+    items: [
+      { mode: "darken", label: "Oscurecer" },
+      { mode: "multiply", label: "Multiplicar" },
+      { mode: "color-burn", label: "Subexponer color" },
+      { mode: "plus-darker", label: "Subexponer lineal" },
+    ],
+  },
+  {
+    items: [
+      { mode: "lighten", label: "Aclarar" },
+      { mode: "screen", label: "Trama" },
+      { mode: "color-dodge", label: "Sobreexponer color" },
+      { mode: "plus-lighter", label: "Sobreexponer lineal" },
+    ],
+  },
+  {
+    items: [
+      { mode: "overlay", label: "Superponer" },
+      { mode: "soft-light", label: "Luz suave" },
+      { mode: "hard-light", label: "Luz intensa" },
+      { mode: "difference", label: "Diferencia" },
+      { mode: "exclusion", label: "Exclusión" },
+    ],
+  },
+  {
+    items: [
+      { mode: "hue", label: "Tono" },
+      { mode: "saturation", label: "Saturación" },
+      { mode: "color", label: "Color" },
+      { mode: "luminosity", label: "Luminosidad" },
+    ],
+  },
+];
+
+const LAYER_BLEND_LABELS: Record<LayerBlendMode, string> = LAYER_BLEND_MENU_GROUPS.flatMap((g) => g.items).reduce(
+  (acc, { mode, label }) => {
+    acc[mode] = label;
+    return acc;
+  },
+  {} as Record<LayerBlendMode, string>,
+);
+
 interface FreehandObjectBase {
   id: string;
   type: string;
@@ -306,6 +378,8 @@ interface FreehandObjectBase {
   /** Si ambas escalas de marcador se editan a la vez. */
   strokeMarkerScaleLinked?: boolean;
   opacity: number;
+  /** Fusión con el contenido inferior (CSS `mix-blend-mode`). */
+  blendMode?: LayerBlendMode;
   rotation: number;
   /** Espejo horizontal/vertical (escala −1 en el eje local respecto al centro del recto de selección). */
   flipX?: boolean;
@@ -1153,6 +1227,7 @@ function defaultObj(partial: Partial<FreehandObjectBase>): FreehandObjectBase {
     strokeWidth: 2,
     ...DEFAULT_STROKE_PROPS,
     opacity: 1,
+    blendMode: "normal",
     rotation: 0,
     visible: true,
     locked: false,
@@ -2897,6 +2972,304 @@ async function extractPhotoMarqueeRasterFromImage(
     cropW: cw,
     cropH: ch,
   };
+}
+
+/** Vista previa al mover la selección raster: textura + geometría inicial del “hueco” sobre la capa. */
+type PhotoMarqueeFloatLift = {
+  sourceLayerId: string;
+  dataUrl: string;
+  cropW: number;
+  cropH: number;
+  liftRects: Rect[];
+  liftPolys: Point[][];
+  liftEllipses: PhotoEllipseMarquee[];
+};
+
+async function buildPhotoMarqueeFloatLiftFromMarquee(
+  img: ImageObject,
+  rects: Rect[],
+  polys: Point[][],
+  ellipses: PhotoEllipseMarquee[],
+): Promise<PhotoMarqueeFloatLift | null> {
+  const clip = await extractPhotoMarqueeRasterFromImage(img, rects, polys, ellipses);
+  if (!clip) return null;
+  return {
+    sourceLayerId: clip.sourceLayerId,
+    dataUrl: clip.dataUrl,
+    cropW: clip.cropW,
+    cropH: clip.cropH,
+    liftRects: rects.map((r) => ({ ...r })),
+    liftPolys: polys.map((ring) => ring.map((p) => ({ ...p }))),
+    liftEllipses: ellipses.map((e) => ({ ...e })),
+  };
+}
+
+/** Coherente con `preserveAspectRatio="xMidYMid meet"` sobre un viewport mundo `outer`. */
+function meetInnerRectInWorld(outer: Rect, intrinsicW: number, intrinsicH: number): Rect {
+  const iw = Math.max(1, intrinsicW);
+  const ih = Math.max(1, intrinsicH);
+  const s = Math.min(outer.w / iw, outer.h / ih);
+  const rw = iw * s;
+  const rh = ih * s;
+  return {
+    x: outer.x + (outer.w - rw) / 2,
+    y: outer.y + (outer.h - rh) / 2,
+    w: rw,
+    h: rh,
+  };
+}
+
+/**
+ * Misma cadena que SVG `translate(cx,cy) rotate(r) scale(sx,sy) translate(-cx,-cy)` sobre un punto mundo.
+ */
+function mapPhotoMarqueeFloatTf(
+  p: Point,
+  u: Rect,
+  rotationDeg: number,
+  scaleX: number,
+  scaleY: number,
+): Point {
+  const cx = u.x + u.w / 2;
+  const cy = u.y + u.h / 2;
+  const rad = (rotationDeg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const dx = (p.x - cx) * scaleX;
+  const dy = (p.y - cy) * scaleY;
+  const xr = dx * cos - dy * sin;
+  const yr = dx * sin + dy * cos;
+  return { x: xr + cx, y: yr + cy };
+}
+
+function rawHandlePointForPhotoFloat(handleId: string, u: Rect): Point {
+  const x = u.x;
+  const y = u.y;
+  const w = u.w;
+  const h0 = u.h;
+  switch (handleId) {
+    case "nw":
+      return { x, y };
+    case "ne":
+      return { x: x + w, y };
+    case "se":
+      return { x: x + w, y: y + h0 };
+    case "sw":
+      return { x, y: y + h0 };
+    case "n":
+      return { x: x + w / 2, y };
+    case "s":
+      return { x: x + w / 2, y: y + h0 };
+    case "e":
+      return { x: x + w, y: y + h0 / 2 };
+    case "w":
+      return { x, y: y + h0 / 2 };
+    default:
+      return { x: x + w / 2, y: y + h0 / 2 };
+  }
+}
+
+function oppositePivotForPhotoFloatHandle(handleId: string, u: Rect): Point {
+  const x = u.x;
+  const y = u.y;
+  const w = u.w;
+  const h0 = u.h;
+  switch (handleId) {
+    case "nw":
+      return { x: x + w, y: y + h0 };
+    case "ne":
+      return { x: x, y: y + h0 };
+    case "se":
+      return { x: x + w, y: y };
+    case "sw":
+      return { x: x, y: y + h0 };
+    case "n":
+      return { x: x + w / 2, y: y + h0 };
+    case "s":
+      return { x: x + w / 2, y: y };
+    case "e":
+      return { x: x, y: y + h0 / 2 };
+    case "w":
+      return { x: x + w, y: y + h0 / 2 };
+    default:
+      return { x: x + w / 2, y: y + h0 / 2 };
+  }
+}
+
+/** Trazo de máscara en coords de píxel del bitmap natural (0…iw × 0…ih). */
+function fillPhotoMarqueePixelMaskPath(
+  ctx: CanvasRenderingContext2D,
+  imgObj: ImageObject,
+  iw: number,
+  ih: number,
+  rects: Rect[],
+  polys: Point[][],
+  ellipses: PhotoEllipseMarquee[],
+): void {
+  const toPx = (wp: Point): { x: number; y: number } | null => {
+    const f = worldPointToImagePixelFloat(imgObj, iw, ih, wp);
+    if (!f) return null;
+    return { x: f.ix, y: f.iy };
+  };
+  ctx.beginPath();
+  for (const r of rects) {
+    const c0 = toPx({ x: r.x, y: r.y });
+    const c1 = toPx({ x: r.x + r.w, y: r.y });
+    const c2 = toPx({ x: r.x + r.w, y: r.y + r.h });
+    const c3 = toPx({ x: r.x, y: r.y + r.h });
+    if (c0 && c1 && c2 && c3) {
+      ctx.moveTo(c0.x, c0.y);
+      ctx.lineTo(c1.x, c1.y);
+      ctx.lineTo(c2.x, c2.y);
+      ctx.lineTo(c3.x, c3.y);
+      ctx.closePath();
+    }
+  }
+  for (const ring of polys) {
+    if (ring.length < 3) continue;
+    const p0 = toPx(ring[0]!);
+    if (!p0) continue;
+    ctx.moveTo(p0.x, p0.y);
+    for (let i = 1; i < ring.length; i++) {
+      const p = toPx(ring[i]!);
+      if (p) ctx.lineTo(p.x, p.y);
+    }
+    ctx.closePath();
+  }
+  for (const e of ellipses) {
+    if (e.rx <= 0 || e.ry <= 0) continue;
+    const segs = 48;
+    let first: { x: number; y: number } | null = null;
+    for (let i = 0; i <= segs; i++) {
+      const t = (i / segs) * Math.PI * 2;
+      const wp = { x: e.cx + e.rx * Math.cos(t), y: e.cy + e.ry * Math.sin(t) };
+      const c = toPx(wp);
+      if (!c) continue;
+      if (!first) {
+        first = c;
+        ctx.moveTo(c.x, c.y);
+      } else {
+        ctx.lineTo(c.x, c.y);
+      }
+    }
+    if (first) ctx.closePath();
+  }
+}
+
+type PhotoMarqueeFloatTf = { rotationDeg: number; scaleX: number; scaleY: number };
+
+async function rasterCommitPhotoMarqueeFloatToImage(
+  imgObj: ImageObject,
+  lift: PhotoMarqueeFloatLift,
+  currentUnion: Rect,
+  tf: PhotoMarqueeFloatTf,
+): Promise<string | null> {
+  if (typeof document === "undefined") return null;
+  const load = await new Promise<HTMLImageElement | null>((res) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => res(null);
+    im.src = imgObj.src;
+  });
+  const floatImg = await new Promise<HTMLImageElement | null>((res) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => res(null);
+    im.src = lift.dataUrl;
+  });
+  if (!load?.complete || !floatImg?.complete) return null;
+  const iw = load.naturalWidth || 1;
+  const ih = load.naturalHeight || 1;
+  const cw = lift.cropW;
+  const ch = lift.cropH;
+
+  const out = document.createElement("canvas");
+  out.width = iw;
+  out.height = ih;
+  const octx = out.getContext("2d");
+  if (!octx) return null;
+  octx.drawImage(load, 0, 0);
+
+  octx.save();
+  octx.globalCompositeOperation = "destination-out";
+  fillPhotoMarqueePixelMaskPath(octx, imgObj, iw, ih, lift.liftRects, lift.liftPolys, lift.liftEllipses);
+  octx.fillStyle = "rgba(0,0,0,1)";
+  octx.fill("evenodd");
+  octx.restore();
+
+  const inner = meetInnerRectInWorld(currentUnion, cw, ch);
+  const cornersWorld = [
+    { x: inner.x, y: inner.y },
+    { x: inner.x + inner.w, y: inner.y },
+    { x: inner.x + inner.w, y: inner.y + inner.h },
+    { x: inner.x, y: inner.y + inner.h },
+  ].map((c) => mapPhotoMarqueeFloatTf(c, currentUnion, tf.rotationDeg, tf.scaleX, tf.scaleY));
+  const cornersPx = cornersWorld
+    .map((c) => worldPointToImagePixelFloat(imgObj, iw, ih, c))
+    .filter((p): p is NonNullable<typeof p> => p != null);
+  if (cornersPx.length !== 4) {
+    try {
+      return out.toDataURL("image/png");
+    } catch {
+      return null;
+    }
+  }
+  const d0 = { x: cornersPx[0]!.ix, y: cornersPx[0]!.iy };
+  const d1 = { x: cornersPx[1]!.ix, y: cornersPx[1]!.iy };
+  const d2 = { x: cornersPx[3]!.ix, y: cornersPx[3]!.iy };
+
+  const a = (d1.x - d0.x) / Math.max(cw, 1);
+  const c = (d2.x - d0.x) / Math.max(ch, 1);
+  const b = (d1.y - d0.y) / Math.max(cw, 1);
+  const d = (d2.y - d0.y) / Math.max(ch, 1);
+  const ee = d0.x;
+  const f = d0.y;
+
+  octx.save();
+  octx.setTransform(a, b, c, d, ee, f);
+  octx.globalCompositeOperation = "source-over";
+  octx.drawImage(floatImg, 0, 0, cw, ch);
+  octx.restore();
+
+  try {
+    return out.toDataURL("image/png");
+  } catch {
+    return null;
+  }
+}
+
+async function rasterErasePhotoMarqueeRegionFromImage(
+  imgObj: ImageObject,
+  rects: Rect[],
+  polys: Point[][],
+  ellipses: PhotoEllipseMarquee[],
+): Promise<string | null> {
+  if (typeof document === "undefined") return null;
+  const load = await new Promise<HTMLImageElement | null>((res) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => res(null);
+    im.src = imgObj.src;
+  });
+  if (!load?.complete) return null;
+  const iw = load.naturalWidth || 1;
+  const ih = load.naturalHeight || 1;
+  const out = document.createElement("canvas");
+  out.width = iw;
+  out.height = ih;
+  const octx = out.getContext("2d");
+  if (!octx) return null;
+  octx.drawImage(load, 0, 0);
+  octx.save();
+  octx.globalCompositeOperation = "destination-out";
+  fillPhotoMarqueePixelMaskPath(octx, imgObj, iw, ih, rects, polys, ellipses);
+  octx.fillStyle = "rgba(0,0,0,1)";
+  octx.fill("evenodd");
+  octx.restore();
+  try {
+    return out.toDataURL("image/png");
+  } catch {
+    return null;
+  }
 }
 
 const PHOTO_MARQUEE_PT_EPS = 1e-9;
@@ -5040,19 +5413,23 @@ function svgStringToCanvas(svgStr: string, w: number, h: number, bgColor?: strin
 //  SUB-COMPONENTS
 // ═══════════════════════════════════════════════════════════════════════════
 
+const TOOLBAR_ICON_STROKE = 1.75 as const;
+/** Pulsación mantenida sobre el icono del grupo para abrir el submenú (rollout). */
+const TOOLBAR_FLYOUT_PRESS_MS = 200;
+
 function ToolBtn({ active, onClick, title, children }: { active?: boolean; onClick: () => void; title: string; children: React.ReactNode }) {
   return (
     <button type="button" title={title} onClick={onClick}
-      className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg transition-all duration-150 ease-out ${
+      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[2px] transition-all duration-150 ease-out ${
         active
-          ? "bg-white/[0.12] text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)]"
+          ? "bg-white/[0.11] text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.12)]"
           : "text-zinc-500 hover:bg-white/[0.06] hover:text-white"
       }`}
     >{children}</button>
   );
 }
 
-/** Grupo estilo Photoshop: icono principal + flecha; panel a la derecha con el resto de herramientas del grupo. */
+/** Grupo estilo Photoshop: icono + ▸; mantén pulsado un instante (rollout) o usa ▸. Suelta sobre una opción para elegirla. */
 function ToolFlyoutGroup({
   groupId,
   flyoutOpen,
@@ -5073,15 +5450,96 @@ function ToolFlyoutGroup({
   children: React.ReactNode;
 }) {
   const open = flyoutOpen === groupId;
+  const longPressTimerRef = useRef<number | null>(null);
+  const skipMainClickRef = useRef(false);
+  const rolloutFromMainHoldRef = useRef(false);
+  const flyoutPanelRef = useRef<HTMLDivElement | null>(null);
+
+  const clearLongPress = useCallback(() => {
+    if (longPressTimerRef.current != null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearLongPress(), [clearLongPress]);
+
+  const handleMainPointerDown = useCallback(() => {
+    skipMainClickRef.current = false;
+    rolloutFromMainHoldRef.current = false;
+    clearLongPress();
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressTimerRef.current = null;
+      skipMainClickRef.current = true;
+      rolloutFromMainHoldRef.current = true;
+      setFlyoutOpen(groupId);
+    }, TOOLBAR_FLYOUT_PRESS_MS);
+  }, [clearLongPress, groupId, setFlyoutOpen]);
+
+  const handleMainPointerEnd = useCallback(() => {
+    clearLongPress();
+  }, [clearLongPress]);
+
+  /** Tras abrir el menú manteniendo pulsado: el primer pointerup elige la opción bajo el cursor (rollout), aunque el mousedown fuera en el icono principal. */
+  useEffect(() => {
+    if (!open) {
+      rolloutFromMainHoldRef.current = false;
+      return;
+    }
+    if (!rolloutFromMainHoldRef.current) return;
+
+    const onPointerUpCapture = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      const panel = flyoutPanelRef.current;
+      if (!panel) return;
+
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      if (!el) {
+        setFlyoutOpen(null);
+        rolloutFromMainHoldRef.current = false;
+        return;
+      }
+      const hitBtn = (el as HTMLElement).closest("button") as HTMLButtonElement | null;
+      if (hitBtn && panel.contains(hitBtn)) {
+        queueMicrotask(() => hitBtn.click());
+      } else {
+        setFlyoutOpen(null);
+      }
+      rolloutFromMainHoldRef.current = false;
+    };
+
+    window.addEventListener("pointerup", onPointerUpCapture, true);
+    return () => window.removeEventListener("pointerup", onPointerUpCapture, true);
+  }, [open, setFlyoutOpen]);
+
+  const handleMainClick = useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>) => {
+      if (skipMainClickRef.current) {
+        skipMainClickRef.current = false;
+        e.preventDefault();
+        return;
+      }
+      onMainClick();
+    },
+    [onMainClick],
+  );
+
+  const mainHint = `${mainTitle} — Mantén pulsado un instante y arrastra hasta una herramienta, o pulsa ▸.`;
+
   return (
-    <div className="relative h-10 w-10 shrink-0" data-tool-flyout-root>
+    <div className="relative h-9 w-9 shrink-0" data-tool-flyout-root>
       <button
         type="button"
-        title={mainTitle}
-        onClick={onMainClick}
-        className={`relative flex h-full w-full items-center justify-center rounded-lg pr-2 pb-2 transition-all duration-150 ease-out ${
+        title={mainHint}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={handleMainClick}
+        onPointerDown={handleMainPointerDown}
+        onPointerUp={handleMainPointerEnd}
+        onPointerCancel={handleMainPointerEnd}
+        className={`relative flex h-full w-full items-center justify-center rounded-[2px] pr-1.5 pb-1.5 transition-all duration-150 ease-out ${
           active
-            ? "bg-white/[0.12] text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)]"
+            ? "bg-white/[0.11] text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.12)]"
             : "text-zinc-500 hover:bg-white/[0.06] hover:text-white"
         }`}
       >
@@ -5094,17 +5552,18 @@ function ToolFlyoutGroup({
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
+          rolloutFromMainHoldRef.current = false;
           setFlyoutOpen(open ? null : groupId);
         }}
-        className="absolute bottom-0.5 right-0.5 z-10 flex h-4 w-4 items-center justify-center rounded text-zinc-400 transition hover:bg-white/[0.12] hover:text-white"
+        className="absolute bottom-0.5 right-0.5 z-10 flex h-3.5 w-3.5 items-center justify-center rounded-[2px] text-zinc-400 transition hover:bg-white/[0.12] hover:text-white"
       >
-        <ChevronRight className="h-3 w-3 opacity-80" strokeWidth={2} />
+        <ChevronRight className="h-2.5 w-2.5 opacity-90" strokeWidth={2.25} />
       </button>
       {open && (
         <div
-          className="absolute left-full top-0 z-[130] ml-1 flex min-w-[42px] flex-col gap-0.5 rounded-lg border border-white/[0.1] bg-[#15181f] p-1 shadow-[0_8px_28px_rgba(0,0,0,0.55)]"
+          ref={flyoutPanelRef}
+          className="left-toolbar-flyout-panel absolute left-full top-0 z-[130] ml-1.5 flex min-w-[44px] flex-col gap-1 rounded-[2px] border border-white/[0.09] bg-[#15181f] p-1.5 shadow-[0_8px_28px_rgba(0,0,0,0.55)]"
           data-tool-flyout-panel
-          onMouseDown={(e) => e.stopPropagation()}
         >
           {children}
         </div>
@@ -5316,7 +5775,14 @@ function textTypographyCreationFromObject(o: FreehandObject): TextCreationTypogr
 /** Objetos de una página Designer al hidratar sin remount. */
 function migrateDesignerPageObjects(raw: FreehandObject[]): FreehandObject[] {
   if (raw.length === 0) return [];
-  return raw.map((o) => ({ ...o, fill: migrateFill((o as FreehandObject).fill as unknown) })) as FreehandObject[];
+  return raw.map((o) => {
+    const base = o as FreehandObjectBase;
+    return {
+      ...o,
+      fill: migrateFill((o as FreehandObject).fill as unknown),
+      blendMode: (base.blendMode ?? "normal") as LayerBlendMode,
+    };
+  }) as FreehandObject[];
 }
 
 /** Id estable por slot para capas de entrada PhotoRoom (coincide con `nodeId` del FreehandStudio). */
@@ -5600,6 +6066,39 @@ export function FreehandStudioCanvas({
   photoEllipseMarqueeSelectionRef.current = photoEllipseMarqueeSelection;
   /** Clic dentro del marco confirmado: no arrancar drag hasta superar umbral (así un clic suelto no quita las hormigas). */
   const photoRectMarqueePendingRef = useRef<{ clientX: number; clientY: number } | null>(null);
+  /** Al mover la selección (V / flechas): textura extraída + máscara inicial para tapar el origen. */
+  const [photoMarqueeFloatLift, setPhotoMarqueeFloatLift] = useState<PhotoMarqueeFloatLift | null>(null);
+  const photoMarqueeFloatLiftRef = useRef<PhotoMarqueeFloatLift | null>(null);
+  const photoMarqueeFloatExtractingRef = useRef(false);
+  /** Rotación / escala de la textura flotante (preview + bake al deseleccionar). */
+  const [photoMarqueeFloatTf, setPhotoMarqueeFloatTf] = useState<PhotoMarqueeFloatTf>({
+    rotationDeg: 0,
+    scaleX: 1,
+    scaleY: 1,
+  });
+  const photoMarqueeFloatTfRef = useRef(photoMarqueeFloatTf);
+  photoMarqueeFloatTfRef.current = photoMarqueeFloatTf;
+  /** Última selección PhotoRoom no vacía (para volcar píxeles al vaciar el marco). */
+  const photoMarqueeLastSelSnapshotRef = useRef<{
+    rects: Rect[];
+    polys: Point[][];
+    ellipses: PhotoEllipseMarquee[];
+  } | null>(null);
+  const photoMarqueeHadSelectionRef = useRef(false);
+
+  useLayoutEffect(() => {
+    const has =
+      photoRectMarqueeSelection.length > 0 ||
+      photoPolygonMarqueeSelection.length > 0 ||
+      photoEllipseMarqueeSelection.length > 0;
+    if (has) {
+      photoMarqueeLastSelSnapshotRef.current = {
+        rects: photoRectMarqueeSelection.map((r) => ({ ...r })),
+        polys: photoPolygonMarqueeSelection.map((ring) => ring.map((p) => ({ ...p }))),
+        ellipses: photoEllipseMarqueeSelection.map((e) => ({ ...e })),
+      };
+    }
+  }, [photoRectMarqueeSelection, photoPolygonMarqueeSelection, photoEllipseMarqueeSelection]);
 
   /** Studio del nodo PhotoRoom (incluye solo imágenes importadas en el lienzo; no exige cables al grafo). */
   const isPhotoRoomStudioEmbed = studioPhotoRoomCanvasPanel != null;
@@ -5629,6 +6128,9 @@ export function FreehandStudioCanvas({
       setPhotoRectMarqueeSelection([]);
       setPhotoPolygonMarqueeSelection([]);
       setPhotoEllipseMarqueeSelection([]);
+      setPhotoMarqueeFloatLift(null);
+      photoMarqueeFloatLiftRef.current = null;
+      setPhotoMarqueeFloatTf({ rotationDeg: 0, scaleX: 1, scaleY: 1 });
     }
   }, [photoRoomInputsSig, photoRoomConnectedInputs]);
 
@@ -5777,7 +6279,7 @@ export function FreehandStudioCanvas({
 
   // Drag state
   const [dragState, setDragState] = useState<{
-    type: "move" | "resize" | "pan" | "create" | "createText" | "createTextFrame" | "createImageFrame" | "directSelect" | "marquee" | "photoRectMarquee" | "photoEllipseMarquee" | "photoLassoMarquee" | "photoPolygonMarquee" | "photoMarqueeNudge" | "penHandle" | "rotate" | "gradient" | "guideMove" | "guidePull" | "imageContentPan" | "imageContentResize";
+    type: "move" | "resize" | "pan" | "create" | "createText" | "createTextFrame" | "createImageFrame" | "directSelect" | "marquee" | "photoRectMarquee" | "photoEllipseMarquee" | "photoLassoMarquee" | "photoPolygonMarquee" | "photoMarqueeNudge" | "photoMarqueeFloatRotate" | "photoMarqueeFloatResize" | "penHandle" | "rotate" | "gradient" | "guideMove" | "guidePull" | "imageContentPan" | "imageContentResize";
     startX: number;
     startY: number;
     startCanvas?: Point;
@@ -5837,6 +6339,16 @@ export function FreehandStudioCanvas({
     startOffsetX?: number;
     startOffsetY?: number;
     imageCorner?: "nw" | "ne" | "sw" | "se";
+    /** Tiradores de la textura flotante PhotoRoom. */
+    photoMarqueeFloatHandle?: string;
+    photoMarqueeFloatSnapTf?: PhotoMarqueeFloatTf;
+    photoMarqueeFloatSnapUnion?: Rect;
+    photoMarqueeFloatStartAngleRad?: number;
+    photoMarqueeFloatPivotWorld?: Point;
+    photoMarqueeFloatHandleStartWorld?: Point;
+    photoMarqueeFloatResizePivotWorld?: Point;
+    photoMarqueeFloatResizeStartVal?: number;
+    photoMarqueeFloatResizeKind?: "corner" | "ns" | "ew";
   } | null>(null);
 
   const dragStateRef = useRef(dragState);
@@ -5894,6 +6406,9 @@ export function FreehandStudioCanvas({
   const [layerHoverId, setLayerHoverId] = useState<string | null>(null);
   /** Panel de capas: plegado por defecto abajo en la columna derecha. */
   const [layersPanelExpanded, setLayersPanelExpanded] = useState(false);
+  /** Desplegable modo de fusión encima del listado de capas. */
+  const [layerBlendMenuOpen, setLayerBlendMenuOpen] = useState(false);
+  const layerBlendMenuWrapRef = useRef<HTMLDivElement | null>(null);
   /** Bloque Transform en propiedades: plegado por defecto. */
   const [transformPanelExpanded, setTransformPanelExpanded] = useState(false);
   /** Bloque Color (paleta + fill + stroke): plegado por defecto. */
@@ -6011,6 +6526,8 @@ export function FreehandStudioCanvas({
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportModalScope, setExportModalScope] = useState<"selection" | "full">("selection");
   const [toast, setToast] = useState<string | null>(null);
+  /** Combinar capas → raster (panel Propiedades). */
+  const [layerMergeBusy, setLayerMergeBusy] = useState(false);
   const [exportFlash, setExportFlash] = useState<ExportRect | null>(null);
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [snapGuides, setSnapGuides] = useState<SnapVisual[]>([]);
@@ -6614,6 +7131,21 @@ export function FreehandStudioCanvas({
 
   const selectedObjects = useMemo(() => objects.filter((o) => selectedIds.has(o.id)), [objects, selectedIds]);
   const firstSelected = selectedObjects[0] ?? null;
+
+  /** Capa a la que aplican fusión/opacidad del panel (primaria si existe; si no, la primera seleccionada). */
+  const layerPanelTargetId = useMemo(() => {
+    if (selectedObjects.length === 0) return null;
+    if (primarySelectedId != null) {
+      const p = selectedObjects.find((x) => x.id === primarySelectedId);
+      if (p) return p.id;
+    }
+    return selectedObjects[0]!.id;
+  }, [selectedObjects, primarySelectedId]);
+
+  const layerPanelTarget = useMemo(
+    () => (layerPanelTargetId ? objects.find((o) => o.id === layerPanelTargetId) ?? null : null),
+    [objects, layerPanelTargetId],
+  );
 
   /** Vista previa de relleno/trazo en los muestreos de la barra izquierda (estilo Illustrator). */
   const leftToolbarSwatchPreview = useMemo(() => {
@@ -7220,6 +7752,19 @@ export function FreehandStudioCanvas({
     });
   }, [pushHistory]);
 
+  /** Una sola capa: barra de capas (fusión / opacidad) actúa sobre la primaria o la primera seleccionada. */
+  const updateLayerPanelTargetProp = useCallback(
+    (key: string, value: unknown) => {
+      if (!layerPanelTargetId) return;
+      setObjects((prev) => {
+        const next = prev.map((o) => (o.id === layerPanelTargetId ? { ...o, [key]: value } : o));
+        pushHistory(next, new Set([layerPanelTargetId]));
+        return next;
+      });
+    },
+    [layerPanelTargetId, pushHistory],
+  );
+
   /** Al elegir color de trazo, si el grosor es 0 se pone a 2 para que se vea el borde. Otros valores no se tocan. */
   const applyStrokeColorWithVisibleWidth = useCallback(
     (hex: string) => {
@@ -7450,6 +7995,27 @@ export function FreehandStudioCanvas({
     };
   }, [leftToolbarToolFlyout]);
 
+  useEffect(() => {
+    setLayerBlendMenuOpen(false);
+  }, [layerPanelTargetId]);
+
+  useEffect(() => {
+    if (!layerBlendMenuOpen) return;
+    const close = (e: MouseEvent) => {
+      const el = layerBlendMenuWrapRef.current;
+      if (el && !el.contains(e.target as Node)) setLayerBlendMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLayerBlendMenuOpen(false);
+    };
+    document.addEventListener("mousedown", close, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", close, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [layerBlendMenuOpen]);
+
   const updateSelectedFill = useCallback((updater: (f: FillAppearance) => FillAppearance) => {
     const sel = selectedIdsRef.current;
     if (sel.size === 0) return;
@@ -7521,6 +8087,60 @@ export function FreehandStudioCanvas({
       window.setTimeout(() => setToast(null), 3200);
     }
   }, [designerClipboardRef]);
+
+  /** Vuelca la textura flotante (y el hueco del origen) en el bitmap de la capa imagen. */
+  const commitPhotoMarqueeFloatToSource = useCallback(async (): Promise<boolean> => {
+    const lift = photoMarqueeFloatLiftRef.current;
+    const snap = photoMarqueeLastSelSnapshotRef.current;
+    const tf = photoMarqueeFloatTfRef.current;
+    if (!lift || !snap) return false;
+    const imgObj = objectsRef.current.find(
+      (o) => o.id === lift.sourceLayerId && o.type === "image",
+    ) as ImageObject | undefined;
+    if (!imgObj) return false;
+    const u = unionPhotoMarqueeWorldBounds(snap.rects, snap.polys, snap.ellipses);
+    if (!u || u.w < 1e-9 || u.h < 1e-9) return false;
+    const url = await rasterCommitPhotoMarqueeFloatToImage(imgObj, lift, u, tf);
+    if (!url) {
+      setToast("No se pudo aplicar la selección al bitmap");
+      window.setTimeout(() => setToast(null), 2800);
+      return false;
+    }
+    const sel = selectedIdsRef.current;
+    setObjects((prev) => {
+      const next = prev.map((o) =>
+        o.id === imgObj.id && o.type === "image" ? ({ ...o, src: url } as ImageObject) : o,
+      );
+      pushHistory(next, sel);
+      queueMicrotask(() => onUpdateObjectsRef.current(next));
+      return next;
+    });
+    return true;
+  }, [pushHistory]);
+
+  useEffect(() => {
+    if (!isPhotoRoomStudioEmbed) return;
+    const has =
+      photoRectMarqueeSelection.length > 0 ||
+      photoPolygonMarqueeSelection.length > 0 ||
+      photoEllipseMarqueeSelection.length > 0;
+    const prevHad = photoMarqueeHadSelectionRef.current;
+    photoMarqueeHadSelectionRef.current = has;
+    if (!prevHad || has) return;
+    if (!photoMarqueeFloatLiftRef.current || !photoMarqueeLastSelSnapshotRef.current) return;
+    void (async () => {
+      await commitPhotoMarqueeFloatToSource();
+      setPhotoMarqueeFloatLift(null);
+      photoMarqueeFloatLiftRef.current = null;
+      setPhotoMarqueeFloatTf({ rotationDeg: 0, scaleX: 1, scaleY: 1 });
+    })();
+  }, [
+    isPhotoRoomStudioEmbed,
+    photoRectMarqueeSelection,
+    photoPolygonMarqueeSelection,
+    photoEllipseMarqueeSelection,
+    commitPhotoMarqueeFloatToSource,
+  ]);
 
   const pastePhotoMarqueeRaster = useCallback(() => {
     const clip = photoMarqueeRasterClipboardRef.current;
@@ -8655,6 +9275,165 @@ export function FreehandStudioCanvas({
     window.setTimeout(() => setToast(null), 2600);
   }, [triggerExportFlash]);
 
+  /** Rasteriza y sustituye por una única capa imagen (misma tubería que export PNG). */
+  const performCombineLayers = useCallback(
+    async (mode: "selected" | "visible" | "all") => {
+      const svg = svgRef.current;
+      if (!svg) return;
+      setLayerMergeBusy(true);
+      try {
+        const objs = objectsRef.current;
+        const abs = artboardsRef.current;
+        const sel = selectedIdsRef.current;
+        const cmap = clipMapFromObjects(objs);
+
+        const hasPhotoBlock = (ids: Iterable<string>) =>
+          [...ids].some((id) => objs.find((o) => o.id === id)?.photoRoomInputSlot);
+        const hasLockedIn = (ids: Iterable<string>) =>
+          [...ids].some((id) => objs.find((o) => o.id === id)?.locked);
+
+        let exportIds: Set<string> | null = null;
+        let bounds: Rect;
+        let background: "transparent" | string;
+        let idsToRemove: Set<string>;
+
+        if (mode === "selected") {
+          if (sel.size < 2) {
+            setToast("Selecciona al menos dos objetos");
+            window.setTimeout(() => setToast(null), 2400);
+            return;
+          }
+          exportIds = expandExportIds(new Set(sel), objs, cmap);
+          if (hasPhotoBlock(exportIds) || hasLockedIn(exportIds)) {
+            setToast(
+              hasLockedIn(exportIds)
+                ? "Desbloquea las capas antes de combinar"
+                : "No se pueden combinar capas de entrada PhotoRoom",
+            );
+            window.setTimeout(() => setToast(null), 2800);
+            return;
+          }
+          const drawTargets = objs.filter((o) => exportIds!.has(o.id) && o.visible);
+          if (drawTargets.length === 0) {
+            setToast("No hay capas visibles en la selección");
+            window.setTimeout(() => setToast(null), 2400);
+            return;
+          }
+          bounds = getGroupBounds(drawTargets);
+          background = "transparent";
+          idsToRemove = exportIds;
+        } else if (mode === "visible") {
+          const base = new Set(objs.filter((o) => o.visible).map((o) => o.id));
+          if (base.size < 2) {
+            setToast("Se necesitan al menos dos capas visibles");
+            window.setTimeout(() => setToast(null), 2400);
+            return;
+          }
+          exportIds = expandExportIds(base, objs, cmap);
+          if (hasPhotoBlock(exportIds) || hasLockedIn(exportIds)) {
+            setToast(
+              hasLockedIn(exportIds)
+                ? "Desbloquea las capas antes de combinar"
+                : "No se pueden combinar capas de entrada PhotoRoom",
+            );
+            window.setTimeout(() => setToast(null), 2800);
+            return;
+          }
+          const forBounds = objs.filter((o) => exportIds!.has(o.id));
+          bounds = getGroupBounds(forBounds);
+          background = "transparent";
+          idsToRemove = exportIds;
+        } else {
+          if (objs.length < 2) {
+            setToast("Se necesitan al menos dos capas en el documento");
+            window.setTimeout(() => setToast(null), 2400);
+            return;
+          }
+          const allIds = new Set(objs.map((o) => o.id));
+          if (hasPhotoBlock(allIds) || hasLockedIn(allIds)) {
+            setToast(
+              hasLockedIn(allIds)
+                ? "Desbloquea las capas antes de combinar"
+                : "No se pueden combinar capas de entrada PhotoRoom",
+            );
+            window.setTimeout(() => setToast(null), 2800);
+            return;
+          }
+          exportIds = null;
+          bounds = resolveSceneExportBounds(objs, abs);
+          const ab = pickPrimaryArtboard(abs, null);
+          background = ab?.background ?? "transparent";
+          idsToRemove = allIds;
+        }
+
+        if (bounds.w < 1 || bounds.h < 1) {
+          setToast("El área a combinar es demasiado pequeña");
+          window.setTimeout(() => setToast(null), 2400);
+          return;
+        }
+
+        const strRaw = buildStandaloneSvgFromCanvasDom(svg, {
+          exportIds,
+          bounds,
+          scale: 1,
+          background,
+        });
+        const str = substituteNativeTextForRasterExport(strRaw, objs);
+        const w = Math.max(1, Math.round(bounds.w));
+        const h = Math.max(1, Math.round(bounds.h));
+        const bgForCanvas = background === "transparent" ? undefined : background;
+
+        const canvas = await svgStringToCanvasSafe(str, w, h, bgForCanvas);
+        const dataUrl = canvasToPngDataUrlSafe(canvas);
+
+        const nameBase =
+          mode === "selected" ? "Combinado" : mode === "visible" ? "Visibles combinadas" : "Documento combinado";
+        const newObj = {
+          ...defaultObj({ name: nameBase }),
+          type: "image" as const,
+          x: bounds.x,
+          y: bounds.y,
+          width: bounds.w,
+          height: bounds.h,
+          fill: solidFill("none"),
+          stroke: "none",
+          strokeWidth: 0,
+          src: dataUrl,
+          intrinsicRatio: bounds.w / Math.max(bounds.h, 1),
+        } as ImageObject;
+
+        setObjects((prev) => {
+          let next: FreehandObject[];
+          if (mode === "all") {
+            next = [newObj];
+          } else {
+            const remove = idsToRemove;
+            const idxs = [...remove].map((id) => prev.findIndex((o) => o.id === id)).filter((i) => i >= 0);
+            if (idxs.length === 0) return prev;
+            const anchorIdx = Math.max(...idxs);
+            const prefix = prev.slice(0, anchorIdx + 1).filter((o) => !remove.has(o.id));
+            const suffix = prev.slice(anchorIdx + 1).filter((o) => !remove.has(o.id));
+            next = [...prefix, newObj, ...suffix];
+          }
+          pushHistory(next, new Set([newObj.id]));
+          queueMicrotask(() => onUpdateObjectsRef.current(next));
+          return next;
+        });
+        setSelectedIds(new Set([newObj.id]));
+        setPrimarySelectedId(newObj.id);
+        setToast("Capas combinadas en una imagen");
+        window.setTimeout(() => setToast(null), 2600);
+      } catch (e) {
+        console.error(e);
+        setToast("Error al combinar capas");
+        window.setTimeout(() => setToast(null), 3200);
+      } finally {
+        setLayerMergeBusy(false);
+      }
+    },
+    [pushHistory],
+  );
+
   const runProfessionalExport = useCallback(
     async (opts: ProfessionalExportOptions) => {
       const svg = svgRef.current;
@@ -8990,6 +9769,45 @@ export function FreehandStudioCanvas({
       if ((e.key === "Delete" || e.key === "Backspace")) {
         e.preventDefault();
         if (activeTool === "directSelect" && selectedPoints.size > 0) { deleteSelectedPoints(); return; }
+        const delImg = findSingleSelectedImageForPhotoMarquee(selectedIdsRef.current, objectsRef.current);
+        if (
+          isPhotoRoomStudioEmbed &&
+          delImg &&
+          (photoRectMarqueeSelectionRef.current.length > 0 ||
+            photoPolygonMarqueeSelectionRef.current.length > 0 ||
+            photoEllipseMarqueeSelectionRef.current.length > 0)
+        ) {
+          void (async () => {
+            const url = await rasterErasePhotoMarqueeRegionFromImage(
+              delImg,
+              photoRectMarqueeSelectionRef.current.map((r) => ({ ...r })),
+              photoPolygonMarqueeSelectionRef.current.map((ring) => ring.map((p) => ({ ...p }))),
+              photoEllipseMarqueeSelectionRef.current.map((el) => ({ ...el })),
+            );
+            if (!url) {
+              setToast("No se pudo borrar la zona del bitmap");
+              window.setTimeout(() => setToast(null), 2600);
+              return;
+            }
+            const id = delImg.id;
+            const sel = selectedIdsRef.current;
+            setObjects((prev) => {
+              const next = prev.map((o) =>
+                o.id === id && o.type === "image" ? ({ ...o, src: url } as ImageObject) : o,
+              );
+              pushHistory(next, sel);
+              queueMicrotask(() => onUpdateObjectsRef.current(next));
+              return next;
+            });
+            setPhotoRectMarqueeSelection([]);
+            setPhotoPolygonMarqueeSelection([]);
+            setPhotoEllipseMarqueeSelection([]);
+            setPhotoMarqueeFloatLift(null);
+            photoMarqueeFloatLiftRef.current = null;
+            setPhotoMarqueeFloatTf({ rotationDeg: 0, scaleX: 1, scaleY: 1 });
+          })();
+          return;
+        }
         deleteSelected();
         return;
       }
@@ -9050,6 +9868,7 @@ export function FreehandStudioCanvas({
         const marqueeSrcImg = findSingleSelectedImageForPhotoMarquee(sel, objectsRef.current);
 
         if (
+          isPhotoRoomStudioEmbed &&
           marqueeSrcImg &&
           (activeTool === "select" ||
             activeTool === "rectMarquee" ||
@@ -9061,16 +9880,37 @@ export function FreehandStudioCanvas({
             photoEllipseMarqueeSelectionRef.current.length > 0)
         ) {
           e.preventDefault();
-          const t = translatePhotoMarqueeCommitted(
-            mdx,
-            mdy,
-            photoRectMarqueeSelectionRef.current,
-            photoPolygonMarqueeSelectionRef.current,
-            photoEllipseMarqueeSelectionRef.current,
-          );
-          setPhotoRectMarqueeSelection(t.rects);
-          setPhotoPolygonMarqueeSelection(t.polys);
-          setPhotoEllipseMarqueeSelection(t.ellipses);
+          const applyMarqueeDelta = () => {
+            const t = translatePhotoMarqueeCommitted(
+              mdx,
+              mdy,
+              photoRectMarqueeSelectionRef.current,
+              photoPolygonMarqueeSelectionRef.current,
+              photoEllipseMarqueeSelectionRef.current,
+            );
+            setPhotoRectMarqueeSelection(t.rects);
+            setPhotoPolygonMarqueeSelection(t.polys);
+            setPhotoEllipseMarqueeSelection(t.ellipses);
+          };
+          if (!photoMarqueeFloatLiftRef.current) {
+            if (photoMarqueeFloatExtractingRef.current) return;
+            photoMarqueeFloatExtractingRef.current = true;
+            void buildPhotoMarqueeFloatLiftFromMarquee(
+              marqueeSrcImg,
+              photoRectMarqueeSelectionRef.current.map((r) => ({ ...r })),
+              photoPolygonMarqueeSelectionRef.current.map((ring) => ring.map((p) => ({ ...p }))),
+              photoEllipseMarqueeSelectionRef.current.map((el) => ({ ...el })),
+            ).then((lift) => {
+              photoMarqueeFloatExtractingRef.current = false;
+              if (!lift) return;
+              photoMarqueeFloatLiftRef.current = lift;
+              setPhotoMarqueeFloatLift(lift);
+              setPhotoMarqueeFloatTf({ rotationDeg: 0, scaleX: 1, scaleY: 1 });
+              applyMarqueeDelta();
+            });
+            return;
+          }
+          applyMarqueeDelta();
           return;
         }
 
@@ -9144,6 +9984,9 @@ export function FreehandStudioCanvas({
               (dsn.photoMarqueeSnapEllipses ?? []).map((el) => ({ ...el })),
             );
           }
+          setPhotoMarqueeFloatLift(null);
+          photoMarqueeFloatLiftRef.current = null;
+          setPhotoMarqueeFloatTf({ rotationDeg: 0, scaleX: 1, scaleY: 1 });
           setDragState(null);
           return;
         }
@@ -9154,6 +9997,10 @@ export function FreehandStudioCanvas({
             dsEsc === "photoLassoMarquee" ||
             dsEsc === "photoPolygonMarquee")
         ) {
+          setDragState(null);
+          return;
+        }
+        if (dsEsc === "photoMarqueeFloatRotate" || dsEsc === "photoMarqueeFloatResize") {
           setDragState(null);
           return;
         }
@@ -10099,25 +10946,93 @@ export function FreehandStudioCanvas({
       }
     }
 
-    // Todos los objetos bajo el cursor (frente → fondo). Con solape + Mayús, elegir uno que aún no esté entero en la selección.
-    const hits: FreehandObject[] = [];
-    for (let i = objects.length - 1; i >= 0; i--) {
-      const o = objects[i];
-      if (hitTestObject(pos, o, threshold, objects)) hits.push(o);
+    // PhotoRoom: tiradores de la textura flotante (rotar / escalar).
+    if (
+      isPhotoRoomStudioEmbed &&
+      activeTool === "select" &&
+      e.button === 0 &&
+      !extendSel &&
+      !e.altKey &&
+      photoMarqueeFloatLiftRef.current &&
+      (photoRectMarqueeSelectionRef.current.length > 0 ||
+        photoPolygonMarqueeSelectionRef.current.length > 0 ||
+        photoEllipseMarqueeSelectionRef.current.length > 0)
+    ) {
+      const sole = findSingleSelectedImageForPhotoMarquee(selectedIds, objects);
+      if (sole?.type === "image" && sole.visible && !sole.locked) {
+        const u = unionPhotoMarqueeWorldBounds(
+          photoRectMarqueeSelectionRef.current,
+          photoPolygonMarqueeSelectionRef.current,
+          photoEllipseMarqueeSelectionRef.current,
+        );
+        if (u && u.w > 1e-6 && u.h > 1e-6) {
+          const tf = photoMarqueeFloatTfRef.current;
+          const handleSize = 9 / viewport.zoom;
+          const rotOffset = 16 / viewport.zoom;
+          const cx = u.x + u.w / 2;
+          const cy = u.y + u.h / 2;
+          const rotHint = { x: cx, y: u.y - rotOffset };
+          const rc = mapPhotoMarqueeFloatTf(rotHint, u, tf.rotationDeg, tf.scaleX, tf.scaleY);
+          if (dist(pos, rc) < handleSize + 2 / viewport.zoom) {
+            const startAng = Math.atan2(pos.y - cy, pos.x - cx);
+            setDragState({
+              type: "photoMarqueeFloatRotate",
+              startX: e.clientX,
+              startY: e.clientY,
+              photoMarqueeFloatSnapUnion: { ...u },
+              photoMarqueeFloatSnapTf: { ...tf },
+              photoMarqueeFloatStartAngleRad: startAng,
+            });
+            return;
+          }
+          const hIds = ["nw", "ne", "se", "sw", "n", "s", "e", "w"] as const;
+          for (const hid of hIds) {
+            const raw = rawHandlePointForPhotoFloat(hid, u);
+            const hp = mapPhotoMarqueeFloatTf(raw, u, tf.rotationDeg, tf.scaleX, tf.scaleY);
+            if (dist(pos, hp) < handleSize) {
+              const pivot = oppositePivotForPhotoFloatHandle(hid, u);
+              const rawH = rawHandlePointForPhotoFloat(hid, u);
+              let kind: "corner" | "ns" | "ew" = "corner";
+              let startVal: number;
+              if (hid === "n" || hid === "s") {
+                kind = "ns";
+                startVal = rawH.y - pivot.y;
+              } else if (hid === "e" || hid === "w") {
+                kind = "ew";
+                startVal = rawH.x - pivot.x;
+              } else {
+                startVal = Math.hypot(rawH.x - pivot.x, rawH.y - pivot.y);
+              }
+              setDragState({
+                type: "photoMarqueeFloatResize",
+                startX: e.clientX,
+                startY: e.clientY,
+                photoMarqueeFloatHandle: hid,
+                photoMarqueeFloatSnapTf: { ...tf },
+                photoMarqueeFloatSnapUnion: { ...u },
+                photoMarqueeFloatResizePivotWorld: { ...pivot },
+                photoMarqueeFloatResizeStartVal: startVal,
+                photoMarqueeFloatResizeKind: kind,
+              });
+              return;
+            }
+          }
+        }
+      }
     }
 
+    // PhotoRoom + V: arrastrar dentro del marco de selección raster (traslada la geometría en mundo).
     if (
+      isPhotoRoomStudioEmbed &&
       activeTool === "select" &&
       e.button === 0 &&
       !extendSel &&
       !e.altKey &&
       (photoRectMarqueeSelectionRef.current.length > 0 ||
         photoPolygonMarqueeSelectionRef.current.length > 0 ||
-        photoEllipseMarqueeSelectionRef.current.length > 0) &&
-      selectedIds.size === 1
+        photoEllipseMarqueeSelectionRef.current.length > 0)
     ) {
-      const soleId = Array.from(selectedIds)[0]!;
-      const sole = objects.find((o) => o.id === soleId);
+      const sole = findSingleSelectedImageForPhotoMarquee(selectedIds, objects);
       if (sole?.type === "image" && sole.visible && !sole.locked) {
         const inside = photoMarqueePointInsideCommitted(
           pos,
@@ -10125,9 +11040,23 @@ export function FreehandStudioCanvas({
           photoPolygonMarqueeSelectionRef.current,
           photoEllipseMarqueeSelectionRef.current,
         );
-        const top = hits[0];
-        const topOk = !top || top.id === sole.id;
-        if (inside && topOk) {
+        if (inside) {
+          if (!photoMarqueeFloatLiftRef.current && !photoMarqueeFloatExtractingRef.current) {
+            photoMarqueeFloatExtractingRef.current = true;
+            void buildPhotoMarqueeFloatLiftFromMarquee(
+              sole,
+              photoRectMarqueeSelectionRef.current.map((r) => ({ ...r })),
+              photoPolygonMarqueeSelectionRef.current.map((ring) => ring.map((p) => ({ ...p }))),
+              photoEllipseMarqueeSelectionRef.current.map((el) => ({ ...el })),
+            ).then((lift) => {
+              photoMarqueeFloatExtractingRef.current = false;
+              if (lift) {
+                photoMarqueeFloatLiftRef.current = lift;
+                setPhotoMarqueeFloatLift(lift);
+                setPhotoMarqueeFloatTf({ rotationDeg: 0, scaleX: 1, scaleY: 1 });
+              }
+            });
+          }
           setDragState({
             type: "photoMarqueeNudge",
             startX: e.clientX,
@@ -10139,6 +11068,13 @@ export function FreehandStudioCanvas({
           return;
         }
       }
+    }
+
+    // Todos los objetos bajo el cursor (frente → fondo). Con solape + Mayús, elegir uno que aún no esté entero en la selección.
+    const hits: FreehandObject[] = [];
+    for (let i = objects.length - 1; i >= 0; i--) {
+      const o = objects[i];
+      if (hitTestObject(pos, o, threshold, objects)) hits.push(o);
     }
 
     if (hits.length > 0) {
@@ -10332,6 +11268,63 @@ export function FreehandStudioCanvas({
     const dy = e.clientY - dragState.startY;
 
     if (dragState.type === "guidePull" || dragState.type === "guideMove") {
+      return;
+    }
+
+    if (
+      dragState.type === "photoMarqueeFloatRotate" &&
+      dragState.photoMarqueeFloatSnapUnion &&
+      dragState.photoMarqueeFloatStartAngleRad != null &&
+      dragState.photoMarqueeFloatSnapTf
+    ) {
+      const u = dragState.photoMarqueeFloatSnapUnion;
+      const snap = dragState.photoMarqueeFloatSnapTf;
+      const pos = screenToCanvas(e.clientX, e.clientY);
+      const cx = u.x + u.w / 2;
+      const cy = u.y + u.h / 2;
+      const newAng = Math.atan2(pos.y - cy, pos.x - cx);
+      const delta = shortestAngleDeltaRad(newAng, dragState.photoMarqueeFloatStartAngleRad);
+      let nextDeg = snap.rotationDeg + (delta * 180) / Math.PI;
+      if (e.shiftKey) nextDeg = Math.round(nextDeg / 15) * 15;
+      setPhotoMarqueeFloatTf((prev) => ({ ...prev, rotationDeg: nextDeg }));
+      return;
+    }
+
+    if (
+      dragState.type === "photoMarqueeFloatResize" &&
+      dragState.photoMarqueeFloatSnapUnion &&
+      dragState.photoMarqueeFloatResizePivotWorld &&
+      dragState.photoMarqueeFloatResizeStartVal != null &&
+      dragState.photoMarqueeFloatSnapTf &&
+      dragState.photoMarqueeFloatResizeKind &&
+      dragState.photoMarqueeFloatHandle
+    ) {
+      const pos = screenToCanvas(e.clientX, e.clientY);
+      const snap = dragState.photoMarqueeFloatSnapTf;
+      const piv = dragState.photoMarqueeFloatResizePivotWorld;
+      const kind = dragState.photoMarqueeFloatResizeKind;
+      const hid = dragState.photoMarqueeFloatHandle;
+      const s0 = dragState.photoMarqueeFloatResizeStartVal;
+      let rat = 1;
+      if (kind === "ns") {
+        rat = Math.abs(pos.y - piv.y) / Math.max(Math.abs(s0), 1e-9);
+      } else if (kind === "ew") {
+        rat = Math.abs(pos.x - piv.x) / Math.max(Math.abs(s0), 1e-9);
+      } else {
+        rat = Math.hypot(pos.x - piv.x, pos.y - piv.y) / Math.max(s0, 1e-9);
+      }
+      rat = Math.max(0.02, rat);
+      let sx = snap.scaleX;
+      let sy = snap.scaleY;
+      if (hid === "nw" || hid === "ne" || hid === "se" || hid === "sw") {
+        sx *= rat;
+        sy *= rat;
+      } else if (hid === "n" || hid === "s") {
+        sy *= rat;
+      } else {
+        sx *= rat;
+      }
+      setPhotoMarqueeFloatTf((prev) => ({ ...prev, scaleX: sx, scaleY: sy }));
       return;
     }
 
@@ -10997,6 +11990,11 @@ export function FreehandStudioCanvas({
     }
 
     if (ds.type === "photoMarqueeNudge") {
+      setDragState(null);
+      return;
+    }
+
+    if (ds.type === "photoMarqueeFloatRotate" || ds.type === "photoMarqueeFloatResize") {
       setDragState(null);
       return;
     }
@@ -11913,6 +12911,48 @@ export function FreehandStudioCanvas({
     [dragState],
   );
 
+  /** Colocación en mundo de la textura flotante (sigue la selección al moverla). */
+  const photoMarqueeFloatUnion = useMemo(() => {
+    if (!photoMarqueeFloatLift) return null;
+    return unionPhotoMarqueeWorldBounds(
+      photoRectMarqueeSelection,
+      photoPolygonMarqueeSelection,
+      photoEllipseMarqueeSelection,
+    );
+  }, [
+    photoMarqueeFloatLift,
+    photoRectMarqueeSelection,
+    photoPolygonMarqueeSelection,
+    photoEllipseMarqueeSelection,
+  ]);
+
+  const photoMarqueeFloatCoverFill = useMemo(() => {
+    const ab = artboards[0];
+    if (!ab) return "#0b0d10";
+    if (artboardBackgroundIsTransparentForDisplay(ab.background)) {
+      return `url(#fh-transp-${svgIdSafeSegment(ab.id)})`;
+    }
+    return ab.background ?? "#0b0d10";
+  }, [artboards]);
+
+  /** Recorte del tapón al rectángulo de la imagen en mundo (evita tapar otras capas). */
+  const photoMarqueeFloatClipPoints = useMemo((): string | null => {
+    if (!photoMarqueeFloatLift) return null;
+    const im = objects.find((o) => o.id === photoMarqueeFloatLift.sourceLayerId && o.type === "image");
+    if (!im) return null;
+    return rectWorldCorners(im)
+      .map((p) => `${p.x},${p.y}`)
+      .join(" ");
+  }, [photoMarqueeFloatLift, objects]);
+
+  const photoMarqueeFloatClipId = useMemo(
+    () =>
+      photoMarqueeFloatLift
+        ? `fh-mrq-float-${svgIdSafeSegment(photoMarqueeFloatLift.sourceLayerId)}`
+        : null,
+    [photoMarqueeFloatLift],
+  );
+
   // Create preview rect
   const createPreviewRect = useMemo(() => {
     if (!dragState || dragState.type !== "create" || !dragState.createOrigin || !dragState.currentCanvas) return null;
@@ -12225,9 +13265,9 @@ export function FreehandStudioCanvas({
 
       <div className={`flex min-h-0 min-w-0 flex-1 flex-row${canvasZenMode ? " w-full" : ""}`}>
       {!canvasZenMode && (
-      <div className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-white/[0.08] bg-[#12151a] py-3">
+      <div className="flex w-[52px] shrink-0 flex-col items-center gap-0.5 border-r border-white/[0.08] bg-[#12151a] px-1.5 py-2.5">
         <ToolBtn active={activeTool === "select"} onClick={() => { setActiveTool("select"); setSelectedPoints(new Map()); }} title="Selection (V)">
-          <MousePointer2 size={20} strokeWidth={1.5} />
+          <MousePointer2 size={19} strokeWidth={TOOLBAR_ICON_STROKE} />
         </ToolBtn>
         <ToolFlyoutGroup
           groupId="tf-pen"
@@ -12238,16 +13278,16 @@ export function FreehandStudioCanvas({
           onMainClick={() => setActiveTool(activeTool === "pen" ? "pen" : "directSelect")}
           mainIcon={
             activeTool === "pen" ? (
-              <PenTool size={20} strokeWidth={1.5} />
+              <PenTool size={19} strokeWidth={TOOLBAR_ICON_STROKE} />
             ) : (
-              <MousePointer2 size={20} strokeWidth={1.5} className="opacity-60" />
+              <MousePointer2 size={19} strokeWidth={TOOLBAR_ICON_STROKE} className="opacity-60" />
             )
           }
         >
           <button
             type="button"
             title="Selección directa (A)"
-            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition ${
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] transition ${
               activeTool === "directSelect" ? "bg-white/[0.15] text-white" : "text-zinc-500 hover:bg-white/[0.08] hover:text-white"
             }`}
             onClick={() => {
@@ -12255,12 +13295,12 @@ export function FreehandStudioCanvas({
               setLeftToolbarToolFlyout(null);
             }}
           >
-            <MousePointer2 size={18} strokeWidth={1.5} className="opacity-60" />
+            <MousePointer2 size={17} strokeWidth={TOOLBAR_ICON_STROKE} className="opacity-60" />
           </button>
           <button
             type="button"
             title="Pluma (⇧P)"
-            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition ${
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] transition ${
               activeTool === "pen" ? "bg-white/[0.15] text-white" : "text-zinc-500 hover:bg-white/[0.08] hover:text-white"
             }`}
             onClick={() => {
@@ -12268,7 +13308,7 @@ export function FreehandStudioCanvas({
               setLeftToolbarToolFlyout(null);
             }}
           >
-            <PenTool size={18} strokeWidth={1.5} />
+            <PenTool size={17} strokeWidth={TOOLBAR_ICON_STROKE} />
           </button>
         </ToolFlyoutGroup>
 
@@ -12279,12 +13319,12 @@ export function FreehandStudioCanvas({
           active={activeTool === "rect" || activeTool === "ellipse"}
           mainTitle={activeTool === "ellipse" ? (designerMode ? "Elipse (E)" : "Elipse (C o E)") : "Rectángulo (R)"}
           onMainClick={() => setActiveTool(activeTool === "ellipse" ? "ellipse" : "rect")}
-          mainIcon={activeTool === "ellipse" ? <Circle size={20} strokeWidth={1.5} /> : <Square size={20} strokeWidth={1.5} />}
+          mainIcon={activeTool === "ellipse" ? <Circle size={19} strokeWidth={TOOLBAR_ICON_STROKE} /> : <Square size={19} strokeWidth={TOOLBAR_ICON_STROKE} />}
         >
           <button
             type="button"
             title="Rectángulo (R)"
-            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition ${
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] transition ${
               activeTool === "rect" ? "bg-white/[0.15] text-white" : "text-zinc-500 hover:bg-white/[0.08] hover:text-white"
             }`}
             onClick={() => {
@@ -12292,12 +13332,12 @@ export function FreehandStudioCanvas({
               setLeftToolbarToolFlyout(null);
             }}
           >
-            <Square size={18} strokeWidth={1.5} />
+            <Square size={17} strokeWidth={TOOLBAR_ICON_STROKE} />
           </button>
           <button
             type="button"
             title={designerMode ? "Elipse (E)" : "Elipse (C o E)"}
-            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition ${
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] transition ${
               activeTool === "ellipse" ? "bg-white/[0.15] text-white" : "text-zinc-500 hover:bg-white/[0.08] hover:text-white"
             }`}
             onClick={() => {
@@ -12305,7 +13345,7 @@ export function FreehandStudioCanvas({
               setLeftToolbarToolFlyout(null);
             }}
           >
-            <Circle size={18} strokeWidth={1.5} />
+            <Circle size={17} strokeWidth={TOOLBAR_ICON_STROKE} />
           </button>
         </ToolFlyoutGroup>
 
@@ -12327,20 +13367,20 @@ export function FreehandStudioCanvas({
             }}
             mainIcon={
               activeTool === "lassoMarquee" ? (
-                <Lasso size={20} strokeWidth={1.5} />
+                <Lasso size={19} strokeWidth={TOOLBAR_ICON_STROKE} />
               ) : activeTool === "polygonMarquee" ? (
-                <Spline size={20} strokeWidth={1.5} />
+                <Spline size={19} strokeWidth={TOOLBAR_ICON_STROKE} />
               ) : activeTool === "ellipseMarquee" ? (
-                <Circle size={20} strokeWidth={1.5} />
+                <Circle size={19} strokeWidth={TOOLBAR_ICON_STROKE} />
               ) : (
-                <BoxSelect size={20} strokeWidth={1.5} />
+                <BoxSelect size={19} strokeWidth={TOOLBAR_ICON_STROKE} />
               )
             }
           >
             <button
               type="button"
               title="Marco rectangular (M)"
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition ${
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] transition ${
                 activeTool === "rectMarquee" ? "bg-white/[0.15] text-white" : "text-zinc-500 hover:bg-white/[0.08] hover:text-white"
               }`}
               onClick={() => {
@@ -12348,12 +13388,12 @@ export function FreehandStudioCanvas({
                 setLeftToolbarToolFlyout(null);
               }}
             >
-              <BoxSelect size={18} strokeWidth={1.5} />
+              <BoxSelect size={17} strokeWidth={TOOLBAR_ICON_STROKE} />
             </button>
             <button
               type="button"
               title="Marco elíptico (O). ⇧ al arrastrar = círculo. Ctrl/⌘ suma; Alt resta."
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition ${
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] transition ${
                 activeTool === "ellipseMarquee" ? "bg-white/[0.15] text-white" : "text-zinc-500 hover:bg-white/[0.08] hover:text-white"
               }`}
               onClick={() => {
@@ -12361,12 +13401,12 @@ export function FreehandStudioCanvas({
                 setLeftToolbarToolFlyout(null);
               }}
             >
-              <Circle size={18} strokeWidth={1.5} />
+              <Circle size={17} strokeWidth={TOOLBAR_ICON_STROKE} />
             </button>
             <button
               type="button"
               title="Lazo libre (L)"
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition ${
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] transition ${
                 activeTool === "lassoMarquee" ? "bg-white/[0.15] text-white" : "text-zinc-500 hover:bg-white/[0.08] hover:text-white"
               }`}
               onClick={() => {
@@ -12374,12 +13414,12 @@ export function FreehandStudioCanvas({
                 setLeftToolbarToolFlyout(null);
               }}
             >
-              <Lasso size={18} strokeWidth={1.5} />
+              <Lasso size={17} strokeWidth={TOOLBAR_ICON_STROKE} />
             </button>
             <button
               type="button"
               title="Lazo poligonal (⇧L)"
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition ${
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] transition ${
                 activeTool === "polygonMarquee" ? "bg-white/[0.15] text-white" : "text-zinc-500 hover:bg-white/[0.08] hover:text-white"
               }`}
               onClick={() => {
@@ -12387,7 +13427,7 @@ export function FreehandStudioCanvas({
                 setLeftToolbarToolFlyout(null);
               }}
             >
-              <Spline size={18} strokeWidth={1.5} />
+              <Spline size={17} strokeWidth={TOOLBAR_ICON_STROKE} />
             </button>
           </ToolFlyoutGroup>
         )}
@@ -12402,19 +13442,19 @@ export function FreehandStudioCanvas({
               onMainClick={() => setActiveTool(activeTool === "textFrame" ? "textFrame" : "text")}
               mainIcon={
                 activeTool === "textFrame" ? (
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="2" y="3" width="16" height="14" rx="1.5" strokeDasharray="3 2" />
+                  <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={TOOLBAR_ICON_STROKE} strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2.5" y="3" width="15" height="14" rx="1.25" strokeDasharray="2.5 2" />
                     <path d="M6 7.5h8M6 10h8M6 12.5h4" />
                   </svg>
                 ) : (
-                  <Type size={20} strokeWidth={1.5} />
+                  <Type size={19} strokeWidth={TOOLBAR_ICON_STROKE} />
                 )
               }
             >
               <button
                 type="button"
                 title="Texto (T)"
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition ${
+                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] transition ${
                   activeTool === "text" ? "bg-white/[0.15] text-white" : "text-zinc-500 hover:bg-white/[0.08] hover:text-white"
                 }`}
                 onClick={() => {
@@ -12422,12 +13462,12 @@ export function FreehandStudioCanvas({
                   setLeftToolbarToolFlyout(null);
                 }}
               >
-                <Type size={18} strokeWidth={1.5} />
+                <Type size={17} strokeWidth={TOOLBAR_ICON_STROKE} />
               </button>
               <button
                 type="button"
                 title="Marco de texto encadenado (C)"
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition ${
+                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] transition ${
                   activeTool === "textFrame" ? "bg-white/[0.15] text-white" : "text-zinc-500 hover:bg-white/[0.08] hover:text-white"
                 }`}
                 onClick={() => {
@@ -12435,8 +13475,8 @@ export function FreehandStudioCanvas({
                   setLeftToolbarToolFlyout(null);
                 }}
               >
-                <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="3" width="16" height="14" rx="1.5" strokeDasharray="3 2" />
+                <svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={TOOLBAR_ICON_STROKE} strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2.5" y="3" width="15" height="14" rx="1.25" strokeDasharray="2.5 2" />
                   <path d="M6 7.5h8M6 10h8M6 12.5h4" />
                 </svg>
               </button>
@@ -12454,31 +13494,31 @@ export function FreehandStudioCanvas({
               }}
               mainIcon={
                 activeTool === "imageFrame" ? (
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="2" y="3" width="16" height="14" rx="1.5" />
-                    <line x1="2" y1="3" x2="18" y2="17" opacity={0.5} />
-                    <line x1="18" y1="3" x2="2" y2="17" opacity={0.5} />
+                  <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={TOOLBAR_ICON_STROKE} strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2.5" y="3" width="15" height="14" rx="1.25" />
+                    <line x1="2.5" y1="3" x2="17.5" y2="17" opacity={0.45} strokeWidth={1.25} />
+                    <line x1="17.5" y1="3" x2="2.5" y2="17" opacity={0.45} strokeWidth={1.25} />
                   </svg>
                 ) : (
-                  <ImageIconLucide size={20} strokeWidth={1.5} />
+                  <ImageIconLucide size={19} strokeWidth={TOOLBAR_ICON_STROKE} />
                 )
               }
             >
               <button
                 type="button"
                 title="Importar imagen"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-zinc-500 transition hover:bg-white/[0.08] hover:text-white"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] text-zinc-500 transition hover:bg-white/[0.08] hover:text-white"
                 onClick={() => {
                   fileInputRef.current?.click();
                   setLeftToolbarToolFlyout(null);
                 }}
               >
-                <ImageIconLucide size={18} strokeWidth={1.5} />
+                <ImageIconLucide size={17} strokeWidth={TOOLBAR_ICON_STROKE} />
               </button>
               <button
                 type="button"
                 title="Marco de imagen"
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition ${
+                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] transition ${
                   activeTool === "imageFrame" ? "bg-white/[0.15] text-white" : "text-zinc-500 hover:bg-white/[0.08] hover:text-white"
                 }`}
                 onClick={() => {
@@ -12486,10 +13526,10 @@ export function FreehandStudioCanvas({
                   setLeftToolbarToolFlyout(null);
                 }}
               >
-                <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="3" width="16" height="14" rx="1.5" />
-                  <line x1="2" y1="3" x2="18" y2="17" opacity={0.5} />
-                  <line x1="18" y1="3" x2="2" y2="17" opacity={0.5} />
+                <svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={TOOLBAR_ICON_STROKE} strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2.5" y="3" width="15" height="14" rx="1.25" />
+                  <line x1="2.5" y1="3" x2="17.5" y2="17" opacity={0.45} strokeWidth={1.25} />
+                  <line x1="17.5" y1="3" x2="2.5" y2="17" opacity={0.45} strokeWidth={1.25} />
                 </svg>
               </button>
             </ToolFlyoutGroup>
@@ -12518,8 +13558,8 @@ export function FreehandStudioCanvas({
             </ToolBtn>
           </>
         ) : (
-          <ToolBtn active={activeTool === "text"} onClick={() => setActiveTool("text")} title="Text (T)">
-            <Type size={20} strokeWidth={1.5} />
+            <ToolBtn active={activeTool === "text"} onClick={() => setActiveTool("text")} title="Text (T)">
+            <Type size={19} strokeWidth={TOOLBAR_ICON_STROKE} />
           </ToolBtn>
         )}
 
@@ -12528,10 +13568,10 @@ export function FreehandStudioCanvas({
         {!designerMode && (
           <>
             <ToolBtn onClick={() => fileInputRef.current?.click()} title="Import image">
-              <Upload size={18} strokeWidth={1.5} />
+              <Upload size={18} strokeWidth={TOOLBAR_ICON_STROKE} />
             </ToolBtn>
             <ToolBtn onClick={() => svgInputRef.current?.click()} title="Import SVG">
-              <FileType2 size={18} strokeWidth={1.5} />
+              <FileType2 size={18} strokeWidth={TOOLBAR_ICON_STROKE} />
             </ToolBtn>
           </>
         )}
@@ -12991,7 +14031,12 @@ export function FreehandStudioCanvas({
                 const isPrimary = !multi || !inSel || primarySelectedId === obj.id || primarySelectedId == null;
                 const op = multi && inSel && !isPrimary ? 0.62 : 1;
                 return (
-                  <g key={obj.id} opacity={op} data-fh-obj={obj.id}>
+                  <g
+                    key={obj.id}
+                    opacity={op}
+                    data-fh-obj={obj.id}
+                    style={layerMixBlendStyle((obj as FreehandObjectBase).blendMode)}
+                  >
                     {renderObj(obj, objects, selectedIds, {
                       canvasZenMode,
                       designerMode,
@@ -13011,7 +14056,12 @@ export function FreehandStudioCanvas({
                     const isPrimary = !multi || !inSel || primarySelectedId === m.id || primarySelectedId == null;
                     const op = multi && inSel && !isPrimary ? 0.62 : 1;
                     return (
-                      <g key={m.id} data-fh-obj={m.id} opacity={op}>
+                      <g
+                        key={m.id}
+                        data-fh-obj={m.id}
+                        opacity={op}
+                        style={layerMixBlendStyle((m as FreehandObjectBase).blendMode)}
+                      >
                         {renderObj(m, objects, selectedIds, {
                         canvasZenMode,
                         designerMode,
@@ -13320,6 +14370,131 @@ export function FreehandStudioCanvas({
                 </ellipse>
               ) : null,
             )}
+
+            {/* PhotoRoom: tapar píxeles en el origen + textura que sigue al mover la selección (V / flechas). */}
+            {isPhotoRoomStudioEmbed &&
+              photoMarqueeFloatLift &&
+              photoMarqueeFloatClipPoints &&
+              photoMarqueeFloatClipId && (
+                <g pointerEvents="none" data-ui="photo-marquee-float-cover">
+                  <defs>
+                    <clipPath id={photoMarqueeFloatClipId}>
+                      <polygon points={photoMarqueeFloatClipPoints} />
+                    </clipPath>
+                  </defs>
+                  <g clipPath={`url(#${photoMarqueeFloatClipId})`}>
+                    {photoMarqueeFloatLift.liftRects.map((r, i) => (
+                      <rect
+                        key={`flcv-r-${i}`}
+                        x={r.x}
+                        y={r.y}
+                        width={r.w}
+                        height={r.h}
+                        fill={photoMarqueeFloatCoverFill}
+                      />
+                    ))}
+                    {photoMarqueeFloatLift.liftPolys.map((ring, i) => {
+                      const d = ringToSvgPathD(ring);
+                      if (!d) return null;
+                      return (
+                        <path
+                          key={`flcv-p-${i}`}
+                          d={d}
+                          fill={photoMarqueeFloatCoverFill}
+                          fillRule="evenodd"
+                        />
+                      );
+                    })}
+                    {photoMarqueeFloatLift.liftEllipses.map((el, i) =>
+                      el.rx > 0 && el.ry > 0 ? (
+                        <ellipse
+                          key={`flcv-e-${i}`}
+                          cx={el.cx}
+                          cy={el.cy}
+                          rx={el.rx}
+                          ry={el.ry}
+                          fill={photoMarqueeFloatCoverFill}
+                        />
+                      ) : null,
+                    )}
+                  </g>
+                </g>
+              )}
+            {isPhotoRoomStudioEmbed &&
+              photoMarqueeFloatLift &&
+              photoMarqueeFloatUnion &&
+              photoMarqueeFloatUnion.w > 1e-6 &&
+              photoMarqueeFloatUnion.h > 1e-6 &&
+              (() => {
+                const u = photoMarqueeFloatUnion;
+                const cx = u.x + u.w / 2;
+                const cy = u.y + u.h / 2;
+                const { rotationDeg, scaleX, scaleY } = photoMarqueeFloatTf;
+                const tfStr = `translate(${cx},${cy}) rotate(${rotationDeg}) scale(${scaleX},${scaleY}) translate(${-cx},${-cy})`;
+                const hz = 7 / viewport.zoom;
+                const rotHint = mapPhotoMarqueeFloatTf(
+                  { x: cx, y: u.y - 16 / viewport.zoom },
+                  u,
+                  rotationDeg,
+                  scaleX,
+                  scaleY,
+                );
+                const hIds = ["nw", "ne", "se", "sw", "n", "s", "e", "w"] as const;
+                return (
+                  <g data-ui="photo-marquee-float-group">
+                    <g transform={tfStr} pointerEvents="none">
+                      <image
+                        href={photoMarqueeFloatLift.dataUrl}
+                        x={u.x}
+                        y={u.y}
+                        width={u.w}
+                        height={u.h}
+                        preserveAspectRatio="xMidYMid meet"
+                        data-ui="photo-marquee-float-texture"
+                      />
+                    </g>
+                    <g pointerEvents="auto" data-ui="photo-marquee-float-handles">
+                      <rect
+                        x={u.x}
+                        y={u.y}
+                        width={u.w}
+                        height={u.h}
+                        fill="none"
+                        stroke="rgba(56,189,248,0.78)"
+                        strokeWidth={1 / viewport.zoom}
+                        pointerEvents="none"
+                      />
+                      {hIds.map((hid) => {
+                        const raw = rawHandlePointForPhotoFloat(hid, u);
+                        const hp = mapPhotoMarqueeFloatTf(raw, u, rotationDeg, scaleX, scaleY);
+                        return (
+                          <rect
+                            key={`pfh-${hid}`}
+                            x={hp.x - hz / 2}
+                            y={hp.y - hz / 2}
+                            width={hz}
+                            height={hz}
+                            fill="#0f172a"
+                            stroke="rgba(255,255,255,0.92)"
+                            strokeWidth={1 / viewport.zoom}
+                            rx={1.5 / viewport.zoom}
+                            style={{ cursor: `${hid}-resize` } as React.CSSProperties}
+                          />
+                        );
+                      })}
+                      <circle
+                        cx={rotHint.x}
+                        cy={rotHint.y}
+                        r={hz * 0.62}
+                        fill="#0f172a"
+                        stroke="#38bdf8"
+                        strokeWidth={1 / viewport.zoom}
+                        style={{ cursor: "grab" } as React.CSSProperties}
+                      />
+                    </g>
+                  </g>
+                );
+              })()}
 
             {/* Per-object selection outlines (multi-select): primary stronger, secondary lighter */}
             {selectedObjects.length > 1 && !canvasZenMode && (activeTool === "select" || activeTool === "directSelect") && selectedObjects.map((obj) => {
@@ -13868,6 +15043,48 @@ export function FreehandStudioCanvas({
                   {studioPhotoRoomCanvasPanel}
                 </div>
               )}
+            {selectedIds.size >= 2 && (
+              <div className="border-b border-white/[0.08] px-[14px] py-3">
+                <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                  Combinar capas
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <button
+                    type="button"
+                    disabled={layerMergeBusy}
+                    title="Rasteriza solo la selección actual y la sustituye por una capa imagen"
+                    onClick={() => void performCombineLayers("selected")}
+                    className="rounded-[5px] border border-white/[0.08] bg-white/[0.04] px-2.5 py-1.5 text-left text-[11px] text-zinc-200 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    Combinar selección
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      layerMergeBusy ||
+                      objects.filter((o) => o.visible).length < 2
+                    }
+                    title="Une todas las capas visibles en una imagen; las ocultas no se incluyen"
+                    onClick={() => void performCombineLayers("visible")}
+                    className="rounded-[5px] border border-white/[0.08] bg-white/[0.04] px-2.5 py-1.5 text-left text-[11px] text-zinc-200 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    Combinar capas visibles
+                  </button>
+                  <button
+                    type="button"
+                    disabled={layerMergeBusy || objects.length < 2}
+                    title="Rasteriza todo el documento en un solo bitmap (fondo de pliego incluido)"
+                    onClick={() => void performCombineLayers("all")}
+                    className="rounded-[5px] border border-white/[0.08] bg-white/[0.04] px-2.5 py-1.5 text-left text-[11px] text-zinc-200 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    Combinar todas las capas
+                  </button>
+                </div>
+                <p className="mt-2 text-[9px] leading-relaxed text-zinc-500">
+                  Convierte el contenido indicado en una única capa de píxeles; las capas de origen se eliminan del documento.
+                </p>
+              </div>
+            )}
             {/* Color: paleta + fill + stroke (plegable, plegado por defecto) */}
             <div className="border-b border-white/[0.08]">
               <button
@@ -15576,6 +16793,93 @@ export function FreehandStudioCanvas({
               layersPanelExpanded ? "max-h-[min(280px,38vh)] min-h-[120px] flex-1" : ""
             }`}
           >
+            <div className="flex shrink-0 flex-col gap-1.5 border-b border-white/[0.08] bg-[#151820] px-2 py-2">
+              <div className="flex items-stretch gap-2">
+                <div className="relative min-w-0 flex-1" ref={layerBlendMenuWrapRef}>
+                  <button
+                    type="button"
+                    disabled={!layerPanelTarget}
+                    title={layerPanelTarget ? "Modo de fusión con el contenido inferior" : "Selecciona una capa"}
+                    onClick={() => layerPanelTarget && setLayerBlendMenuOpen((o) => !o)}
+                    className={`flex h-7 w-full min-w-0 items-center justify-between gap-1 rounded-[3px] border border-white/[0.12] bg-[#1e2229] px-2 text-left text-[11px] font-medium text-zinc-100 transition-colors ${
+                      layerPanelTarget ? "hover:border-white/20" : "cursor-not-allowed opacity-45"
+                    }`}
+                  >
+                    <span className="truncate">
+                      {layerPanelTarget
+                        ? LAYER_BLEND_LABELS[(layerPanelTarget.blendMode ?? "normal") as LayerBlendMode]
+                        : "—"}
+                    </span>
+                    <ChevronDown size={12} className="shrink-0 text-zinc-500" strokeWidth={2.25} />
+                  </button>
+                  {layerBlendMenuOpen && layerPanelTarget && (
+                    <div
+                      className="absolute left-0 top-full z-[140] mt-1 max-h-[min(340px,55vh)] w-[min(100%,220px)] overflow-y-auto rounded-[8px] border border-white/[0.1] bg-[#1a1d26]/98 py-1 shadow-[0_12px_40px_rgba(0,0,0,0.55)] backdrop-blur-sm"
+                      role="listbox"
+                      aria-label="Modo de fusión"
+                    >
+                      {LAYER_BLEND_MENU_GROUPS.map((group, gi) => (
+                        <div key={gi}>
+                          {group.items.map(({ mode, label }) => {
+                            const active = (layerPanelTarget.blendMode ?? "normal") === mode;
+                            return (
+                              <button
+                                key={mode}
+                                type="button"
+                                role="option"
+                                aria-selected={active}
+                                className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] transition-colors ${
+                                  active ? "bg-sky-600/35 text-white" : "text-zinc-200 hover:bg-white/[0.07]"
+                                }`}
+                                onClick={() => {
+                                  updateLayerPanelTargetProp("blendMode", mode);
+                                  setLayerBlendMenuOpen(false);
+                                }}
+                              >
+                                <span className="flex w-3.5 shrink-0 justify-center text-zinc-300">
+                                  {active ? <Check size={12} strokeWidth={2.5} /> : null}
+                                </span>
+                                {label}
+                              </button>
+                            );
+                          })}
+                          {gi < LAYER_BLEND_MENU_GROUPS.length - 1 ? (
+                            <div className="my-1 border-t border-white/[0.08]" role="separator" />
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="flex min-w-0 shrink-0 items-center gap-1.5">
+                  <span className="shrink-0 text-[9px] font-medium uppercase tracking-wide text-zinc-500">Opacidad</span>
+                  <div className="flex h-7 min-w-[4.5rem] items-center rounded-[3px] border border-white/[0.12] bg-[#1e2229] px-1.5">
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={1}
+                      disabled={!layerPanelTarget}
+                      value={layerPanelTarget ? Math.round(layerPanelTarget.opacity * 100) : 0}
+                      onChange={(e) => {
+                        const n = Number(e.target.value);
+                        if (!Number.isFinite(n) || !layerPanelTarget) return;
+                        updateLayerPanelTargetProp("opacity", clamp(n, 0, 100) / 100);
+                      }}
+                      className="h-full min-w-0 flex-1 border-0 bg-transparent text-right text-[11px] font-medium text-zinc-100 outline-none focus:ring-0 disabled:opacity-40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                      title={layerPanelTarget ? "Opacidad de la capa (0–100%)" : "Selecciona una capa"}
+                    />
+                    <span className="shrink-0 pl-0.5 text-[10px] text-zinc-500">%</span>
+                  </div>
+                </div>
+              </div>
+              {layerPanelTarget && selectedObjects.length > 1 ? (
+                <p className="text-[8px] leading-tight text-zinc-500">
+                  Edición sobre la capa activa
+                  {primarySelectedId === layerPanelTarget.id ? "" : ` (${layerPanelTarget.name})`}
+                </p>
+              ) : null}
+            </div>
             {layersPanelExpanded ? (
               <>
                 <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 bg-[#151820] px-3 py-2">

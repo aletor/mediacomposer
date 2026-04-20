@@ -1035,6 +1035,23 @@ body.nb-studio-open [data-foldder-reactflow-zoom-badge] {
   to { opacity: 1; transform: scale(1); }
 }
 
+/* Left toolbar: submenú de herramientas agrupadas (apertura rápida) */
+@keyframes leftToolbarFlyoutIn {
+  from {
+    opacity: 0;
+    transform: translateX(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+.left-toolbar-flyout-panel {
+  transform-origin: left center;
+  animation: leftToolbarFlyoutIn 0.12s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 .context-menu-item {
   display: flex;
   align-items: center;
