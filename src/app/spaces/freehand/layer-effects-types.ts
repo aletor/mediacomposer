@@ -48,9 +48,32 @@ export type GradientOverlayEffect = {
   gradient: LayerGradientConfig;
 };
 
+/** Igual que en Photoshop: Softer = halo más suave; Precise = borde más definido. */
+export type OuterGlowTechnique = "softer" | "precise";
+
+export type OuterGlowEffect = {
+  enabled: boolean;
+  blendMode: LayerEffectBlendMode;
+  /** 0–1 */
+  opacity: number;
+  /** 0–100 */
+  noise: number;
+  fill: "color" | "gradient";
+  color: string;
+  gradient: LayerGradientConfig;
+  technique: OuterGlowTechnique;
+  /** 0–100 (expande el borde antes del desenfoque) */
+  spread: number;
+  /** px, tamaño del desenfoque */
+  size: number;
+  /** 0–100 (caída del halo; ~50 ≈ neutro) */
+  range: number;
+};
+
 export type LayerEffects = {
   colorOverlay?: ColorOverlayEffect;
   gradientOverlay?: GradientOverlayEffect;
+  outerGlow?: OuterGlowEffect;
 };
 
 export function defaultLayerEffects(): LayerEffects {
@@ -76,6 +99,28 @@ export function defaultLayerEffects(): LayerEffects {
         ],
       },
     },
+    outerGlow: {
+      enabled: false,
+      blendMode: "normal",
+      opacity: 0.85,
+      noise: 0,
+      fill: "color",
+      color: "#ffcc00",
+      gradient: {
+        type: "linear",
+        angle: 90,
+        scale: 1,
+        reverse: false,
+        stops: [
+          { offset: 0, color: "#ffff00" },
+          { offset: 1, color: "#ff6600" },
+        ],
+      },
+      technique: "softer",
+      spread: 0,
+      size: 12,
+      range: 50,
+    },
   };
 }
 
@@ -92,6 +137,15 @@ export function cloneLayerEffectsForEdit(src: LayerEffects | undefined): LayerEf
           },
         }
       : undefined,
+    outerGlow: d.outerGlow
+      ? {
+          ...d.outerGlow,
+          gradient: {
+            ...d.outerGlow.gradient,
+            stops: d.outerGlow.gradient.stops.map((s) => ({ ...s })),
+          },
+        }
+      : undefined,
   };
   if (!src) return base;
   if (src.colorOverlay) base.colorOverlay = { ...src.colorOverlay };
@@ -104,20 +158,38 @@ export function cloneLayerEffectsForEdit(src: LayerEffects | undefined): LayerEf
       },
     };
   }
+  if (src.outerGlow) {
+    base.outerGlow = {
+      ...src.outerGlow,
+      gradient: {
+        ...src.outerGlow.gradient,
+        stops: src.outerGlow.gradient.stops.map((s) => ({ ...s })),
+      },
+    };
+  }
   return base;
 }
 
 export function hasActiveLayerEffects(le: LayerEffects | undefined): boolean {
   if (!le) return false;
-  return !!(le.colorOverlay?.enabled || le.gradientOverlay?.enabled);
+  return !!(le.colorOverlay?.enabled || le.gradientOverlay?.enabled || le.outerGlow?.enabled);
 }
 
-/** Capas raster elegibles para Layer Styles en PhotoRoom. */
-export function isLayerStylesEligible(o: { type: string; cachedResult?: string | null }): boolean {
+/**
+ * Capas elegibles para Layer Styles (PhotoRoom): raster, boolean con caché, y formas vectoriales básicas.
+ * Excluye marcos de imagen (`rect` con `isImageFrame`), texto y contenedores.
+ */
+export function isLayerStylesEligible(o: {
+  type: string;
+  cachedResult?: string | null;
+  isImageFrame?: boolean;
+}): boolean {
   if (o.type === "image") return true;
   if (o.type === "booleanGroup") {
     const s = o.cachedResult;
     return typeof s === "string" && s.trim().length > 0;
   }
+  if (o.type === "rect") return o.isImageFrame !== true;
+  if (o.type === "ellipse" || o.type === "path") return true;
   return false;
 }

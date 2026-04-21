@@ -91,6 +91,11 @@ import {
 } from "lucide-react";
 import { ScrubNumberInput } from "./ScrubNumberInput";
 import { FreehandExportModal, type ProfessionalExportOptions } from "./freehand/FreehandExportModal";
+
+/** Campos numéricos arrastrables del panel Propiedades: un solo estilo y comportamiento (ver `ScrubNumberInput`). */
+const PROP_PANEL_SCRUB_CLASS =
+  "cursor-ew-resize rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1 font-mono text-[12px] text-zinc-100 outline-none focus:border-violet-500/50";
+const PROP_PANEL_SCRUB_HINT = "Arrastra horizontalmente · Mayús = ×10";
 import {
   type Artboard,
   artboardToRect,
@@ -103,7 +108,7 @@ import {
   resolveStudioCapabilities,
   type FreehandStudioCapabilities,
 } from "./freehand/studio-capabilities";
-import type { LayerEffects } from "./freehand/layer-effects-types";
+import type { LayerEffects, LayerGradientConfig } from "./freehand/layer-effects-types";
 import {
   cloneLayerEffectsForEdit,
   defaultLayerEffects,
@@ -459,7 +464,7 @@ interface FreehandObjectBase {
   opacity: number;
   /** Fusión con el contenido inferior (CSS `mix-blend-mode`). */
   blendMode?: LayerBlendMode;
-  /** Estilos de capa no destructivos (p. ej. overlays). PhotoRoom / capas raster. */
+  /** Estilos de capa no destructivos (overlays, outer glow). PhotoRoom: raster y formas vectoriales. */
   layerEffects?: LayerEffects;
   /** Máscara de capa (bitmap gris) misma resolución que el raster; solo capas de imagen / booleano con caché. */
   layerMask?: LayerMaskData | null;
@@ -3883,58 +3888,46 @@ function computePhotoMarqueeImagePixelBBox(
 }
 
 /**
- * Recorta los píxeles de la capa imagen según la selección PhotoRoom (mundo).
- * Solo procesa el bbox en espacio de píxeles + máscara por canvas (sin barrer iw×ih).
+ * Máscara RGBA (blanco + alfa) en coords de recorte píxel natural, mismo tamaño cw×ch.
+ * featherPx > 0: desenfoque gaussiano (CSS) del contorno → alfa con degradado (estilo Photoshop).
  */
-async function extractPhotoMarqueeRasterFromImage(
+function buildPhotoMarqueeCropAlphaMask(
   imgObj: ImageObject,
+  iw: number,
+  ih: number,
+  minIx: number,
+  minIy: number,
+  cw: number,
+  ch: number,
   rects: Rect[],
   polys: Point[][],
   ellipses: PhotoEllipseMarquee[],
-): Promise<PhotoMarqueeRasterClip | null> {
-  if (typeof document === "undefined") return null;
-  const load = await new Promise<HTMLImageElement | null>((res) => {
-    const im = new Image();
-    im.onload = () => res(im);
-    im.onerror = () => res(null);
-    im.src = imgObj.src;
-  });
-  if (!load || !load.complete) return null;
-  const iw = load.naturalWidth || 1;
-  const ih = load.naturalHeight || 1;
-
-  const bbox = computePhotoMarqueeImagePixelBBox(imgObj, iw, ih, rects, polys, ellipses);
-  if (!bbox) return null;
-  const { minIx, minIy, maxIx, maxIy } = bbox;
-  const cw = maxIx - minIx + 1;
-  const ch = maxIy - minIy + 1;
-
-  const rgb = document.createElement("canvas");
-  rgb.width = cw;
-  rgb.height = ch;
-  const rctx = rgb.getContext("2d");
-  if (!rctx) return null;
-  rctx.drawImage(load, minIx, minIy, cw, ch, 0, 0, cw, ch);
-
-  const mask = document.createElement("canvas");
-  mask.width = cw;
-  mask.height = ch;
-  const mctx = mask.getContext("2d");
-  if (!mctx) return null;
-
-  const toCrop = (wp: Point): { x: number; y: number } | null => {
+  featherPx: number,
+): HTMLCanvasElement | null {
+  if (typeof document === "undefined" || cw < 1 || ch < 1) return null;
+  const feather = Math.max(0, Math.min(200, featherPx));
+  const margin = feather > 0.5 ? Math.max(2, Math.ceil(feather * 3)) : 0;
+  const W = cw + 2 * margin;
+  const H = ch + 2 * margin;
+  const toRel = (wp: Point): { x: number; y: number } | null => {
     const f = worldPointToImagePixelFloat(imgObj, iw, ih, wp);
     if (!f) return null;
-    return { x: f.ix - minIx, y: f.iy - minIy };
+    return { x: f.ix - minIx + margin, y: f.iy - minIy + margin };
   };
-
+  const mask = document.createElement("canvas");
+  mask.width = W;
+  mask.height = H;
+  const mctx = mask.getContext("2d");
+  if (!mctx) return null;
+  mctx.fillStyle = "#000";
+  mctx.fillRect(0, 0, W, H);
   mctx.fillStyle = "#fff";
   mctx.beginPath();
   for (const r of rects) {
-    const c0 = toCrop({ x: r.x, y: r.y });
-    const c1 = toCrop({ x: r.x + r.w, y: r.y });
-    const c2 = toCrop({ x: r.x + r.w, y: r.y + r.h });
-    const c3 = toCrop({ x: r.x, y: r.y + r.h });
+    const c0 = toRel({ x: r.x, y: r.y });
+    const c1 = toRel({ x: r.x + r.w, y: r.y });
+    const c2 = toRel({ x: r.x + r.w, y: r.y + r.h });
+    const c3 = toRel({ x: r.x, y: r.y + r.h });
     if (c0 && c1 && c2 && c3) {
       mctx.moveTo(c0.x, c0.y);
       mctx.lineTo(c1.x, c1.y);
@@ -3945,11 +3938,11 @@ async function extractPhotoMarqueeRasterFromImage(
   }
   for (const ring of polys) {
     if (ring.length < 3) continue;
-    const p0 = toCrop(ring[0]!);
+    const p0 = toRel(ring[0]!);
     if (!p0) continue;
     mctx.moveTo(p0.x, p0.y);
     for (let i = 1; i < ring.length; i++) {
-      const p = toCrop(ring[i]!);
+      const p = toRel(ring[i]!);
       if (p) mctx.lineTo(p.x, p.y);
     }
     mctx.closePath();
@@ -3961,7 +3954,7 @@ async function extractPhotoMarqueeRasterFromImage(
     for (let i = 0; i <= segs; i++) {
       const t = (i / segs) * Math.PI * 2;
       const wp = { x: e.cx + e.rx * Math.cos(t), y: e.cy + e.ry * Math.sin(t) };
-      const c = toCrop(wp);
+      const c = toRel(wp);
       if (!c) continue;
       if (!first) {
         first = c;
@@ -3974,6 +3967,159 @@ async function extractPhotoMarqueeRasterFromImage(
   }
   mctx.fill("evenodd");
 
+  let blurPlane: HTMLCanvasElement;
+  if (margin > 0) {
+    const blurC = document.createElement("canvas");
+    blurC.width = W;
+    blurC.height = H;
+    const bctx = blurC.getContext("2d");
+    if (!bctx) return null;
+    bctx.filter = `blur(${feather}px)`;
+    bctx.drawImage(mask, 0, 0);
+    bctx.filter = "none";
+    blurPlane = blurC;
+  } else {
+    blurPlane = mask;
+  }
+
+  let blurData: ImageData;
+  try {
+    const bctx = blurPlane.getContext("2d");
+    if (!bctx) return null;
+    blurData = bctx.getImageData(margin, margin, cw, ch);
+  } catch {
+    return null;
+  }
+
+  const out = document.createElement("canvas");
+  out.width = cw;
+  out.height = ch;
+  const octx = out.getContext("2d");
+  if (!octx) return null;
+  const outImg = octx.createImageData(cw, ch);
+  const d = blurData.data;
+  const od = outImg.data;
+  for (let i = 0; i < cw * ch; i++) {
+    const a = d[i * 4] ?? 0;
+    od[i * 4] = 255;
+    od[i * 4 + 1] = 255;
+    od[i * 4 + 2] = 255;
+    od[i * 4 + 3] = a;
+  }
+  octx.putImageData(outImg, 0, 0);
+  return out;
+}
+
+/** `destination-out` usando alfa suave (misma geometría que la selección). */
+function applySoftMarqueeDestinationOut(
+  octx: CanvasRenderingContext2D,
+  imgObj: ImageObject,
+  iw: number,
+  ih: number,
+  rects: Rect[],
+  polys: Point[][],
+  ellipses: PhotoEllipseMarquee[],
+  featherPx: number,
+): void {
+  const bbox = computePhotoMarqueeImagePixelBBox(imgObj, iw, ih, rects, polys, ellipses);
+  if (!bbox) return;
+  let { minIx, minIy, maxIx, maxIy } = bbox;
+  const feather = Math.max(0, Math.min(200, featherPx));
+  const grow = feather > 0.5 ? Math.ceil(feather * 2.5) : 0;
+  if (grow > 0) {
+    minIx = Math.max(0, minIx - grow);
+    minIy = Math.max(0, minIy - grow);
+    maxIx = Math.min(iw - 1, maxIx + grow);
+    maxIy = Math.min(ih - 1, maxIy + grow);
+  }
+  const cw = maxIx - minIx + 1;
+  const ch = maxIy - minIy + 1;
+  const alphaCrop = buildPhotoMarqueeCropAlphaMask(
+    imgObj,
+    iw,
+    ih,
+    minIx,
+    minIy,
+    cw,
+    ch,
+    rects,
+    polys,
+    ellipses,
+    feather,
+  );
+  if (!alphaCrop) return;
+  const punch = document.createElement("canvas");
+  punch.width = iw;
+  punch.height = ih;
+  const pctx = punch.getContext("2d");
+  if (!pctx) return;
+  pctx.clearRect(0, 0, iw, ih);
+  pctx.drawImage(alphaCrop, minIx, minIy);
+  octx.save();
+  octx.globalCompositeOperation = "destination-out";
+  octx.drawImage(punch, 0, 0);
+  octx.restore();
+}
+
+/**
+ * Recorta los píxeles de la capa imagen según la selección PhotoRoom (mundo).
+ * Solo procesa el bbox en espacio de píxeles + máscara por canvas (sin barrer iw×ih).
+ * maskFeatherPx: degradado de opacidad en el borde (PNG con canal alfa suave).
+ */
+async function extractPhotoMarqueeRasterFromImage(
+  imgObj: ImageObject,
+  rects: Rect[],
+  polys: Point[][],
+  ellipses: PhotoEllipseMarquee[],
+  maskFeatherPx = 0,
+): Promise<PhotoMarqueeRasterClip | null> {
+  if (typeof document === "undefined") return null;
+  const load = await new Promise<HTMLImageElement | null>((res) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => res(null);
+    im.src = imgObj.src;
+  });
+  if (!load || !load.complete) return null;
+  const iw = load.naturalWidth || 1;
+  const ih = load.naturalHeight || 1;
+
+  const bbox0 = computePhotoMarqueeImagePixelBBox(imgObj, iw, ih, rects, polys, ellipses);
+  if (!bbox0) return null;
+  let { minIx, minIy, maxIx, maxIy } = bbox0;
+  const feather = Math.max(0, Math.min(200, maskFeatherPx));
+  const grow = feather > 0.5 ? Math.ceil(feather * 2.5) : 0;
+  if (grow > 0) {
+    minIx = Math.max(0, minIx - grow);
+    minIy = Math.max(0, minIy - grow);
+    maxIx = Math.min(iw - 1, maxIx + grow);
+    maxIy = Math.min(ih - 1, maxIy + grow);
+  }
+  const cw = maxIx - minIx + 1;
+  const ch = maxIy - minIy + 1;
+
+  const rgb = document.createElement("canvas");
+  rgb.width = cw;
+  rgb.height = ch;
+  const rctx = rgb.getContext("2d");
+  if (!rctx) return null;
+  rctx.drawImage(load, minIx, minIy, cw, ch, 0, 0, cw, ch);
+
+  const alphaMask = buildPhotoMarqueeCropAlphaMask(
+    imgObj,
+    iw,
+    ih,
+    minIx,
+    minIy,
+    cw,
+    ch,
+    rects,
+    polys,
+    ellipses,
+    feather,
+  );
+  if (!alphaMask) return null;
+
   const out = document.createElement("canvas");
   out.width = cw;
   out.height = ch;
@@ -3981,7 +4127,7 @@ async function extractPhotoMarqueeRasterFromImage(
   if (!octx) return null;
   octx.drawImage(rgb, 0, 0);
   octx.globalCompositeOperation = "destination-in";
-  octx.drawImage(mask, 0, 0);
+  octx.drawImage(alphaMask, 0, 0);
   octx.globalCompositeOperation = "source-over";
 
   let dataUrl: string;
@@ -4029,6 +4175,8 @@ type PhotoMarqueeFloatLift = {
   liftRects: Rect[];
   liftPolys: Point[][];
   liftEllipses: PhotoEllipseMarquee[];
+  /** Misma máscara al usarse al extraer: agujero y pegado respetan degradado de opacidad. */
+  maskFeatherPx: number;
 };
 
 async function buildPhotoMarqueeFloatLiftFromMarquee(
@@ -4036,8 +4184,9 @@ async function buildPhotoMarqueeFloatLiftFromMarquee(
   rects: Rect[],
   polys: Point[][],
   ellipses: PhotoEllipseMarquee[],
+  maskFeatherPx: number,
 ): Promise<PhotoMarqueeFloatLift | null> {
-  const clip = await extractPhotoMarqueeRasterFromImage(img, rects, polys, ellipses);
+  const clip = await extractPhotoMarqueeRasterFromImage(img, rects, polys, ellipses, maskFeatherPx);
   if (!clip) return null;
   return {
     sourceLayerId: clip.sourceLayerId,
@@ -4047,6 +4196,7 @@ async function buildPhotoMarqueeFloatLiftFromMarquee(
     liftRects: rects.map((r) => ({ ...r })),
     liftPolys: polys.map((ring) => ring.map((p) => ({ ...p }))),
     liftEllipses: ellipses.map((e) => ({ ...e })),
+    maskFeatherPx: Math.max(0, Math.min(200, maskFeatherPx)),
   };
 }
 
@@ -4235,12 +4385,25 @@ async function rasterCommitPhotoMarqueeFloatToImage(
   if (!octx) return null;
   octx.drawImage(load, 0, 0);
 
-  octx.save();
-  octx.globalCompositeOperation = "destination-out";
-  fillPhotoMarqueePixelMaskPath(octx, imgObj, iw, ih, lift.liftRects, lift.liftPolys, lift.liftEllipses);
-  octx.fillStyle = "rgba(0,0,0,1)";
-  octx.fill("evenodd");
-  octx.restore();
+  if (lift.maskFeatherPx > 0.5) {
+    applySoftMarqueeDestinationOut(
+      octx,
+      imgObj,
+      iw,
+      ih,
+      lift.liftRects,
+      lift.liftPolys,
+      lift.liftEllipses,
+      lift.maskFeatherPx,
+    );
+  } else {
+    octx.save();
+    octx.globalCompositeOperation = "destination-out";
+    fillPhotoMarqueePixelMaskPath(octx, imgObj, iw, ih, lift.liftRects, lift.liftPolys, lift.liftEllipses);
+    octx.fillStyle = "rgba(0,0,0,1)";
+    octx.fill("evenodd");
+    octx.restore();
+  }
 
   const inner = meetInnerRectInWorld(currentUnion, cw, ch);
   const cornersWorld = [
@@ -4288,6 +4451,7 @@ async function rasterErasePhotoMarqueeRegionFromImage(
   rects: Rect[],
   polys: Point[][],
   ellipses: PhotoEllipseMarquee[],
+  maskFeatherPx = 0,
 ): Promise<string | null> {
   if (typeof document === "undefined") return null;
   const load = await new Promise<HTMLImageElement | null>((res) => {
@@ -4305,12 +4469,17 @@ async function rasterErasePhotoMarqueeRegionFromImage(
   const octx = out.getContext("2d");
   if (!octx) return null;
   octx.drawImage(load, 0, 0);
-  octx.save();
-  octx.globalCompositeOperation = "destination-out";
-  fillPhotoMarqueePixelMaskPath(octx, imgObj, iw, ih, rects, polys, ellipses);
-  octx.fillStyle = "rgba(0,0,0,1)";
-  octx.fill("evenodd");
-  octx.restore();
+  const feather = Math.max(0, Math.min(200, maskFeatherPx));
+  if (feather > 0.5) {
+    applySoftMarqueeDestinationOut(octx, imgObj, iw, ih, rects, polys, ellipses, feather);
+  } else {
+    octx.save();
+    octx.globalCompositeOperation = "destination-out";
+    fillPhotoMarqueePixelMaskPath(octx, imgObj, iw, ih, rects, polys, ellipses);
+    octx.fillStyle = "rgba(0,0,0,1)";
+    octx.fill("evenodd");
+    octx.restore();
+  }
   try {
     return out.toDataURL("image/png");
   } catch {
@@ -5185,6 +5354,443 @@ function fhFxSanitizeId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
+function fhLayerGradientDefinition(
+  gradId: string,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  g: LayerGradientConfig,
+): React.ReactNode {
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  if (g.type === "linear") {
+    const rad = ((g.angle - 90) * Math.PI) / 180;
+    const L = (Math.max(w, h) / 2) * Math.max(0.05, g.scale);
+    let x1 = cx - Math.cos(rad) * L;
+    let y1 = cy - Math.sin(rad) * L;
+    let x2 = cx + Math.cos(rad) * L;
+    let y2 = cy + Math.sin(rad) * L;
+    if (g.reverse) {
+      const t1 = x1;
+      x1 = x2;
+      x2 = t1;
+      const t2 = y1;
+      y1 = y2;
+      y2 = t2;
+    }
+    return (
+      <linearGradient id={gradId} gradientUnits="userSpaceOnUse" x1={x1} y1={y1} x2={x2} y2={y2}>
+        {g.stops.map((s, i) => (
+          <stop key={i} offset={`${clamp(s.offset, 0, 1) * 100}%`} stopColor={s.color} />
+        ))}
+      </linearGradient>
+    );
+  }
+  const r = (Math.max(w, h) / 2) * Math.max(0.05, g.scale);
+  return (
+    <radialGradient id={gradId} gradientUnits="userSpaceOnUse" cx={cx} cy={cy} r={r}>
+      {g.stops.map((s, i) => (
+        <stop key={i} offset={`${clamp(s.offset, 0, 1) * 100}%`} stopColor={s.color} />
+      ))}
+    </radialGradient>
+  );
+}
+
+function fhOuterGlowRingParams(og: NonNullable<LayerEffects["outerGlow"]>, w: number, h: number) {
+  let dilateR = (og.spread / 100) * Math.max(og.size, 2) * 0.38;
+  let blurDev = Math.max(0.35, og.size * (og.technique === "precise" ? 0.32 : 0.46));
+  if (og.technique === "precise") {
+    dilateR *= 1.12;
+    blurDev *= 0.82;
+  }
+  dilateR = clamp(dilateR, 0, Math.max(w, h) * 0.45);
+  blurDev = clamp(blurDev, 0.15, 180);
+  const gammaExp = clamp(0.32 + (og.range / 100) * 2.05, 0.25, 3.5);
+  const noise = clamp(og.noise, 0, 100);
+  const dispScale = noise > 0.5 ? (noise / 100) * Math.max(6, og.size * 0.55) : 0;
+  const pad = Math.ceil(blurDev * 3 + dilateR * 3 + og.size + 32);
+  return { dilateR, blurDev, gammaExp, dispScale, pad };
+}
+
+function fhOuterGlowRingFilterPrimitives(
+  og: NonNullable<LayerEffects["outerGlow"]>,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): { primitives: React.ReactNode[]; fx: number; fy: number; fw: number; fh: number } {
+  const { dilateR, blurDev, gammaExp, dispScale, pad } = fhOuterGlowRingParams(og, w, h);
+  const fx = x - pad;
+  const fy = y - pad;
+  const fw = w + pad * 2;
+  const fh = h + pad * 2;
+  const primitives: React.ReactNode[] = [
+    <feMorphology
+      key="dil"
+      in="SourceAlpha"
+      operator="dilate"
+      radius={Math.max(dilateR, 0.01)}
+      result="dil"
+    />,
+    <feGaussianBlur key="blur" in="dil" stdDeviation={blurDev} result="blur" />,
+    <feComposite key="out" in="blur" in2="SourceAlpha" operator="out" result="ring" />,
+    <feComponentTransfer key="range" in="ring" result="ranged">
+      <feFuncA type="gamma" amplitude="1" exponent={gammaExp} offset="0" />
+    </feComponentTransfer>,
+  ];
+  if (dispScale > 0.01) {
+    primitives.push(
+      <feTurbulence
+        key="turb"
+        type="fractalNoise"
+        baseFrequency="0.55"
+        numOctaves={2}
+        seed="31"
+        stitchTiles="stitch"
+        result="turb"
+      />,
+      <feDisplacementMap
+        key="disp"
+        in="ranged"
+        in2="turb"
+        scale={dispScale}
+        xChannelSelector="R"
+        yChannelSelector="G"
+        result="displaced"
+      />,
+    );
+  }
+  primitives.push(
+    <feColorMatrix
+      key="luma"
+      in={dispScale > 0.01 ? "displaced" : "ranged"}
+      type="matrix"
+      values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 1 0"
+      result="ringLuma"
+    />,
+  );
+  return { primitives, fx, fy, fw, fh };
+}
+
+/** Overlays color/degradado usando la silueta vectorial como máscara. */
+function VectorLayerEffectOverlays(props: {
+  objId: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  effects: LayerEffects | undefined;
+  maskShape: React.ReactNode;
+}): React.ReactNode {
+  const { objId, x, y, w, h, effects, maskShape } = props;
+  if (!effects) return null;
+  const co = effects.colorOverlay;
+  const go = effects.gradientOverlay;
+  const coOn = !!co?.enabled;
+  const goOn = !!go?.enabled;
+  if (!coOn && !goOn) return null;
+
+  const maskId = `fh-fx-vmask-${fhFxSanitizeId(objId)}`;
+  const gradId = `fh-fx-vgrad-${fhFxSanitizeId(objId)}`;
+  const gradientDef = goOn && go ? fhLayerGradientDefinition(gradId, x, y, w, h, go.gradient) : null;
+
+  return (
+    <>
+      <defs>
+        <mask id={maskId} maskUnits="userSpaceOnUse" x={x} y={y} width={w} height={h}>
+          {maskShape}
+        </mask>
+        {gradientDef}
+      </defs>
+      {coOn && co ? (
+        <rect
+          x={x}
+          y={y}
+          width={w}
+          height={h}
+          fill={co.color}
+          mask={`url(#${maskId})`}
+          style={layerStyleEffectRectStyle(co.blendMode as LayerBlendMode, co.opacity)}
+        />
+      ) : null}
+      {goOn && go ? (
+        <rect
+          x={x}
+          y={y}
+          width={w}
+          height={h}
+          fill={`url(#${gradId})`}
+          mask={`url(#${maskId})`}
+          style={layerStyleEffectRectStyle(go.blendMode as LayerBlendMode, go.opacity)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * Forma vectorial + outer glow + overlays. `alphaSource` debe dibujar la misma geometría que la forma,
+ * con relleno/trazo blancos para definir la máscara alfa (mismo sistema de coordenadas que `children`).
+ */
+function VectorShapeWithLayerEffects(props: {
+  objId: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  effects: LayerEffects | undefined;
+  alphaSource: React.ReactNode;
+  children: React.ReactNode;
+}): React.ReactNode {
+  const { objId, x, y, w, h, effects, alphaSource, children } = props;
+  const og = effects?.outerGlow;
+  const ogOn = !!og?.enabled;
+
+  const overlays = (
+    <VectorLayerEffectOverlays
+      objId={objId}
+      x={x}
+      y={y}
+      w={w}
+      h={h}
+      effects={effects}
+      maskShape={alphaSource}
+    />
+  );
+
+  if (!ogOn || !og) {
+    return (
+      <>
+        {children}
+        {overlays}
+      </>
+    );
+  }
+
+  const sid = fhFxSanitizeId(objId);
+  const { primitives, fx, fy, fw, fh } = fhOuterGlowRingFilterPrimitives(og, x, y, w, h);
+
+  if (og.fill === "color") {
+    const fid = `fh-og-solid-${sid}`;
+    return (
+      <>
+        <defs>
+          <filter
+            id={fid}
+            colorInterpolationFilters="sRGB"
+            filterUnits="userSpaceOnUse"
+            primitiveUnits="userSpaceOnUse"
+            x={fx}
+            y={fy}
+            width={fw}
+            height={fh}
+          >
+            {primitives}
+            <feFlood floodColor={og.color} floodOpacity={clamp(og.opacity, 0, 1)} result="fl" />
+            <feComposite in="fl" in2="ringLuma" operator="in" result="glowPainted" />
+            <feMerge>
+              <feMergeNode in="glowPainted" />
+            </feMerge>
+          </filter>
+        </defs>
+        <g filter={`url(#${fid})`} style={layerStyleEffectRectStyle(og.blendMode as LayerBlendMode, 1)}>
+          {alphaSource}
+        </g>
+        {children}
+        {overlays}
+      </>
+    );
+  }
+
+  const glowGradId = `fh-og-grad-${sid}`;
+  const maskFid = `fh-og-maskf-${sid}`;
+  const mid = `fh-og-mask-${sid}`;
+  const gradDef = fhLayerGradientDefinition(glowGradId, x, y, w, h, og.gradient);
+
+  return (
+    <>
+      <defs>
+        {gradDef}
+        <filter
+          id={maskFid}
+          colorInterpolationFilters="sRGB"
+          filterUnits="userSpaceOnUse"
+          primitiveUnits="userSpaceOnUse"
+          x={fx}
+          y={fy}
+          width={fw}
+          height={fh}
+        >
+          {primitives}
+        </filter>
+      </defs>
+      <mask
+        id={mid}
+        maskUnits="userSpaceOnUse"
+        maskContentUnits="userSpaceOnUse"
+        x={fx}
+        y={fy}
+        width={fw}
+        height={fh}
+        style={{ maskType: "luminance" }}
+      >
+        <rect x={fx} y={fy} width={fw} height={fh} fill="black" />
+        <g filter={`url(#${maskFid})`}>{alphaSource}</g>
+      </mask>
+      <rect
+        x={fx}
+        y={fy}
+        width={fw}
+        height={fh}
+        fill={`url(#${glowGradId})`}
+        mask={`url(#${mid})`}
+        style={layerStyleEffectRectStyle(og.blendMode as LayerBlendMode, og.opacity)}
+      />
+      {children}
+      {overlays}
+    </>
+  );
+}
+
+/**
+ * Imagen raster + overlays + outer glow.
+ * Color: `feMerge` solo del halo sobre una copia de la imagen (Chromium suele ignorar filtros dentro de `<mask>`).
+ * Gradiente: rect enmascarado (misma cadena de filtro → blanco en alfa).
+ */
+function RasterBitmapWithLayerEffects(props: {
+  objId: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  href: string;
+  preserveAspectRatio: string;
+  effects: LayerEffects | undefined;
+}): React.ReactNode {
+  const { objId, x, y, w, h, href, preserveAspectRatio, effects } = props;
+  const og = effects?.outerGlow;
+  const ogOn = !!og?.enabled;
+
+  const imageEl = (
+    <image href={href} x={x} y={y} width={w} height={h} preserveAspectRatio={preserveAspectRatio} />
+  );
+
+  const overlays = (
+    <RasterLayerEffectOverlays
+      objId={objId}
+      x={x}
+      y={y}
+      w={w}
+      h={h}
+      href={href}
+      preserveAspectRatio={preserveAspectRatio}
+      effects={effects}
+    />
+  );
+
+  if (!ogOn || !og) {
+    return (
+      <>
+        {imageEl}
+        {overlays}
+      </>
+    );
+  }
+
+  const sid = fhFxSanitizeId(objId);
+  const { primitives: ringFilterPrimitives, fx, fy, fw, fh } = fhOuterGlowRingFilterPrimitives(og, x, y, w, h);
+
+  if (og.fill === "color") {
+    const fid = `fh-og-solid-${sid}`;
+    return (
+      <>
+        <defs>
+          <filter
+            id={fid}
+            colorInterpolationFilters="sRGB"
+            filterUnits="userSpaceOnUse"
+            primitiveUnits="userSpaceOnUse"
+            x={fx}
+            y={fy}
+            width={fw}
+            height={fh}
+          >
+            {ringFilterPrimitives}
+            <feFlood floodColor={og.color} floodOpacity={clamp(og.opacity, 0, 1)} result="fl" />
+            <feComposite in="fl" in2="ringLuma" operator="in" result="glowPainted" />
+            <feMerge>
+              <feMergeNode in="glowPainted" />
+            </feMerge>
+          </filter>
+        </defs>
+        <g filter={`url(#${fid})`} style={layerStyleEffectRectStyle(og.blendMode as LayerBlendMode, 1)}>
+          <image href={href} x={x} y={y} width={w} height={h} preserveAspectRatio={preserveAspectRatio} />
+        </g>
+        {imageEl}
+        {overlays}
+      </>
+    );
+  }
+
+  const glowGradId = `fh-og-grad-${sid}`;
+  const maskFid = `fh-og-maskf-${sid}`;
+  const mid = `fh-og-mask-${sid}`;
+  const gradDef = fhLayerGradientDefinition(glowGradId, x, y, w, h, og.gradient);
+
+  return (
+    <>
+      <defs>
+        {gradDef}
+        <filter
+          id={maskFid}
+          colorInterpolationFilters="sRGB"
+          filterUnits="userSpaceOnUse"
+          primitiveUnits="userSpaceOnUse"
+          x={fx}
+          y={fy}
+          width={fw}
+          height={fh}
+        >
+          {ringFilterPrimitives}
+        </filter>
+      </defs>
+      <mask
+        id={mid}
+        maskUnits="userSpaceOnUse"
+        maskContentUnits="userSpaceOnUse"
+        x={fx}
+        y={fy}
+        width={fw}
+        height={fh}
+        style={{ maskType: "luminance" }}
+      >
+        <rect x={fx} y={fy} width={fw} height={fh} fill="black" />
+        <image
+          href={href}
+          x={x}
+          y={y}
+          width={w}
+          height={h}
+          preserveAspectRatio={preserveAspectRatio}
+          filter={`url(#${maskFid})`}
+        />
+      </mask>
+      <rect
+        x={fx}
+        y={fy}
+        width={fw}
+        height={fh}
+        fill={`url(#${glowGradId})`}
+        mask={`url(#${mid})`}
+        style={layerStyleEffectRectStyle(og.blendMode as LayerBlendMode, og.opacity)}
+      />
+      {imageEl}
+      {overlays}
+    </>
+  );
+}
+
 /** Envuelve raster (imagen + overlays opcionales) con `<mask>` SVG según `layerMask`. */
 function wrapRasterChildrenWithLayerMask(
   objId: string,
@@ -5261,45 +5867,7 @@ function RasterLayerEffectOverlays(props: {
   const maskId = `fh-fx-mask-${fhFxSanitizeId(objId)}`;
   const gradId = `fh-fx-grad-${fhFxSanitizeId(objId)}`;
 
-  const cx = x + w / 2;
-  const cy = y + h / 2;
-
-  let gradientDef: React.ReactNode = null;
-  if (goOn && go) {
-    const g = go.gradient;
-    if (g.type === "linear") {
-      const rad = ((g.angle - 90) * Math.PI) / 180;
-      const L = (Math.max(w, h) / 2) * Math.max(0.05, g.scale);
-      let x1 = cx - Math.cos(rad) * L;
-      let y1 = cy - Math.sin(rad) * L;
-      let x2 = cx + Math.cos(rad) * L;
-      let y2 = cy + Math.sin(rad) * L;
-      if (g.reverse) {
-        const t1 = x1;
-        x1 = x2;
-        x2 = t1;
-        const t2 = y1;
-        y1 = y2;
-        y2 = t2;
-      }
-      gradientDef = (
-        <linearGradient id={gradId} gradientUnits="userSpaceOnUse" x1={x1} y1={y1} x2={x2} y2={y2}>
-          {g.stops.map((s, i) => (
-            <stop key={i} offset={`${clamp(s.offset, 0, 1) * 100}%`} stopColor={s.color} />
-          ))}
-        </linearGradient>
-      );
-    } else {
-      const r = (Math.max(w, h) / 2) * Math.max(0.05, g.scale);
-      gradientDef = (
-        <radialGradient id={gradId} gradientUnits="userSpaceOnUse" cx={cx} cy={cy} r={r}>
-          {g.stops.map((s, i) => (
-            <stop key={i} offset={`${clamp(s.offset, 0, 1) * 100}%`} stopColor={s.color} />
-          ))}
-        </radialGradient>
-      );
-    }
-  }
+  const gradientDef = goOn && go ? fhLayerGradientDefinition(gradId, x, y, w, h, go.gradient) : null;
 
   return (
     <>
@@ -5412,6 +5980,59 @@ export function renderObj(
         );
       }
       const suppressPresenterRectFill = opts?.presenterSuppressBitmapObjectIds?.has(rObj.id) ?? false;
+      const leRect = resolveLayerEffectsForRender(rObj, opts);
+      const fxRect = hasActiveLayerEffects(leRect);
+      const hasVisStroke =
+        rObj.strokeWidth > 0 && rObj.stroke != null && rObj.stroke !== "none";
+      const silhouetteRect = (
+        <rect
+          x={rObj.x}
+          y={rObj.y}
+          width={rObj.width}
+          height={rObj.height}
+          rx={rObj.rx}
+          fill={!suppressPresenterRectFill && fillHasPaint(fill) ? "white" : "none"}
+          stroke={hasVisStroke ? "white" : "none"}
+          strokeWidth={hasVisStroke ? rObj.strokeWidth : 0}
+          strokeLinecap={rObj.strokeLinecap}
+          strokeLinejoin={rObj.strokeLinejoin}
+          strokeDasharray={svgStrokeDashArray(rObj.strokeDasharray)}
+          strokeMiterlimit={
+            rObj.strokeLinejoin === "miter" ? (rObj.strokeMiterlimit ?? 4) : undefined
+          }
+          strokeDashoffset={
+            rObj.strokeDashoffset != null && Math.abs(Number(rObj.strokeDashoffset)) > 1e-9
+              ? rObj.strokeDashoffset
+              : undefined
+          }
+        />
+      );
+      if (fxRect) {
+        return (
+          <g key={rObj.id} transform={transform} opacity={rObj.opacity}>
+            <VectorShapeWithLayerEffects
+              objId={rObj.id}
+              x={rObj.x}
+              y={rObj.y}
+              w={rObj.width}
+              h={rObj.height}
+              effects={leRect}
+              alphaSource={silhouetteRect}
+            >
+              <rect
+                x={rObj.x}
+                y={rObj.y}
+                width={rObj.width}
+                height={rObj.height}
+                rx={rObj.rx}
+                fill={suppressPresenterRectFill ? "none" : fillAttr}
+                {...strokePaint}
+                {...(suppressPresenterRectFill ? { pointerEvents: "all" as const } : {})}
+              />
+            </VectorShapeWithLayerEffects>
+          </g>
+        );
+      }
       return (
         <rect
           key={obj.id}
@@ -5429,13 +6050,69 @@ export function renderObj(
     }
     case "ellipse": {
       const suppressPresenterEllipseFill = opts?.presenterSuppressBitmapObjectIds?.has(obj.id) ?? false;
+      const eObj = obj as EllipseObject;
+      const leEl = resolveLayerEffectsForRender(eObj, opts);
+      const fxEl = hasActiveLayerEffects(leEl);
+      const cx = obj.x + obj.width / 2;
+      const cy = obj.y + obj.height / 2;
+      const rx = obj.width / 2;
+      const ry = obj.height / 2;
+      const hasElStroke =
+        eObj.strokeWidth > 0 && eObj.stroke != null && eObj.stroke !== "none";
+      const silhouetteEllipse = (
+        <ellipse
+          cx={cx}
+          cy={cy}
+          rx={rx}
+          ry={ry}
+          fill={!suppressPresenterEllipseFill && fillHasPaint(fill) ? "white" : "none"}
+          stroke={hasElStroke ? "white" : "none"}
+          strokeWidth={hasElStroke ? eObj.strokeWidth : 0}
+          strokeLinecap={eObj.strokeLinecap}
+          strokeLinejoin={eObj.strokeLinejoin}
+          strokeDasharray={svgStrokeDashArray(eObj.strokeDasharray)}
+          strokeMiterlimit={
+            eObj.strokeLinejoin === "miter" ? (eObj.strokeMiterlimit ?? 4) : undefined
+          }
+          strokeDashoffset={
+            eObj.strokeDashoffset != null && Math.abs(Number(eObj.strokeDashoffset)) > 1e-9
+              ? eObj.strokeDashoffset
+              : undefined
+          }
+        />
+      );
+      if (fxEl) {
+        return (
+          <g key={eObj.id} transform={transform} opacity={eObj.opacity}>
+            <VectorShapeWithLayerEffects
+              objId={eObj.id}
+              x={eObj.x}
+              y={eObj.y}
+              w={eObj.width}
+              h={eObj.height}
+              effects={leEl}
+              alphaSource={silhouetteEllipse}
+            >
+              <ellipse
+                cx={cx}
+                cy={cy}
+                rx={rx}
+                ry={ry}
+                fill={suppressPresenterEllipseFill ? "none" : fillAttr}
+                {...strokePaint}
+                {...(suppressPresenterEllipseFill ? { pointerEvents: "all" as const } : {})}
+              />
+            </VectorShapeWithLayerEffects>
+          </g>
+        );
+      }
       return (
         <ellipse
           key={obj.id}
-          cx={obj.x + obj.width / 2}
-          cy={obj.y + obj.height / 2}
-          rx={obj.width / 2}
-          ry={obj.height / 2}
+          cx={cx}
+          cy={cy}
+          rx={rx}
+          ry={ry}
           fill={suppressPresenterEllipseFill ? "none" : fillAttr}
           transform={transform}
           {...strokeProps}
@@ -5457,6 +6134,30 @@ export function renderObj(
           : {};
       const pathProps = { ...strokeProps, ...mProps };
       const peHit = suppressPresenterPathFill ? ({ pointerEvents: "all" as const } as const) : {};
+      const leP = resolveLayerEffectsForRender(p, opts);
+      const fxP = hasActiveLayerEffects(leP);
+      const silFill =
+        suppressPresenterPathFill ? "none" : p.closed && fillHasPaint(fill) ? "white" : "none";
+      const hasPathStroke = p.strokeWidth > 0 && p.stroke != null && p.stroke !== "none";
+      const dashP = svgStrokeDashArray(p.strokeDasharray);
+      const mlP = p.strokeLinejoin === "miter" ? (p.strokeMiterlimit ?? 4) : undefined;
+      const offP =
+        p.strokeDashoffset != null && Math.abs(Number(p.strokeDashoffset)) > 1e-9
+          ? p.strokeDashoffset
+          : undefined;
+      const silPathEl = (
+        <path
+          d={d}
+          fill={silFill}
+          stroke={hasPathStroke ? "white" : "none"}
+          strokeWidth={hasPathStroke ? p.strokeWidth : 0}
+          strokeLinecap={p.strokeLinecap}
+          strokeLinejoin={p.strokeLinejoin}
+          {...(dashP ? { strokeDasharray: dashP } : {})}
+          {...(offP != null ? { strokeDashoffset: offP } : {})}
+          {...(mlP != null && p.strokeLinejoin === "miter" ? { strokeMiterlimit: mlP } : {})}
+        />
+      );
       const hasIntrinsic =
         p.svgPathIntrinsicW != null &&
         p.svgPathIntrinsicH != null &&
@@ -5467,12 +6168,34 @@ export function renderObj(
         const ih = p.svgPathIntrinsicH!;
         const sx = obj.width / Math.max(iw, 1e-9);
         const sy = obj.height / Math.max(ih, 1e-9);
+        const innerT = `translate(${obj.x} ${obj.y}) scale(${sx} ${sy})`;
+        const alphaSource = <g transform={innerT}>{silPathEl}</g>;
+        const body = (
+          <g transform={innerT}>
+            {mk.defs}
+            <path d={d} fill={fp} {...pathProps} {...peHit} />
+          </g>
+        );
+        if (fxP) {
+          return (
+            <g key={p.id} transform={transform} opacity={p.opacity}>
+              <VectorShapeWithLayerEffects
+                objId={p.id}
+                x={p.x}
+                y={p.y}
+                w={p.width}
+                h={p.height}
+                effects={leP}
+                alphaSource={alphaSource}
+              >
+                {body}
+              </VectorShapeWithLayerEffects>
+            </g>
+          );
+        }
         return (
           <g key={obj.id} transform={transform}>
-            <g transform={`translate(${obj.x} ${obj.y}) scale(${sx} ${sy})`}>
-              {mk.defs}
-              <path d={d} fill={fp} {...pathProps} {...peHit} />
-            </g>
+            {body}
           </g>
         );
       }
@@ -5481,23 +6204,84 @@ export function renderObj(
         ? `matrix(${imp.a},${imp.b},${imp.c},${imp.d},${imp.e},${imp.f})`
         : undefined;
       if (innerM) {
+        const alphaSource = <g transform={innerM}>{silPathEl}</g>;
+        const body = (
+          <g transform={innerM}>
+            {mk.defs}
+            <path d={d} fill={fp} {...pathProps} {...peHit} />
+          </g>
+        );
+        if (fxP) {
+          return (
+            <g key={p.id} transform={transform} opacity={p.opacity}>
+              <VectorShapeWithLayerEffects
+                objId={p.id}
+                x={p.x}
+                y={p.y}
+                w={p.width}
+                h={p.height}
+                effects={leP}
+                alphaSource={alphaSource}
+              >
+                {body}
+              </VectorShapeWithLayerEffects>
+            </g>
+          );
+        }
         return (
           <g key={obj.id} transform={transform}>
-            <g transform={innerM}>
-              {mk.defs}
-              <path d={d} fill={fp} {...pathProps} {...peHit} />
-            </g>
+            {body}
           </g>
         );
       }
-      return mk.defs ? (
-        <g key={obj.id} transform={transform}>
-          {mk.defs}
-          <path d={d} fill={fp} {...pathProps} {...peHit} />
-        </g>
-      ) : (
-        <path key={obj.id} d={d} fill={fp} transform={transform} {...pathProps} {...peHit} />
-      );
+      if (mk.defs) {
+        const body = (
+          <>
+            {mk.defs}
+            <path d={d} fill={fp} {...pathProps} {...peHit} />
+          </>
+        );
+        if (fxP) {
+          return (
+            <g key={p.id} transform={transform} opacity={p.opacity}>
+              <VectorShapeWithLayerEffects
+                objId={p.id}
+                x={p.x}
+                y={p.y}
+                w={p.width}
+                h={p.height}
+                effects={leP}
+                alphaSource={silPathEl}
+              >
+                <g>{body}</g>
+              </VectorShapeWithLayerEffects>
+            </g>
+          );
+        }
+        return (
+          <g key={obj.id} transform={transform}>
+            {body}
+          </g>
+        );
+      }
+      if (fxP) {
+        return (
+          <g key={p.id} transform={transform} opacity={p.opacity}>
+            <VectorShapeWithLayerEffects
+              objId={p.id}
+              x={p.x}
+              y={p.y}
+              w={p.width}
+              h={p.height}
+              effects={leP}
+              alphaSource={silPathEl}
+            >
+              <path d={d} fill={fp} {...pathProps} {...peHit} />
+            </VectorShapeWithLayerEffects>
+          </g>
+        );
+      }
+      return <path key={obj.id} d={d} fill={fp} transform={transform} {...pathProps} {...peHit} />;
     }
     case "text": {
       const t = obj as TextObject;
@@ -5694,8 +6478,7 @@ export function renderObj(
       const lmask = (obj as FreehandObjectBase).layerMask;
       const inner = fxActive ? (
         <g style={{ isolation: "isolate" }}>
-          <image href={im.src} x={obj.x} y={obj.y} width={obj.width} height={obj.height} preserveAspectRatio={par} />
-          <RasterLayerEffectOverlays
+          <RasterBitmapWithLayerEffects
             objId={im.id}
             x={obj.x}
             y={obj.y}
@@ -5747,15 +6530,7 @@ export function renderObj(
         const lmask = (obj as FreehandObjectBase).layerMask;
         const inner = fxActive ? (
           <g style={{ isolation: "isolate" }}>
-            <image
-              href={bg.cachedResult}
-              x={bg.x}
-              y={bg.y}
-              width={bg.width}
-              height={bg.height}
-              preserveAspectRatio={par}
-            />
-            <RasterLayerEffectOverlays
+            <RasterBitmapWithLayerEffects
               objId={bg.id}
               x={bg.x}
               y={bg.y}
@@ -7557,6 +8332,10 @@ export function FreehandStudioCanvas({
   const [photoPolygonMarqueeSelection, setPhotoPolygonMarqueeSelection] = useState<Point[][]>([]);
   /** PhotoRoom: marcos elípticos confirmados. */
   const [photoEllipseMarqueeSelection, setPhotoEllipseMarqueeSelection] = useState<PhotoEllipseMarquee[]>([]);
+  /** PhotoRoom: feather de máscara (px en bitmap natural). 0 = borde duro; >0 = degradado de opacidad al copiar/borrar/mover. */
+  const [photoMarqueeMaskFeatherPx, setPhotoMarqueeMaskFeatherPx] = useState(0);
+  const photoMarqueeMaskFeatherPxRef = useRef(0);
+  photoMarqueeMaskFeatherPxRef.current = photoMarqueeMaskFeatherPx;
   /** Refs síncronos para atajos/teclado (evita cierres obsoletos sobre la selección). */
   const photoRectMarqueeSelectionRef = useRef(photoRectMarqueeSelection);
   const photoPolygonMarqueeSelectionRef = useRef(photoPolygonMarqueeSelection);
@@ -8886,7 +9665,7 @@ export function FreehandStudioCanvas({
         (primarySelectedId ? objects.find((o) => o.id === primarySelectedId) : null) ??
         firstSelected;
       if (!target || !isLayerStylesEligible(target)) {
-        setToast("Selecciona una capa de imagen o bitmap para Layer Styles.");
+        setToast("Selecciona una imagen, bitmap o forma (rectángulo, elipse, trazado) para Layer Styles.");
         window.setTimeout(() => setToast(null), 3200);
         return;
       }
@@ -9783,6 +10562,14 @@ export function FreehandStudioCanvas({
     [layerPanelTargetId, pushHistory],
   );
 
+  const updateLayerPanelTargetPropSilent = useCallback(
+    (key: string, value: unknown) => {
+      if (!layerPanelTargetId) return;
+      setObjects((prev) => prev.map((o) => (o.id === layerPanelTargetId ? { ...o, [key]: value } : o)));
+    },
+    [layerPanelTargetId],
+  );
+
   const flushBrushPreviewToObject = useCallback(() => {
     const s = brushSessionRef.current;
     if (!s) return;
@@ -10268,6 +11055,11 @@ export function FreehandStudioCanvas({
     pushHistory(objectsRef.current, selectedIdsRef.current);
   }, [pushHistory]);
 
+  const commitLayerPanelHistoryAfterScrub = useCallback(() => {
+    if (!layerPanelTargetId) return;
+    pushHistory(objectsRef.current, new Set([layerPanelTargetId]));
+  }, [layerPanelTargetId, pushHistory]);
+
   const TRANSFORM_DIM_MIN = 1;
 
   /** W/H con signo: negativo = espejo en ese eje (texto usa scaleX/Y). `silent` evita historial (scrub en vivo). */
@@ -10578,6 +11370,7 @@ export function FreehandStudioCanvas({
         rects,
         polys,
         ellipses,
+        photoMarqueeMaskFeatherPxRef.current,
       );
       if (!clip) {
         setToast("No hay píxeles en la selección");
@@ -10637,6 +11430,7 @@ export function FreehandStudioCanvas({
     setPhotoRectMarqueeSelection([]);
     setPhotoPolygonMarqueeSelection([]);
     setPhotoEllipseMarqueeSelection([]);
+    setPhotoMarqueeMaskFeatherPx(0);
   }, [isPhotoRoomStudioEmbed, studioCaps.toolPhotoMarquee]);
 
   const invertPhotoMarqueeFromPanel = useCallback(() => {
@@ -12394,6 +13188,7 @@ export function FreehandStudioCanvas({
               photoRectMarqueeSelectionRef.current.map((r) => ({ ...r })),
               photoPolygonMarqueeSelectionRef.current.map((ring) => ring.map((p) => ({ ...p }))),
               photoEllipseMarqueeSelectionRef.current.map((el) => ({ ...el })),
+              photoMarqueeMaskFeatherPxRef.current,
             );
             if (!url) {
               setToast("No se pudo borrar la zona del bitmap");
@@ -12413,6 +13208,7 @@ export function FreehandStudioCanvas({
             setPhotoRectMarqueeSelection([]);
             setPhotoPolygonMarqueeSelection([]);
             setPhotoEllipseMarqueeSelection([]);
+            setPhotoMarqueeMaskFeatherPx(0);
             setPhotoMarqueeFloatLift(null);
             photoMarqueeFloatLiftRef.current = null;
             setPhotoMarqueeFloatTf({ rotationDeg: 0, scaleX: 1, scaleY: 1 });
@@ -12512,6 +13308,7 @@ export function FreehandStudioCanvas({
               photoRectMarqueeSelectionRef.current.map((r) => ({ ...r })),
               photoPolygonMarqueeSelectionRef.current.map((ring) => ring.map((p) => ({ ...p }))),
               photoEllipseMarqueeSelectionRef.current.map((el) => ({ ...el })),
+              photoMarqueeMaskFeatherPxRef.current,
             ).then((lift) => {
               photoMarqueeFloatExtractingRef.current = false;
               if (!lift) return;
@@ -14031,6 +14828,7 @@ export function FreehandStudioCanvas({
               photoRectMarqueeSelectionRef.current.map((r) => ({ ...r })),
               photoPolygonMarqueeSelectionRef.current.map((ring) => ring.map((p) => ({ ...p }))),
               photoEllipseMarqueeSelectionRef.current.map((el) => ({ ...el })),
+              photoMarqueeMaskFeatherPxRef.current,
             ).then((lift) => {
               photoMarqueeFloatExtractingRef.current = false;
               if (lift) {
@@ -18939,7 +19737,18 @@ export function FreehandStudioCanvas({
                       onChange={(e) => setBrushSize(Number(e.target.value))}
                       className="min-w-0 flex-1 accent-violet-500"
                     />
-                    <span className="w-8 shrink-0 text-right font-mono text-[11px] text-zinc-300">{brushSize}</span>
+                    <ScrubNumberInput
+                      value={brushSize}
+                      onKeyboardCommit={(n) => setBrushSize(clamp(Math.round(n), 1, 400))}
+                      onScrubLive={(n) => setBrushSize(clamp(Math.round(n), 1, 400))}
+                      onScrubEnd={() => {}}
+                      step={1}
+                      roundFn={(n) => clamp(Math.round(n), 1, 400)}
+                      min={1}
+                      max={400}
+                      title={PROP_PANEL_SCRUB_HINT}
+                      className={`w-12 shrink-0 ${PROP_PANEL_SCRUB_CLASS}`}
+                    />
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="w-[72px] shrink-0 text-[10px] text-zinc-500 uppercase tracking-wider">Dureza</span>
@@ -18951,7 +19760,19 @@ export function FreehandStudioCanvas({
                       onChange={(e) => setBrushHardnessPct(Number(e.target.value))}
                       className="min-w-0 flex-1 accent-violet-500"
                     />
-                    <span className="w-8 shrink-0 text-right font-mono text-[11px] text-zinc-300">{brushHardnessPct}%</span>
+                    <ScrubNumberInput
+                      value={brushHardnessPct}
+                      onKeyboardCommit={(n) => setBrushHardnessPct(clamp(Math.round(n), 0, 100))}
+                      onScrubLive={(n) => setBrushHardnessPct(clamp(Math.round(n), 0, 100))}
+                      onScrubEnd={() => {}}
+                      step={1}
+                      roundFn={(n) => clamp(Math.round(n), 0, 100)}
+                      min={0}
+                      max={100}
+                      title={PROP_PANEL_SCRUB_HINT}
+                      className={`w-12 shrink-0 ${PROP_PANEL_SCRUB_CLASS}`}
+                    />
+                    <span className="shrink-0 text-[10px] text-zinc-500">%</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="w-[72px] shrink-0 text-[10px] text-zinc-500 uppercase tracking-wider">Opacidad</span>
@@ -18963,7 +19784,19 @@ export function FreehandStudioCanvas({
                       onChange={(e) => setBrushOpacityPct(Number(e.target.value))}
                       className="min-w-0 flex-1 accent-violet-500"
                     />
-                    <span className="w-8 shrink-0 text-right font-mono text-[11px] text-zinc-300">{brushOpacityPct}%</span>
+                    <ScrubNumberInput
+                      value={brushOpacityPct}
+                      onKeyboardCommit={(n) => setBrushOpacityPct(clamp(Math.round(n), 1, 100))}
+                      onScrubLive={(n) => setBrushOpacityPct(clamp(Math.round(n), 1, 100))}
+                      onScrubEnd={() => {}}
+                      step={1}
+                      roundFn={(n) => clamp(Math.round(n), 1, 100)}
+                      min={1}
+                      max={100}
+                      title={PROP_PANEL_SCRUB_HINT}
+                      className={`w-12 shrink-0 ${PROP_PANEL_SCRUB_CLASS}`}
+                    />
+                    <span className="shrink-0 text-[10px] text-zinc-500">%</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="w-[72px] shrink-0 text-[10px] text-zinc-500 uppercase tracking-wider">Flow</span>
@@ -18975,7 +19808,19 @@ export function FreehandStudioCanvas({
                       onChange={(e) => setBrushFlowPct(Number(e.target.value))}
                       className="min-w-0 flex-1 accent-violet-500"
                     />
-                    <span className="w-8 shrink-0 text-right font-mono text-[11px] text-zinc-300">{brushFlowPct}%</span>
+                    <ScrubNumberInput
+                      value={brushFlowPct}
+                      onKeyboardCommit={(n) => setBrushFlowPct(clamp(Math.round(n), 1, 100))}
+                      onScrubLive={(n) => setBrushFlowPct(clamp(Math.round(n), 1, 100))}
+                      onScrubEnd={() => {}}
+                      step={1}
+                      roundFn={(n) => clamp(Math.round(n), 1, 100)}
+                      min={1}
+                      max={100}
+                      title={PROP_PANEL_SCRUB_HINT}
+                      className={`w-12 shrink-0 ${PROP_PANEL_SCRUB_CLASS}`}
+                    />
+                    <span className="shrink-0 text-[10px] text-zinc-500">%</span>
                   </div>
                   {activeTool === "brush" ? (
                     <div className="space-y-2 border-t border-white/[0.06] pt-2.5">
@@ -19066,6 +19911,33 @@ export function FreehandStudioCanvas({
                     >
                       Deseleccionar
                     </button>
+                  </div>
+                  <div className="mt-3 space-y-2 border-t border-white/[0.06] pt-3">
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Feather (máscara suave)</div>
+                    <p className="text-[9px] leading-snug text-zinc-600">
+                      0 = borde duro. Mayor valor = degradado de opacidad en el borde al copiar (⌘C), borrar selección o mover
+                      píxeles: el número activo se usa en esa acción; no hay botón «Aplicar». Las hormigas siguen nítidas.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <label className="w-[72px] shrink-0 text-[10px] text-zinc-500 uppercase tracking-wider" htmlFor="fh-marquee-feather-px">
+                        Radio px
+                      </label>
+                      <ScrubNumberInput
+                        id="fh-marquee-feather-px"
+                        value={photoMarqueeMaskFeatherPx}
+                        onKeyboardCommit={(n) =>
+                          setPhotoMarqueeMaskFeatherPx(clamp(Math.round(n), 0, 200))
+                        }
+                        onScrubLive={(n) => setPhotoMarqueeMaskFeatherPx(clamp(Math.round(n), 0, 200))}
+                        onScrubEnd={() => {}}
+                        step={1}
+                        roundFn={(n) => clamp(Math.round(n), 0, 200)}
+                        min={0}
+                        max={200}
+                        title={PROP_PANEL_SCRUB_HINT}
+                        className={`min-w-0 flex-1 ${PROP_PANEL_SCRUB_CLASS}`}
+                      />
+                    </div>
                   </div>
                 </div>
               )}
@@ -19428,12 +20300,25 @@ export function FreehandStudioCanvas({
                           }}
                           className={`min-w-0 flex-1 rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1 font-mono text-[12px] text-zinc-100 ${noFill ? "cursor-not-allowed opacity-40" : ""}`}
                         />
-                        <span
-                          className="min-w-[44px] shrink-0 rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1 text-center text-[12px] text-zinc-300"
-                          title="Opacidad global del objeto"
-                        >
-                          {Math.round(firstSelected.opacity * 100)}%
-                        </span>
+                        <div className="flex min-w-[44px] shrink-0 items-center gap-0.5">
+                          <ScrubNumberInput
+                            value={Math.round(firstSelected.opacity * 100)}
+                            onKeyboardCommit={(n) =>
+                              updateSelectedProp("opacity", clamp(Math.round(n), 0, 100) / 100)
+                            }
+                            onScrubLive={(n) =>
+                              updateSelectedPropSilent("opacity", clamp(Math.round(n), 0, 100) / 100)
+                            }
+                            onScrubEnd={commitHistoryAfterScrub}
+                            step={1}
+                            roundFn={(n) => clamp(Math.round(n), 0, 100)}
+                            min={0}
+                            max={100}
+                            title={`Opacidad % · ${PROP_PANEL_SCRUB_HINT}`}
+                            className={`w-11 text-center ${PROP_PANEL_SCRUB_CLASS}`}
+                          />
+                          <span className="text-[11px] text-zinc-500">%</span>
+                        </div>
                       </div>
                       );
                     })()}
@@ -21237,20 +22122,28 @@ export function FreehandStudioCanvas({
                 <div className="flex min-w-0 shrink-0 items-center gap-1.5">
                   <span className="shrink-0 text-[9px] font-medium uppercase tracking-wide text-zinc-500">Opacidad</span>
                   <div className="flex h-7 min-w-[4.5rem] items-center rounded-[3px] border border-white/[0.12] bg-[#1e2229] px-1.5">
-                    <input
-                      type="number"
+                    <ScrubNumberInput
+                      value={layerPanelTarget ? Math.round(layerPanelTarget.opacity * 100) : 0}
+                      onKeyboardCommit={(n) => {
+                        if (!layerPanelTarget) return;
+                        updateLayerPanelTargetProp("opacity", clamp(Math.round(n), 0, 100) / 100);
+                      }}
+                      onScrubLive={(n) => {
+                        if (!layerPanelTarget) return;
+                        updateLayerPanelTargetPropSilent("opacity", clamp(Math.round(n), 0, 100) / 100);
+                      }}
+                      onScrubEnd={commitLayerPanelHistoryAfterScrub}
+                      step={1}
+                      roundFn={(n) => clamp(Math.round(n), 0, 100)}
                       min={0}
                       max={100}
-                      step={1}
                       disabled={!layerPanelTarget}
-                      value={layerPanelTarget ? Math.round(layerPanelTarget.opacity * 100) : 0}
-                      onChange={(e) => {
-                        const n = Number(e.target.value);
-                        if (!Number.isFinite(n) || !layerPanelTarget) return;
-                        updateLayerPanelTargetProp("opacity", clamp(n, 0, 100) / 100);
-                      }}
-                      className="h-full min-w-0 flex-1 border-0 bg-transparent text-right text-[11px] font-medium text-zinc-100 outline-none focus:ring-0 disabled:opacity-40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                      title={layerPanelTarget ? "Opacidad de la capa (0–100%)" : "Selecciona una capa"}
+                      title={
+                        layerPanelTarget
+                          ? `Opacidad de la capa (0–100%) · ${PROP_PANEL_SCRUB_HINT}`
+                          : "Selecciona una capa"
+                      }
+                      className="h-full min-w-0 flex-1 cursor-ew-resize border-0 bg-transparent text-right text-[11px] font-medium text-zinc-100 outline-none focus:ring-0 disabled:cursor-not-allowed disabled:opacity-40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                     />
                     <span className="shrink-0 pl-0.5 text-[10px] text-zinc-500">%</span>
                   </div>
