@@ -24,6 +24,8 @@ export type FreehandStudioCapabilities = {
   combineRasterLayers: boolean;
   /** Layer Styles (color / gradient overlay no destructivos). Solo PhotoRoom por defecto. */
   layerStyles: boolean;
+  /** Máscara de capa (bitmap en escala de grises) por capa raster. Solo PhotoRoom por defecto. */
+  layerMask: boolean;
 };
 
 const CAPS_DESIGNER: FreehandStudioCapabilities = {
@@ -34,6 +36,7 @@ const CAPS_DESIGNER: FreehandStudioCapabilities = {
   photoRoomGraphActions: false,
   combineRasterLayers: false,
   layerStyles: false,
+  layerMask: false,
 };
 
 const CAPS_PHOTOROOM: FreehandStudioCapabilities = {
@@ -44,6 +47,7 @@ const CAPS_PHOTOROOM: FreehandStudioCapabilities = {
   photoRoomGraphActions: true,
   combineRasterLayers: true,
   layerStyles: true,
+  layerMask: true,
 };
 
 /** Entorno sin Designer ni panel PhotoRoom: mismo perfil conservador que Designer. */

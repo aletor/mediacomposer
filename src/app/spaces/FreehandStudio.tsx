@@ -87,6 +87,7 @@ import {
   Spline,
   Plus,
   Sparkles,
+  Blend,
 } from "lucide-react";
 import { ScrubNumberInput } from "./ScrubNumberInput";
 import { FreehandExportModal, type ProfessionalExportOptions } from "./freehand/FreehandExportModal";
@@ -109,6 +110,13 @@ import {
   hasActiveLayerEffects,
   isLayerStylesEligible,
 } from "./freehand/layer-effects-types";
+import {
+  type LayerMaskData,
+  defaultLayerMask,
+  hasLayerMaskBlock,
+  isLayerMaskVisible,
+  isLayerMaskRasterEligible,
+} from "./freehand/layer-mask-types";
 import { LayerStylesModal } from "./freehand/LayerStylesModal";
 import {
   buildStandaloneSvgFromCanvasDom,
@@ -161,7 +169,21 @@ import {
 import { sanitizeStoryLinkHref, type SpanStyle } from "./indesign/text-model";
 import { computeFittingLayout } from "./indesign/image-frame-layout";
 import { extractDocumentColorStats, normalizeHexColor, replaceHexEverywhere } from "./freehand/extract-document-colors";
-import { FreehandColorPalette, loadSavedPaletteFromStorage, persistSavedPalette } from "./freehand/FreehandColorPalette";
+import {
+  ColorPickerModal,
+  filterSavedPaletteExtras,
+  FreehandColorPalette,
+  loadSavedPaletteFromStorage,
+  PALETTE_SWATCH_BTN_CLASS,
+  persistSavedPalette,
+} from "./freehand/FreehandColorPalette";
+import { ColorDropTarget } from "./freehand/ColorDropTarget";
+import {
+  getColorFromDragEvent,
+  isFoldderColorDataTransfer,
+  isFoldderColorDrag,
+  setColorDragData,
+} from "./freehand/color-drag";
 import type { SvgImportShape } from "./freehand/svg-import";
 import { offsetAndScaleShapes, parseSvgToShapes } from "./freehand/svg-import";
 import {
@@ -424,6 +446,8 @@ interface FreehandObjectBase {
   blendMode?: LayerBlendMode;
   /** Estilos de capa no destructivos (p. ej. overlays). PhotoRoom / capas raster. */
   layerEffects?: LayerEffects;
+  /** Máscara de capa (bitmap gris) misma resolución que el raster; solo capas de imagen / booleano con caché. */
+  layerMask?: LayerMaskData | null;
   rotation: number;
   /** Espejo horizontal/vertical (escala −1 en el eje local respecto al centro del recto de selección). */
   flipX?: boolean;
@@ -1575,43 +1599,46 @@ function worldPointToObjLocal(world: Point, o: FreehandObject): Point {
   return { x: t.x - o.x, y: t.y - o.y };
 }
 
-/** Mundo → píxeles del bitmap de una capa imagen (mapeo lineal al rect del objeto). */
-function worldToImageCanvasPixels(world: Point, img: ImageObject, cw: number, ch: number): Point | null {
-  const loc = worldPointToObjLocal(world, img);
-  if (loc.x < -1e-6 || loc.y < -1e-6 || loc.x > img.width + 1e-6 || loc.y > img.height + 1e-6) return null;
+/** Mundo → píxeles del bitmap de una capa imagen o raster (mapeo lineal al rect del objeto). */
+function worldToImageCanvasPixels(world: Point, o: FreehandObject, cw: number, ch: number): Point | null {
+  const loc = worldPointToObjLocal(world, o);
+  if (loc.x < -1e-6 || loc.y < -1e-6 || loc.x > o.width + 1e-6 || loc.y > o.height + 1e-6) return null;
   return {
-    x: (loc.x / Math.max(img.width, 1e-9)) * cw,
-    y: (loc.y / Math.max(img.height, 1e-9)) * ch,
+    x: (loc.x / Math.max(o.width, 1e-9)) * cw,
+    y: (loc.y / Math.max(o.height, 1e-9)) * ch,
   };
 }
 
 /** Igual que `worldToImageCanvasPixels` pero sin recortar al rect: permite coords. de pincel fuera del bitmap (ampliar capa). */
-function worldToImageCanvasPixelsUnbounded(world: Point, img: ImageObject, cw: number, ch: number): Point {
-  const loc = worldPointToObjLocal(world, img);
+function worldToImageCanvasPixelsUnbounded(world: Point, o: FreehandObject, cw: number, ch: number): Point {
+  const loc = worldPointToObjLocal(world, o);
   return {
-    x: (loc.x / Math.max(img.width, 1e-9)) * cw,
-    y: (loc.y / Math.max(img.height, 1e-9)) * ch,
+    x: (loc.x / Math.max(o.width, 1e-9)) * cw,
+    y: (loc.y / Math.max(o.height, 1e-9)) * ch,
   };
 }
 
 /** Píxeles del bitmap de capa → local del marco (0…w × 0…h), inverso de `worldToImageCanvasPixels`. */
-function imageCanvasPixelToObjLocal(p: Point, img: ImageObject, cw: number, ch: number): Point {
+function imageCanvasPixelToObjLocal(p: Point, o: FreehandObject, cw: number, ch: number): Point {
   return {
-    x: (p.x / Math.max(cw, 1e-9)) * img.width,
-    y: (p.y / Math.max(ch, 1e-9)) * img.height,
+    x: (p.x / Math.max(cw, 1e-9)) * o.width,
+    y: (p.y / Math.max(ch, 1e-9)) * o.height,
   };
 }
 
 /** Píxeles del bitmap → mundo (cruz de origen del tampón, etc.). */
-function imageCanvasPixelToWorld(p: Point, img: ImageObject, cw: number, ch: number): Point {
-  return objLocalToWorldPoint(imageCanvasPixelToObjLocal(p, img, cw, ch), img);
+function imageCanvasPixelToWorld(p: Point, o: FreehandObject, cw: number, ch: number): Point {
+  return objLocalToWorldPoint(imageCanvasPixelToObjLocal(p, o, cw, ch), o);
 }
 
 type BrushRasterSession = {
-  imageId: string;
+  objectId: string;
+  target: "pixels" | "mask";
+  kind: "image" | "boolean";
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
-  image: ImageObject;
+  /** Marco de la capa (imagen o booleano con caché); mismas reglas de transform. */
+  raster: FreehandObject;
   cloneSourcePixel?: Point;
   cloneStrokeOriginPixel?: Point;
 };
@@ -1626,6 +1653,9 @@ function expandBrushRasterSessionForPixelDisc(
   py: number,
   radiusPx: number,
 ): { s: BrushRasterSession; padL: number; padT: number; changed: boolean } {
+  if (s.target === "mask" || s.kind === "boolean") {
+    return { s, padL: 0, padT: 0, changed: false };
+  }
   const cw = s.canvas.width;
   const ch = s.canvas.height;
   const r = radiusPx + 4;
@@ -1638,24 +1668,24 @@ function expandBrushRasterSessionForPixelDisc(
   }
   const newCw = cw + padL + padR;
   const newCh = ch + padT + padB;
-  const img = s.image;
-  const wxPerPx = img.width / Math.max(cw, 1e-9);
-  const hyPerPx = img.height / Math.max(ch, 1e-9);
-  const newW = img.width + (padL + padR) * wxPerPx;
-  const newH = img.height + (padT + padB) * hyPerPx;
-  const newX = img.x - padL * wxPerPx;
-  const newY = img.y - padT * hyPerPx;
+  const rast = s.raster;
+  const wxPerPx = rast.width / Math.max(cw, 1e-9);
+  const hyPerPx = rast.height / Math.max(ch, 1e-9);
+  const newW = rast.width + (padL + padR) * wxPerPx;
+  const newH = rast.height + (padT + padB) * hyPerPx;
+  const newX = rast.x - padL * wxPerPx;
+  const newY = rast.y - padT * hyPerPx;
   const nc = document.createElement("canvas");
   nc.width = Math.max(1, newCw);
   nc.height = Math.max(1, newCh);
   const nctx = nc.getContext("2d")!;
   nctx.drawImage(s.canvas, padL, padT);
-  const nextImage: ImageObject = { ...img, x: newX, y: newY, width: newW, height: newH };
+  const nextRast: FreehandObject = { ...rast, x: newX, y: newY, width: newW, height: newH } as FreehandObject;
   const out: BrushRasterSession = {
     ...s,
     canvas: nc,
     ctx: nctx,
-    image: nextImage,
+    raster: nextRast,
     cloneSourcePixel: s.cloneSourcePixel
       ? { x: s.cloneSourcePixel.x + padL, y: s.cloneSourcePixel.y + padT }
       : undefined,
@@ -1723,6 +1753,92 @@ function paintBrushStrokeSegment(
     const y = from.y + (to.y - from.y) * t;
     stampBrushCircle(ctx, x, y, radiusPx, hardness01, opacity01, flow01, rgb);
   }
+}
+
+/** Pincel sobre máscara: el color se reduce a luminancia (gris). */
+function paintMaskBrushStrokeSegment(
+  ctx: CanvasRenderingContext2D,
+  from: Point,
+  to: Point,
+  radiusPx: number,
+  hardness01: number,
+  opacity01: number,
+  flow01: number,
+  rgb: { r: number; g: number; b: number },
+) {
+  const L = Math.round(0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b);
+  const g = { r: L, g: L, b: L };
+  paintBrushStrokeSegment(ctx, from, to, radiusPx, hardness01, opacity01, flow01, g);
+}
+
+/**
+ * Bitmap de máscara (blanco = visible) a partir de marcos PhotoRoom en mundo.
+ * Sin selección: debería llamarse con rects/polys/ellipses vacíos → canvas blanco.
+ */
+function buildLayerMaskCanvasFromMarqueeSelection(
+  o: FreehandObject,
+  cw: number,
+  ch: number,
+  rects: Rect[],
+  polys: Point[][],
+  ellipses: PhotoEllipseMarquee[],
+): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, cw);
+  c.height = Math.max(1, ch);
+  const ctx = c.getContext("2d");
+  if (!ctx) return c;
+  const hasAny = rects.length > 0 || polys.length > 0 || ellipses.length > 0;
+  if (!hasAny) {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, cw, ch);
+    return c;
+  }
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, 0, cw, ch);
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  const toP = (wp: Point) => worldToImageCanvasPixelsUnbounded(wp, o, cw, ch);
+  for (const r of rects) {
+    const c0 = toP({ x: r.x, y: r.y });
+    const c1 = toP({ x: r.x + r.w, y: r.y });
+    const c2 = toP({ x: r.x + r.w, y: r.y + r.h });
+    const c3 = toP({ x: r.x, y: r.y + r.h });
+    ctx.moveTo(c0.x, c0.y);
+    ctx.lineTo(c1.x, c1.y);
+    ctx.lineTo(c2.x, c2.y);
+    ctx.lineTo(c3.x, c3.y);
+    ctx.closePath();
+  }
+  for (const ring of polys) {
+    if (ring.length < 3) continue;
+    const p0 = toP(ring[0]!);
+    ctx.moveTo(p0.x, p0.y);
+    for (let i = 1; i < ring.length; i++) {
+      const p = toP(ring[i]!);
+      ctx.lineTo(p.x, p.y);
+    }
+    ctx.closePath();
+  }
+  for (const e of ellipses) {
+    if (e.rx <= 0 || e.ry <= 0) continue;
+    const segs = 48;
+    let first: { x: number; y: number } | null = null;
+    for (let i = 0; i <= segs; i++) {
+      const t = (i / segs) * Math.PI * 2;
+      const wp = { x: e.cx + e.rx * Math.cos(t), y: e.cy + e.ry * Math.sin(t) };
+      const cv = toP(wp);
+      if (!first) {
+        first = cv;
+        ctx.moveTo(cv.x, cv.y);
+      } else {
+        ctx.lineTo(cv.x, cv.y);
+      }
+    }
+    if (first) ctx.closePath();
+  }
+  ctx.fill("evenodd");
+  return c;
 }
 
 /** `brushSize` en unidades mundo → radio en píxeles del canvas del bitmap de la capa. */
@@ -1881,27 +1997,50 @@ const BRUSH_PREVIEW_RING_SEGMENTS = 48;
 /** Separación en px pantalla del anillo oscuro exterior respecto al borde del pincel (anti-claro). */
 const BRUSH_PREVIEW_OUTLINE_SCREEN_PX = 1.25;
 
-/** Contorno en mundo del tamaño del pincel: círculo en espacio local de la imagen si el cursor está sobre ella; si no, círculo en mundo. */
+function brushPreviewRingOnRasterInBounds(
+  o: FreehandObject,
+  cursorWorld: Point,
+  brushSizeWorld: number,
+  extraRadiusWorld: number,
+): Point[] | null {
+  const r = brushSizeWorld / 2 + extraRadiusWorld;
+  const loc = worldPointToObjLocal(cursorWorld, o);
+  if (loc.x < -1e-6 || loc.y < -1e-6 || loc.x > o.width + 1e-6 || loc.y > o.height + 1e-6) return null;
+  const ring: Point[] = [];
+  for (let i = 0; i < BRUSH_PREVIEW_RING_SEGMENTS; i++) {
+    const t = (i / BRUSH_PREVIEW_RING_SEGMENTS) * Math.PI * 2;
+    ring.push(
+      objLocalToWorldPoint({ x: loc.x + r * Math.cos(t), y: loc.y + r * Math.sin(t) }, o),
+    );
+  }
+  return ring;
+}
+
+/** Contorno en mundo del tamaño del pincel: círculo en espacio local de la capa raster si el cursor está sobre ella; si no, círculo en mundo. */
 function buildBrushPreviewRingWorld(
   cursorWorld: Point,
   brushSizeWorld: number,
   objs: FreehandObject[],
   extraRadiusWorld = 0,
+  maskEditObjectId: string | null = null,
 ): Point[] {
   const r = brushSizeWorld / 2 + extraRadiusWorld;
+  if (maskEditObjectId) {
+    const o = objs.find((x) => x.id === maskEditObjectId);
+    if (o && o.visible && !o.locked) {
+      const isRaster =
+        (o.type === "image" && !(o as ImageObject).photoRoomInputSlot) ||
+        (o.type === "booleanGroup" && (o as BooleanGroupObject).cachedResult);
+      if (isRaster && hitTestObject(cursorWorld, o, 0, objs)) {
+        const ring = brushPreviewRingOnRasterInBounds(o, cursorWorld, brushSizeWorld, extraRadiusWorld);
+        if (ring) return ring;
+      }
+    }
+  }
   const hit = pickTopImageForBrush(cursorWorld, objs);
   if (hit) {
-    const loc = worldPointToObjLocal(cursorWorld, hit);
-    if (loc.x >= -1e-6 && loc.y >= -1e-6 && loc.x <= hit.width + 1e-6 && loc.y <= hit.height + 1e-6) {
-      const ring: Point[] = [];
-      for (let i = 0; i < BRUSH_PREVIEW_RING_SEGMENTS; i++) {
-        const t = (i / BRUSH_PREVIEW_RING_SEGMENTS) * Math.PI * 2;
-        ring.push(
-          objLocalToWorldPoint({ x: loc.x + r * Math.cos(t), y: loc.y + r * Math.sin(t) }, hit),
-        );
-      }
-      return ring;
-    }
+    const sub = brushPreviewRingOnRasterInBounds(hit, cursorWorld, brushSizeWorld, extraRadiusWorld);
+    if (sub) return sub;
   }
   const ring: Point[] = [];
   for (let i = 0; i < BRUSH_PREVIEW_RING_SEGMENTS; i++) {
@@ -1916,11 +2055,12 @@ function buildBrushPreviewRingsWorld(
   brushSizeWorld: number,
   objs: FreehandObject[],
   viewportZoom: number,
+  maskEditObjectId: string | null = null,
 ): { inner: Point[]; outer: Point[] } {
   const outlinePad = BRUSH_PREVIEW_OUTLINE_SCREEN_PX / Math.max(viewportZoom, 1e-9);
   return {
-    inner: buildBrushPreviewRingWorld(cursorWorld, brushSizeWorld, objs, 0),
-    outer: buildBrushPreviewRingWorld(cursorWorld, brushSizeWorld, objs, outlinePad),
+    inner: buildBrushPreviewRingWorld(cursorWorld, brushSizeWorld, objs, 0, maskEditObjectId),
+    outer: buildBrushPreviewRingWorld(cursorWorld, brushSizeWorld, objs, outlinePad, maskEditObjectId),
   };
 }
 
@@ -2024,6 +2164,101 @@ function distToPathSegments(
     }
   }
   return best;
+}
+
+/** Distancia mínima del punto al borde del rect con rotación (coordenadas mundo). */
+function distWorldToRotatedRectBorder(px: number, py: number, obj: FreehandObject): number {
+  const rad = (-(obj.rotation ?? 0) * Math.PI) / 180;
+  const cx = obj.x + obj.width / 2;
+  const cy = obj.y + obj.height / 2;
+  const dx = px - cx;
+  const dy = py - cy;
+  const rx = dx * Math.cos(rad) - dy * Math.sin(rad) + obj.width / 2;
+  const ry = dx * Math.sin(rad) + dy * Math.cos(rad) + obj.height / 2;
+  const w = obj.width;
+  const h = obj.height;
+  if (rx >= 0 && rx <= w && ry >= 0 && ry <= h) {
+    return Math.min(rx, ry, w - rx, h - ry);
+  }
+  const qx = clamp(rx, 0, w);
+  const qy = clamp(ry, 0, h);
+  return Math.hypot(rx - qx, ry - qy);
+}
+
+/**
+ * Si el color se suelta cerca del borde (trazo), aplicar stroke; si no, fill.
+ * Usa grosor de trazo + margen en px de pantalla (zoom).
+ */
+function colorDropPreferStroke(pos: Point, obj: FreehandObject, allObjects: FreehandObject[], zoom: number): boolean {
+  const pad = 6 / zoom;
+  const sw = obj.strokeWidth ?? 0;
+  const band = Math.max(sw / 2 + pad, pad * 1.5);
+
+  switch (obj.type) {
+    case "path": {
+      const p = obj as PathObject;
+      let hp = pos;
+      if (obj.rotation || obj.flipX || obj.flipY) {
+        const inv = inverseObjMatrix(obj);
+        if (inv) {
+          const t = inv.transformPoint(new DOMPoint(pos.x, pos.y));
+          hp = { x: t.x, y: t.y };
+        }
+      }
+      return distToPathSegments(hp, p).dist <= band;
+    }
+    case "ellipse": {
+      const cx = obj.x + obj.width / 2;
+      const cy = obj.y + obj.height / 2;
+      const rad = (-(obj.rotation ?? 0) * Math.PI) / 180;
+      const dx = pos.x - cx;
+      const dy = pos.y - cy;
+      const lx = dx * Math.cos(rad) - dy * Math.sin(rad);
+      const ly = dx * Math.sin(rad) + dy * Math.cos(rad);
+      const a = obj.width / 2;
+      const b = obj.height / 2;
+      if (a < 1e-6 || b < 1e-6) return false;
+      const g = Math.sqrt((lx / a) * (lx / a) + (ly / b) * (ly / b));
+      const edgeDepth = g <= 1 ? (1 - g) * Math.min(a, b) : 0;
+      return edgeDepth <= band;
+    }
+    case "text": {
+      const t = obj as TextObject;
+      const v = textVisualRectLike(t);
+      const pseudo = { ...t, x: v.x, y: v.y, width: v.width, height: v.height } as FreehandObject;
+      const dBorder = distWorldToRotatedRectBorder(pos.x, pos.y, pseudo);
+      if (!pointInRotatedRect(pos.x, pos.y, pseudo)) return dBorder <= pad;
+      return dBorder <= band;
+    }
+    case "textOnPath": {
+      const tp = obj as TextOnPathObject;
+      const guide = allObjects.find((x) => x.id === tp.guidePathId);
+      if (!guide || guide.type !== "path") return false;
+      let hp = pos;
+      if (guide.rotation || guide.flipX || guide.flipY) {
+        const inv = inverseObjMatrix(guide);
+        if (inv) {
+          const tt = inv.transformPoint(new DOMPoint(pos.x, pos.y));
+          hp = { x: tt.x, y: tt.y };
+        }
+      }
+      return distToPathSegments(hp, guide as PathObject).dist <= band;
+    }
+    case "clippingContainer": {
+      const c = obj as ClippingContainerObject;
+      const co = c as unknown as FreehandObject;
+      const dBorder = distWorldToRotatedRectBorder(pos.x, pos.y, co);
+      if (!pointInRotatedRect(pos.x, pos.y, co)) return dBorder <= pad;
+      return dBorder <= band;
+    }
+    case "rect":
+    default: {
+      if (!("width" in obj) || !("height" in obj)) return false;
+      const dBorder = distWorldToRotatedRectBorder(pos.x, pos.y, obj);
+      if (!pointInRotatedRect(pos.x, pos.y, obj)) return dBorder <= pad;
+      return dBorder <= band;
+    }
+  }
 }
 
 function hitTestObject(
@@ -4844,6 +5079,55 @@ function fhFxSanitizeId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
+/** Envuelve raster (imagen + overlays opcionales) con `<mask>` SVG según `layerMask`. */
+function wrapRasterChildrenWithLayerMask(
+  objId: string,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  par: string,
+  lm: LayerMaskData | null | undefined,
+  children: React.ReactNode,
+): React.ReactNode {
+  if (!isLayerMaskVisible({ layerMask: lm ?? undefined })) return children;
+  const m = lm!;
+  const mid = `fh-lym-${fhFxSanitizeId(objId)}`;
+  const finv = `${mid}-finv`;
+  return (
+    <>
+      <defs>
+        <filter id={finv} colorInterpolationFilters="sRGB" x="0" y="0" width="100%" height="100%">
+          <feColorMatrix
+            type="matrix"
+            values="-1 0 0 0 1  0 -1 0 0 1  0 0 -1 0 1  0 0 0 1 0"
+          />
+        </filter>
+        <mask
+          id={mid}
+          maskUnits="userSpaceOnUse"
+          x={x}
+          y={y}
+          width={w}
+          height={h}
+          maskContentUnits="userSpaceOnUse"
+        >
+          <image
+            href={m.src}
+            x={x}
+            y={y}
+            width={w}
+            height={h}
+            preserveAspectRatio={par}
+            filter={m.inverted ? `url(#${finv})` : undefined}
+          />
+        </mask>
+      </defs>
+      <g mask={`url(#${mid})`}>{children}</g>
+    </>
+  );
+}
+
 function resolveLayerEffectsForRender(obj: FreehandObject, opts?: RenderObjOpts): LayerEffects | undefined {
   const preview = opts?.previewLayerEffectsById?.get(obj.id);
   if (preview) return preview;
@@ -5301,32 +5585,34 @@ export function renderObj(
       const le = resolveLayerEffectsForRender(obj, opts);
       const fxActive = hasActiveLayerEffects(le);
       const par = "xMidYMid meet";
+      const lmask = (obj as FreehandObjectBase).layerMask;
+      const inner = fxActive ? (
+        <g style={{ isolation: "isolate" }}>
+          <image href={im.src} x={obj.x} y={obj.y} width={obj.width} height={obj.height} preserveAspectRatio={par} />
+          <RasterLayerEffectOverlays
+            objId={im.id}
+            x={obj.x}
+            y={obj.y}
+            w={obj.width}
+            h={obj.height}
+            href={im.src}
+            preserveAspectRatio={par}
+            effects={le}
+          />
+        </g>
+      ) : (
+        <image
+          href={im.src}
+          x={obj.x}
+          y={obj.y}
+          width={obj.width}
+          height={obj.height}
+          preserveAspectRatio={par}
+        />
+      );
       return (
         <g key={obj.id} transform={transform} opacity={obj.opacity}>
-          {fxActive ? (
-            <g style={{ isolation: "isolate" }}>
-              <image href={im.src} x={obj.x} y={obj.y} width={obj.width} height={obj.height} preserveAspectRatio={par} />
-              <RasterLayerEffectOverlays
-                objId={im.id}
-                x={obj.x}
-                y={obj.y}
-                w={obj.width}
-                h={obj.height}
-                href={im.src}
-                preserveAspectRatio={par}
-                effects={le}
-              />
-            </g>
-          ) : (
-            <image
-              href={im.src}
-              x={obj.x}
-              y={obj.y}
-              width={obj.width}
-              height={obj.height}
-              preserveAspectRatio={par}
-            />
-          )}
+          {wrapRasterChildrenWithLayerMask(obj.id, obj.x, obj.y, obj.width, obj.height, par, lmask, inner)}
         </g>
       );
     }
@@ -5352,39 +5638,41 @@ export function renderObj(
         const le = resolveLayerEffectsForRender(obj, opts);
         const fxActive = hasActiveLayerEffects(le);
         const par = "xMidYMid meet";
+        const lmask = (obj as FreehandObjectBase).layerMask;
+        const inner = fxActive ? (
+          <g style={{ isolation: "isolate" }}>
+            <image
+              href={bg.cachedResult}
+              x={bg.x}
+              y={bg.y}
+              width={bg.width}
+              height={bg.height}
+              preserveAspectRatio={par}
+            />
+            <RasterLayerEffectOverlays
+              objId={bg.id}
+              x={bg.x}
+              y={bg.y}
+              w={bg.width}
+              h={bg.height}
+              href={bg.cachedResult}
+              preserveAspectRatio={par}
+              effects={le}
+            />
+          </g>
+        ) : (
+          <image
+            href={bg.cachedResult}
+            x={bg.x}
+            y={bg.y}
+            width={bg.width}
+            height={bg.height}
+            preserveAspectRatio={par}
+          />
+        );
         return (
           <g key={bg.id} transform={transform} opacity={bg.opacity}>
-            {fxActive ? (
-              <g style={{ isolation: "isolate" }}>
-                <image
-                  href={bg.cachedResult}
-                  x={bg.x}
-                  y={bg.y}
-                  width={bg.width}
-                  height={bg.height}
-                  preserveAspectRatio={par}
-                />
-                <RasterLayerEffectOverlays
-                  objId={bg.id}
-                  x={bg.x}
-                  y={bg.y}
-                  w={bg.width}
-                  h={bg.height}
-                  href={bg.cachedResult}
-                  preserveAspectRatio={par}
-                  effects={le}
-                />
-              </g>
-            ) : (
-              <image
-                href={bg.cachedResult}
-                x={bg.x}
-                y={bg.y}
-                width={bg.width}
-                height={bg.height}
-                preserveAspectRatio={par}
-              />
-            )}
+            {wrapRasterChildrenWithLayerMask(obj.id, obj.x, obj.y, obj.width, obj.height, par, lmask, inner)}
           </g>
         );
       }
@@ -7564,6 +7852,9 @@ export function FreehandStudioCanvas({
   const [brushHardnessPct, setBrushHardnessPct] = useState(78);
   const [brushOpacityPct, setBrushOpacityPct] = useState(100);
   const [brushFlowPct, setBrushFlowPct] = useState(72);
+  /** Si true, el pincel usa el color de relleno de la paleta; si false, `brushCustomHex`. */
+  const [brushColorFromFill, setBrushColorFromFill] = useState(true);
+  const [brushCustomHex, setBrushCustomHex] = useState("#000000");
   /** Origen del tampón de clon (píxeles del bitmap de esa capa); Alt+clic en la imagen. Incluye tamaño del canvas al fijar para mapeo mundo. */
   const [cloneSource, setCloneSource] = useState<{
     imageId: string;
@@ -7582,11 +7873,13 @@ export function FreehandStudioCanvas({
   const cloneStampAlignOriginD0Ref = useRef<Point | null>(null);
   const cloneStampBrushClipPathId = useId().replace(/:/g, "");
   const brushSessionRef = useRef<{
-    imageId: string;
+    objectId: string;
+    target: "pixels" | "mask";
+    kind: "image" | "boolean";
     canvas: HTMLCanvasElement;
     ctx: CanvasRenderingContext2D;
-    /** Copia estable del objeto imagen al iniciar el trazo (evita perder ref si el estado aún no ha hecho commit). */
-    image: ImageObject;
+    /** Copia estable del marco de capa (imagen o booleano) al iniciar el trazo. */
+    raster: FreehandObject;
     /** Solo tampón de clon: punto de muestreo fijado con Alt+clic y primer punto del trazo (offset alineado). */
     cloneSourcePixel?: Point;
     cloneStrokeOriginPixel?: Point;
@@ -7610,6 +7903,12 @@ export function FreehandStudioCanvas({
     targetId: string | null;
     draft: LayerEffects | null;
   }>({ open: false, targetId: null, draft: null });
+  /** Edición de máscara de capa con el pincel (id de la capa raster). */
+  const [maskEditObjectId, setMaskEditObjectId] = useState<string | null>(null);
+  const maskEditObjectIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    maskEditObjectIdRef.current = maskEditObjectId;
+  }, [maskEditObjectId]);
   const previewLayerEffectsById = useMemo(() => {
     if (!layerStylesUi.open || !layerStylesUi.targetId || !layerStylesUi.draft) return undefined;
     return new Map<string, LayerEffects>([[layerStylesUi.targetId, layerStylesUi.draft]]);
@@ -7671,7 +7970,6 @@ export function FreehandStudioCanvas({
     () => ({ ...DEFAULT_TEXT_CREATION_TYPOGRAPHY }),
   );
 
-  const [paletteTarget, setPaletteTarget] = useState<"fill" | "stroke">("fill");
   const [savedPaletteColors, setSavedPaletteColors] = useState<string[]>([]);
 
   useEffect(() => {
@@ -7686,26 +7984,6 @@ export function FreehandStudioCanvas({
     () => extractDocumentColorStats(objects, artboards.map((a) => a.background)),
     [objects, artboards],
   );
-
-  /** Hex únicos para el popover de la barra izquierda (documento + guardados). */
-  const leftToolbarPaletteHexes = useMemo(() => {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const { hex } of documentColorStats) {
-      if (!seen.has(hex)) {
-        seen.add(hex);
-        out.push(hex);
-      }
-    }
-    for (const h of savedPaletteColors) {
-      const n = normalizeHexColor(h);
-      if (n && !seen.has(n)) {
-        seen.add(n);
-        out.push(n);
-      }
-    }
-    return out;
-  }, [documentColorStats, savedPaletteColors]);
 
   // UI state
   const [spaceHeld, setSpaceHeld] = useState(false);
@@ -7739,6 +8017,7 @@ export function FreehandStudioCanvas({
   /** Popover de color en la barra de herramientas izquierda (fill / stroke). */
   const [leftToolbarColorTarget, setLeftToolbarColorTarget] = useState<null | "fill" | "stroke">(null);
   const [leftToolbarColorPos, setLeftToolbarColorPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [leftToolbarAdvancedPickerOpen, setLeftToolbarAdvancedPickerOpen] = useState(false);
   /** Submenú de grupos de herramientas (barra izquierda, estilo Photoshop). */
   const [leftToolbarToolFlyout, setLeftToolbarToolFlyout] = useState<string | null>(null);
   const leftToolbarSwatchDockRef = useRef<HTMLDivElement>(null);
@@ -7794,6 +8073,17 @@ export function FreehandStudioCanvas({
   activeToolRef.current = activeTool;
   const brushSizeRef = useRef(brushSize);
   brushSizeRef.current = brushSize;
+
+  const brushPaintRgb = useMemo(() => {
+    const hex = brushColorFromFill
+      ? fillColor === "none"
+        ? "#000000"
+        : fillColor
+      : brushCustomHex.startsWith("#") && brushCustomHex.length >= 4
+        ? brushCustomHex
+        : "#000000";
+    return parseFillColorHexToRgb(hex);
+  }, [brushColorFromFill, fillColor, brushCustomHex]);
   const cloneSourceRef = useRef(cloneSource);
   cloneSourceRef.current = cloneSource;
   const artboardsRef = useRef(artboards);
@@ -8405,6 +8695,57 @@ export function FreehandStudioCanvas({
     setLayerStylesUi({ open: false, targetId: null, draft: null });
   }, []);
 
+  const addLayerMaskToSelection = useCallback(
+    (explicitTarget?: FreehandObject) => {
+      if (!studioCaps.layerMask) return;
+      const target =
+        explicitTarget ??
+        (primarySelectedId ? objects.find((o) => o.id === primarySelectedId) : null) ??
+        firstSelected;
+      if (!target || !isLayerMaskRasterEligible(target)) {
+        setToast("Selecciona una capa de imagen o bitmap con caché para añadir máscara.");
+        window.setTimeout(() => setToast(null), 3200);
+        return;
+      }
+      const o = target as FreehandObject;
+      const dataSrc =
+        o.type === "image" ? (o as ImageObject).src : (o as BooleanGroupObject).cachedResult!;
+      void loadImageToBrushCanvas(dataSrc, o.width, o.height).then(({ canvas }) => {
+        const cw = canvas.width, ch = canvas.height;
+        const maskCanvas = buildLayerMaskCanvasFromMarqueeSelection(
+          o,
+          cw,
+          ch,
+          photoRectMarqueeSelectionRef.current,
+          photoPolygonMarqueeSelectionRef.current,
+          photoEllipseMarqueeSelectionRef.current,
+        );
+        const dataUrl = maskCanvas.toDataURL("image/png");
+        const nm = defaultLayerMask({ src: dataUrl, pixelW: cw, pixelH: ch });
+        setObjects((prev) => {
+          const next = prev.map((p) => (p.id === o.id ? ({ ...p, layerMask: nm } as FreehandObject) : p));
+          pushHistory(next, new Set([o.id]));
+          return next;
+        });
+        setSelectedIds(new Set([o.id]));
+        setPrimarySelectedId(o.id);
+      });
+    },
+    [studioCaps.layerMask, primarySelectedId, objects, firstSelected, pushHistory],
+  );
+
+  const deleteLayerMaskForObject = useCallback(
+    (id: string) => {
+      setMaskEditObjectId((prev) => (prev === id ? null : prev));
+      setObjects((prev) => {
+        const next = prev.map((o) => (o.id === id ? ({ ...o, layerMask: null } as FreehandObject) : o));
+        pushHistory(next, new Set([id]));
+        return next;
+      });
+    },
+    [pushHistory],
+  );
+
   const canConvertSelectionToPhotoMarquee = useMemo(() => {
     if (!studioCaps.photoMarqueeFromVector) return false;
     if (selectedObjects.length !== 1) return false;
@@ -8494,11 +8835,13 @@ export function FreehandStudioCanvas({
       };
     }
     if (o.type === "image" || o.type === "booleanGroup") {
+      const fNone = fillColor === "none";
+      const sNone = strokeColor === "none";
       return {
-        fillHex: "#3f3f46",
-        strokeHex: "#52525b",
-        fillNone: true,
-        strokeNone: true,
+        fillHex: fNone ? "#6366f1" : fillColor,
+        strokeHex: sNone ? "#71717a" : strokeColor,
+        fillNone: fNone,
+        strokeNone: sNone,
         noVectorStyle: true,
       };
     }
@@ -8522,6 +8865,16 @@ export function FreehandStudioCanvas({
     const strokeHex = strokeNone ? "#71717a" : o.stroke;
     return { fillHex, strokeHex, fillNone, strokeNone, noVectorStyle: false };
   }, [firstSelected, fillColor, strokeColor]);
+
+  const leftToolbarPickerInitialHex = useMemo(() => {
+    if (!leftToolbarColorTarget) return "#000000";
+    if (leftToolbarColorTarget === "fill") {
+      if (leftToolbarSwatchPreview.fillNone) return "#6366f1";
+      return normalizeHexColor(leftToolbarSwatchPreview.fillHex) ?? leftToolbarSwatchPreview.fillHex;
+    }
+    if (leftToolbarSwatchPreview.strokeNone) return "#71717a";
+    return normalizeHexColor(leftToolbarSwatchPreview.strokeHex) ?? leftToolbarSwatchPreview.strokeHex;
+  }, [leftToolbarColorTarget, leftToolbarSwatchPreview]);
 
   const styleSourceForCreation = useMemo((): FreehandObject | null => {
     if (selectedObjects.length === 0) return null;
@@ -8947,8 +9300,77 @@ export function FreehandStudioCanvas({
     [pushHistory, screenToCanvas, fitAllCanvas],
   );
 
+  /** Soltar una muestra de color sobre una forma: relleno sólido en ese objeto (z-order superior bajo el cursor). */
+  const applyFillHexToObjectById = useCallback(
+    (objectId: string, hex: string) => {
+      const v = normalizeHexColor(hex);
+      if (!v) return;
+      setFillColor(v);
+      setSelectedIds(new Set([objectId]));
+      setPrimarySelectedId(objectId);
+      setObjects((prev) => {
+        const next = prev.map((o) => {
+          if (o.id !== objectId) return o;
+          if (o.type === "textOnPath") return { ...o, fill: v };
+          if (o.type === "booleanGroup" || o.type === "image") return o;
+          return { ...o, fill: solidFill(v) };
+        });
+        pushHistory(next, new Set([objectId]));
+        return next;
+      });
+    },
+    [pushHistory],
+  );
+
+  /** Soltar muestra sobre el borde de la forma: color de trazo (y grosor mínimo si hace falta). */
+  const applyStrokeHexToObjectById = useCallback(
+    (objectId: string, hex: string) => {
+      const v = normalizeHexColor(hex);
+      if (!v) return;
+      setStrokeColor(v);
+      setSelectedIds(new Set([objectId]));
+      setPrimarySelectedId(objectId);
+      setObjects((prev) => {
+        const next = prev.map((o) => {
+          if (o.id !== objectId) return o;
+          const w = o.strokeWidth ?? 0;
+          return { ...o, stroke: v, strokeWidth: w <= 0 ? 2 : w };
+        });
+        pushHistory(next, new Set([objectId]));
+        return next;
+      });
+    },
+    [pushHistory],
+  );
+
   const handleDrop = useCallback(
     (e: ReactDragEvent) => {
+      if (isFoldderColorDrag(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        const droppedHex = getColorFromDragEvent(e);
+        if (droppedHex) {
+          const pos = screenToCanvas(e.clientX, e.clientY);
+          const z = viewportRef.current.zoom;
+          const threshold = 6 / z;
+          const objs = objectsRef.current;
+          for (let i = objs.length - 1; i >= 0; i--) {
+            const obj = objs[i];
+            if (!obj) continue;
+            if (!obj.visible || obj.locked) continue;
+            if (obj.isClipMask) continue;
+            if (obj.type === "image" || obj.type === "booleanGroup") continue;
+            if (!hitTestObject(pos, obj, threshold, objs)) continue;
+            if (colorDropPreferStroke(pos, obj, objs, z)) {
+              applyStrokeHexToObjectById(obj.id, droppedHex);
+            } else {
+              applyFillHexToObjectById(obj.id, droppedHex);
+            }
+            return;
+          }
+        }
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       const pos = screenToCanvas(e.clientX, e.clientY);
@@ -8993,10 +9415,22 @@ export function FreehandStudioCanvas({
       importSvgFile,
       onDesignerImageFrameImportFile,
       screenToCanvas,
+      applyFillHexToObjectById,
+      applyStrokeHexToObjectById,
     ],
   );
 
   const handleDragOver = useCallback((e: ReactDragEvent) => {
+    if (isFoldderColorDrag(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        e.dataTransfer.dropEffect = "copy";
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     if (!dataTransferHasExternalFiles(e.dataTransfer)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -9008,6 +9442,16 @@ export function FreehandStudioCanvas({
   }, []);
 
   const handleDragEnter = useCallback((e: ReactDragEvent) => {
+    if (isFoldderColorDrag(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        e.dataTransfer.dropEffect = "copy";
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     if (!dataTransferHasExternalFiles(e.dataTransfer)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -9023,11 +9467,22 @@ export function FreehandStudioCanvas({
     const el = containerRef.current;
     if (!el) return;
     const allow = (ev: DragEvent) => {
-      if (!dataTransferHasExternalFiles(ev.dataTransfer)) return;
+      const dt = ev.dataTransfer;
+      if (isFoldderColorDataTransfer(dt)) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        try {
+          if (dt) dt.dropEffect = "copy";
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      if (!dataTransferHasExternalFiles(dt)) return;
       ev.preventDefault();
       ev.stopPropagation();
       try {
-        if (ev.dataTransfer) ev.dataTransfer.dropEffect = "copy";
+        if (dt) dt.dropEffect = "copy";
       } catch {
         /* ignore */
       }
@@ -9109,13 +9564,26 @@ export function FreehandStudioCanvas({
     const s = brushSessionRef.current;
     if (!s) return;
     const url = s.canvas.toDataURL("image/png");
-    const im = s.image;
+    const r = s.raster;
+    if (s.target === "mask") {
+      setObjects((prev) =>
+        prev.map((o) => {
+          if (o.id !== s.objectId) return o;
+          const lm0 = o.layerMask;
+          if (!lm0) return o;
+          return {
+            ...o,
+            layerMask: { ...lm0, src: url, pixelW: s.canvas.width, pixelH: s.canvas.height },
+          } as FreehandObject;
+        }),
+      );
+      return;
+    }
     setObjects((prev) =>
-      prev.map((o) =>
-        o.id === s.imageId && o.type === "image"
-          ? { ...o, src: url, x: im.x, y: im.y, width: im.width, height: im.height }
-          : o,
-      ),
+      prev.map((o) => {
+        if (o.id !== s.objectId || o.type !== "image") return o;
+        return { ...o, src: url, x: r.x, y: r.y, width: r.width, height: r.height } as FreehandObject;
+      }),
     );
   }, []);
 
@@ -9146,13 +9614,13 @@ export function FreehandStudioCanvas({
     const s = brushSessionRef.current;
     if (s?.cloneSourcePixel == null || s?.cloneStrokeOriginPixel == null) return;
     cancelBrushCursorOverlayRaf();
-    const posW = imageCanvasPixelToWorld(ds.brushLastPixel, s.image, s.canvas.width, s.canvas.height);
+    const posW = imageCanvasPixelToWorld(ds.brushLastPixel, s.raster, s.canvas.width, s.canvas.height);
     const z = viewportRef.current.zoom;
     const sizeW = brushSizeRef.current;
-    setBrushPreviewRings(buildBrushPreviewRingsWorld(posW, sizeW, objectsRef.current, z));
+    setBrushPreviewRings(buildBrushPreviewRingsWorld(posW, sizeW, objectsRef.current, z, null));
     const url = buildCloneStampAlignedPreviewDataUrl(
       s.canvas,
-      s.image,
+      s.raster as ImageObject,
       sizeW,
       s.cloneSourcePixel,
       s.cloneStrokeOriginPixel,
@@ -9248,10 +9716,10 @@ export function FreehandStudioCanvas({
     cancelBrushPreviewRaf();
     cancelCloneAlignedBrushOverlayRaf();
     const s = brushSessionRef.current;
-    const imageId = s?.imageId;
-    if (s && imageId) {
+    const oid = s?.objectId;
+    if (s && oid) {
       const url = s.canvas.toDataURL("image/png");
-      const im = s.image;
+      const r = s.raster;
       const clonePx = s.cloneSourcePixel;
       if (s.cloneStrokeOriginPixel) {
         cloneStampAlignOriginD0Ref.current = { ...s.cloneStrokeOriginPixel };
@@ -9261,7 +9729,7 @@ export function FreehandStudioCanvas({
       brushSessionRef.current = null;
       if (clonePx) {
         setCloneSource((prev) =>
-          prev && prev.imageId === imageId
+          prev && prev.imageId === oid
             ? {
                 ...prev,
                 pixel: { ...clonePx },
@@ -9271,15 +9739,31 @@ export function FreehandStudioCanvas({
             : prev,
         );
       }
-      setObjects((prev) => {
-        const next = prev.map((o) =>
-          o.id === imageId && o.type === "image"
-            ? { ...o, src: url, x: im.x, y: im.y, width: im.width, height: im.height }
-            : o,
-        );
-        pushHistory(next, new Set([imageId]));
-        return next;
-      });
+      if (s.target === "mask") {
+        setObjects((prev) => {
+          const next = prev.map((o) => {
+            if (o.id !== oid) return o;
+            const lm0 = o.layerMask;
+            if (!lm0) return o;
+            return {
+              ...o,
+              layerMask: { ...lm0, src: url, pixelW: s.canvas.width, pixelH: s.canvas.height },
+            } as FreehandObject;
+          });
+          pushHistory(next, new Set([oid]));
+          return next;
+        });
+      } else {
+        setObjects((prev) => {
+          const next = prev.map((o) =>
+            o.id === oid && o.type === "image"
+              ? { ...o, src: url, x: r.x, y: r.y, width: r.width, height: r.height }
+              : o,
+          );
+          pushHistory(next, new Set([oid]));
+          return next;
+        });
+      }
     } else {
       brushSessionRef.current = null;
     }
@@ -9353,7 +9837,13 @@ export function FreehandStudioCanvas({
     }
     const last = brushPreviewLastWorldRef.current;
     if (!last) return;
-    const rings = buildBrushPreviewRingsWorld(last, brushSize, objectsRef.current, viewport.zoom);
+    const rings = buildBrushPreviewRingsWorld(
+      last,
+      brushSize,
+      objectsRef.current,
+      viewport.zoom,
+      maskEditObjectIdRef.current,
+    );
     brushPreviewRingRef.current = rings;
     setBrushPreviewRings(rings);
   }, [
@@ -9467,22 +9957,15 @@ export function FreehandStudioCanvas({
     pushHistory(objectsRef.current, selectedIdsRef.current);
   }, [pushHistory]);
 
+  /** Paleta: siempre aplica al color de relleno (y a la selección vectorial / texto). */
   const applyPaletteHex = useCallback(
     (hex: string) => {
-      const t = paletteTarget;
       const sel = selectedIdsRef.current;
       if (sel.size === 0) {
-        if (t === "fill") setFillColor(hex);
-        else {
-          setStrokeColor(hex);
-          setStrokeWidth((w) => (w <= 0 ? 2 : w));
-        }
+        setFillColor(hex);
         return;
       }
-      if (t === "stroke") {
-        applyStrokeColorWithVisibleWidth(hex);
-        return;
-      }
+      setFillColor(hex);
       setObjects((prev) => {
         const next = prev.map((o) => {
           if (!sel.has(o.id)) return o;
@@ -9494,7 +9977,7 @@ export function FreehandStudioCanvas({
         return next;
       });
     },
-    [paletteTarget, updateSelectedProp, pushHistory, applyStrokeColorWithVisibleWidth],
+    [pushHistory],
   );
 
   const applyLeftToolbarFill = useCallback(
@@ -9502,9 +9985,11 @@ export function FreehandStudioCanvas({
       const sel = selectedIdsRef.current;
       if (sel.size === 0) {
         if (v !== "none") setFillColor(v);
+        else setFillColor("none");
         return;
       }
       if (v === "none") {
+        setFillColor("none");
         setObjects((prev) => {
           const next = prev.map((o) => {
             if (!sel.has(o.id)) return o;
@@ -9517,6 +10002,7 @@ export function FreehandStudioCanvas({
         });
         return;
       }
+      setFillColor(v);
       setObjects((prev) => {
         const next = prev.map((o) => {
           if (!sel.has(o.id)) return o;
@@ -9550,24 +10036,97 @@ export function FreehandStudioCanvas({
     [updateSelectedProp, applyStrokeColorWithVisibleWidth],
   );
 
+  const closeLeftToolbarColorUI = useCallback(() => {
+    setLeftToolbarAdvancedPickerOpen(false);
+    setLeftToolbarColorTarget(null);
+  }, []);
+
   const openLeftToolbarColorPicker = useCallback((target: "fill" | "stroke") => (e: React.MouseEvent) => {
     e.stopPropagation();
     const dock = leftToolbarSwatchDockRef.current;
     if (!dock) return;
     const r = dock.getBoundingClientRect();
     setLeftToolbarColorPos({ top: Math.max(8, r.top), left: r.right + 8 });
-    setLeftToolbarColorTarget((prev) => (prev === target ? null : target));
+    setLeftToolbarColorTarget((prev) => {
+      if (prev === target) {
+        setLeftToolbarAdvancedPickerOpen(false);
+        return null;
+      }
+      setLeftToolbarAdvancedPickerOpen(false);
+      return target;
+    });
   }, []);
 
+  const handleLeftToolbarPickerConfirm = useCallback(
+    (hex: string) => {
+      const v = normalizeHexColor(hex);
+      if (!v || !leftToolbarColorTarget) return;
+      if (leftToolbarColorTarget === "fill") applyLeftToolbarFill(v);
+      else applyLeftToolbarStroke(v);
+      const extras = filterSavedPaletteExtras(savedPaletteColors);
+      const next = [...extras];
+      if (!next.includes(v)) next.push(v);
+      setSavedPaletteColors(next);
+      setLeftToolbarAdvancedPickerOpen(false);
+      setLeftToolbarColorTarget(null);
+    },
+    [leftToolbarColorTarget, applyLeftToolbarFill, applyLeftToolbarStroke, savedPaletteColors],
+  );
+
+  const applyLeftToolbarTargetHexAndClose = useCallback(
+    (hex: string) => {
+      if (!leftToolbarColorTarget) return;
+      if (leftToolbarColorTarget === "fill") applyLeftToolbarFill(hex);
+      else applyLeftToolbarStroke(hex);
+      closeLeftToolbarColorUI();
+    },
+    [leftToolbarColorTarget, applyLeftToolbarFill, applyLeftToolbarStroke, closeLeftToolbarColorUI],
+  );
+
+  const leftToolbarSwatchDragOver = useCallback((e: ReactDragEvent) => {
+    if (!isFoldderColorDrag(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const leftToolbarDropFill = useCallback(
+    (e: ReactDragEvent) => {
+      e.preventDefault();
+      const h = getColorFromDragEvent(e);
+      if (h) applyLeftToolbarFill(h);
+    },
+    [applyLeftToolbarFill],
+  );
+
+  const leftToolbarDropStroke = useCallback(
+    (e: ReactDragEvent) => {
+      e.preventDefault();
+      const h = getColorFromDragEvent(e);
+      if (h) applyLeftToolbarStroke(h);
+    },
+    [applyLeftToolbarStroke],
+  );
+
   useEffect(() => {
-    if (!leftToolbarColorTarget) return;
+    if (!leftToolbarColorTarget && !leftToolbarAdvancedPickerOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setLeftToolbarColorTarget(null);
+      if (e.key !== "Escape") return;
+      if (leftToolbarAdvancedPickerOpen) {
+        setLeftToolbarAdvancedPickerOpen(false);
+        return;
+      }
+      closeLeftToolbarColorUI();
     };
     const onDown = (e: MouseEvent) => {
+      const el = e.target as HTMLElement;
+      if (el.closest?.("[data-fh-color-picker-modal]")) return;
       const n = e.target as Node;
       if (leftToolbarSwatchDockRef.current?.contains(n)) return;
-      if (leftToolbarColorPopoverRef.current?.contains(n)) return;
+      if (leftToolbarColorPopoverRef.current?.contains(n)) {
+        setLeftToolbarAdvancedPickerOpen(false);
+        return;
+      }
+      setLeftToolbarAdvancedPickerOpen(false);
       setLeftToolbarColorTarget(null);
     };
     window.addEventListener("keydown", onKey);
@@ -9576,7 +10135,7 @@ export function FreehandStudioCanvas({
       window.removeEventListener("keydown", onKey);
       document.removeEventListener("mousedown", onDown, true);
     };
-  }, [leftToolbarColorTarget]);
+  }, [leftToolbarColorTarget, leftToolbarAdvancedPickerOpen, closeLeftToolbarColorUI]);
 
   useEffect(() => {
     if (!leftToolbarToolFlyout) return;
@@ -11663,6 +12222,10 @@ export function FreehandStudioCanvas({
           finishBrushStroke();
           return;
         }
+        if (maskEditObjectIdRef.current) {
+          setMaskEditObjectId(null);
+          return;
+        }
         photoRectMarqueePendingRef.current = null;
         const dsEsc = dragStateRef.current?.type;
         if (dsEsc === "photoMarqueeNudge") {
@@ -12236,10 +12799,47 @@ export function FreehandStudioCanvas({
     if (activeTool === "brush" && e.button === 0 && studioCaps.toolBrush) {
       e.preventDefault();
       setSelectedPoints(new Map());
-      const rgb = parseFillColorHexToRgb(fillColor === "none" ? "#000000" : fillColor);
+      const rgb = brushPaintRgb;
       const h01 = brushHardnessPct / 100;
       const o01 = brushOpacityPct / 100;
       const f01 = brushFlowPct / 100;
+      if (studioCaps.layerMask && maskEditObjectIdRef.current) {
+        const mo = objects.find((x) => x.id === maskEditObjectIdRef.current);
+        if (
+          mo &&
+          mo.visible &&
+          !mo.locked &&
+          isLayerMaskRasterEligible(mo) &&
+          hasLayerMaskBlock(mo) &&
+          hitTestObject(pos, mo, 0, objects)
+        ) {
+          const lm = (mo as FreehandObjectBase).layerMask!;
+          void loadImageToBrushCanvas(lm.src, mo.width, mo.height).then(({ canvas, ctx }) => {
+            const lp = worldToImageCanvasPixels(pos, mo, canvas.width, canvas.height);
+            if (!lp) return;
+            const radiusPx = brushRadiusInImagePixels(brushSize, canvas.width, mo.width);
+            brushSessionRef.current = {
+              objectId: mo.id,
+              target: "mask",
+              kind: mo.type === "booleanGroup" ? "boolean" : "image",
+              canvas,
+              ctx,
+              raster: mo,
+            };
+            paintMaskBrushStrokeSegment(ctx, lp, lp, radiusPx, h01, o01, f01, rgb);
+            const nextBrushDrag = {
+              type: "brushPaint" as const,
+              startX: e.clientX,
+              startY: e.clientY,
+              brushLastPixel: lp,
+            };
+            dragStateRef.current = nextBrushDrag;
+            setDragState(nextBrushDrag);
+            scheduleBrushPreview();
+          });
+        }
+        return;
+      }
       const hit = pickTopImageForBrush(pos, objects);
       const stampDab = (
         img: ImageObject,
@@ -12247,7 +12847,14 @@ export function FreehandStudioCanvas({
         ctx: CanvasRenderingContext2D,
         lp: Point,
       ) => {
-        brushSessionRef.current = { imageId: img.id, canvas, ctx, image: img };
+        brushSessionRef.current = {
+          objectId: img.id,
+          target: "pixels",
+          kind: "image",
+          canvas,
+          ctx,
+          raster: img,
+        };
         const radiusPx = brushRadiusInImagePixels(brushSize, canvas.width, img.width);
         stampBrushCircle(ctx, lp.x, lp.y, radiusPx, h01, o01, f01, rgb);
         const nextBrushDrag = {
@@ -12356,24 +12963,26 @@ export function FreehandStudioCanvas({
 
       void loadImageToBrushCanvas(hit.src, hit.width, hit.height).then(({ canvas, ctx }) => {
         let s: BrushRasterSession = {
-          imageId: hit.id,
+          objectId: hit.id,
+          target: "pixels",
+          kind: "image",
           canvas,
           ctx,
-          image: hit,
+          raster: hit,
           cloneSourcePixel: { ...cloneSource.pixel },
         };
-        let lp = worldToImageCanvasPixelsUnbounded(pos, s.image, s.canvas.width, s.canvas.height);
+        let lp = worldToImageCanvasPixelsUnbounded(pos, s.raster, s.canvas.width, s.canvas.height);
         for (let guard = 0; guard < 8; guard++) {
-          const radiusPx = brushRadiusInImagePixels(brushSize, s.canvas.width, s.image.width);
+          const radiusPx = brushRadiusInImagePixels(brushSize, s.canvas.width, s.raster.width);
           const ex = expandBrushRasterSessionForPixelDisc(s, lp.x, lp.y, radiusPx);
           s = ex.s;
           if (ex.changed) {
-            lp = worldToImageCanvasPixelsUnbounded(pos, s.image, s.canvas.width, s.canvas.height);
+            lp = worldToImageCanvasPixelsUnbounded(pos, s.raster, s.canvas.width, s.canvas.height);
             continue;
           }
           break;
         }
-        const radiusPx = brushRadiusInImagePixels(brushSize, s.canvas.width, s.image.width);
+        const radiusPx = brushRadiusInImagePixels(brushSize, s.canvas.width, s.raster.width);
         /** Origen de muestreo = donde está la cruz al hacer clic (no el Alt fijo tras el primer trazo). */
         const altAdj = s.cloneSourcePixel!;
         const d0Prev = cloneStampAlignOriginD0Ref.current;
@@ -13093,7 +13702,7 @@ export function FreehandStudioCanvas({
       layoutGuides, showLayoutGuides, designerMode, imageFrameContentEditId, setupGuideWindowListeners,
       isClipContentIsolation, clipContentEditId, isPhotoRoomStudioEmbed, photoRectMarqueeSelection,
       photoPolygonMarqueeSelection, photoEllipseMarqueeSelection,
-      fillColor, brushSize, brushHardnessPct, brushOpacityPct, brushFlowPct, scheduleBrushPreview,
+      fillColor, brushPaintRgb, brushSize, brushHardnessPct, brushOpacityPct, brushFlowPct, scheduleBrushPreview,
       scheduleCloneAlignedBrushOverlay,
       cloneSource, setToast, studioCaps]);
 
@@ -13583,7 +14192,13 @@ export function FreehandStudioCanvas({
       }
       if ((activeTool === "brush" || activeTool === "cloneStamp") && !spaceHeld) {
         brushPreviewLastWorldRef.current = pos;
-        const rings = buildBrushPreviewRingsWorld(pos, brushSize, objectsRef.current, viewport.zoom);
+        const rings = buildBrushPreviewRingsWorld(
+          pos,
+          brushSize,
+          objectsRef.current,
+          viewport.zoom,
+          maskEditObjectIdRef.current,
+        );
         brushPreviewRingRef.current = rings;
         if (brushCursorOverlayRafRef.current == null) {
           brushCursorOverlayRafRef.current = requestAnimationFrame(() => {
@@ -13831,9 +14446,9 @@ export function FreehandStudioCanvas({
       if (s.cloneSourcePixel != null && s.cloneStrokeOriginPixel != null) {
         let session: BrushRasterSession = s;
         let prevAdj = prevPixel;
-        let cur = worldToImageCanvasPixelsUnbounded(pos, session.image, session.canvas.width, session.canvas.height);
+        let cur = worldToImageCanvasPixelsUnbounded(pos, session.raster, session.canvas.width, session.canvas.height);
         for (let guard = 0; guard < 8; guard++) {
-          let radiusPx = brushRadiusInImagePixels(brushSize, session.canvas.width, session.image.width);
+          let radiusPx = brushRadiusInImagePixels(brushSize, session.canvas.width, session.raster.width);
           const ex = expandBrushRasterSessionForPixelDisc(session, cur.x, cur.y, radiusPx);
           session = ex.s;
           if (ex.changed) {
@@ -13842,10 +14457,10 @@ export function FreehandStudioCanvas({
             if (session.cloneStrokeOriginPixel) {
               cloneStampAlignOriginD0Ref.current = { ...session.cloneStrokeOriginPixel };
             }
-            cur = worldToImageCanvasPixelsUnbounded(pos, session.image, session.canvas.width, session.canvas.height);
+            cur = worldToImageCanvasPixelsUnbounded(pos, session.raster, session.canvas.width, session.canvas.height);
             continue;
           }
-          radiusPx = brushRadiusInImagePixels(brushSize, session.canvas.width, session.image.width);
+          radiusPx = brushRadiusInImagePixels(brushSize, session.canvas.width, session.raster.width);
           const csp = session.cloneSourcePixel;
           const cso = session.cloneStrokeOriginPixel;
           if (csp == null || cso == null) return;
@@ -13869,12 +14484,16 @@ export function FreehandStudioCanvas({
         }
         return;
       }
-      const img = s.image;
-      const cur = worldToImageCanvasPixels(pos, img, s.canvas.width, s.canvas.height);
+      const rast = s.raster;
+      const cur = worldToImageCanvasPixels(pos, rast, s.canvas.width, s.canvas.height);
       if (!cur) return;
-      const radiusPx = brushRadiusInImagePixels(brushSize, s.canvas.width, img.width);
-      const rgb = parseFillColorHexToRgb(fillColor === "none" ? "#000000" : fillColor);
-      paintBrushStrokeSegment(s.ctx, prevPixel, cur, radiusPx, h01, o01, f01, rgb);
+      const radiusPx = brushRadiusInImagePixels(brushSize, s.canvas.width, rast.width);
+      const rgb = brushPaintRgb;
+      if (s.target === "mask") {
+        paintMaskBrushStrokeSegment(s.ctx, prevPixel, cur, radiusPx, h01, o01, f01, rgb);
+      } else {
+        paintBrushStrokeSegment(s.ctx, prevPixel, cur, radiusPx, h01, o01, f01, rgb);
+      }
       const nextDrag = { ...dragState, brushLastPixel: cur };
       dragStateRef.current = nextDrag;
       setDragState(nextDrag);
@@ -14116,6 +14735,7 @@ export function FreehandStudioCanvas({
     isPhotoRoomStudioEmbed,
     studioCaps.toolPhotoMarquee,
     fillColor,
+    brushPaintRgb,
     brushSize,
     brushHardnessPct,
     brushOpacityPct,
@@ -15848,6 +16468,9 @@ export function FreehandStudioCanvas({
               type="button"
               disabled={leftToolbarSwatchPreview.noVectorStyle}
               onClick={openLeftToolbarColorPicker("stroke")}
+              {...(!leftToolbarSwatchPreview.noVectorStyle
+                ? { onDragOver: leftToolbarSwatchDragOver, onDrop: leftToolbarDropStroke }
+                : {})}
               className={`absolute left-0 top-0 z-0 flex h-[18px] w-[18px] items-center justify-center rounded-[3px] border border-white/25 bg-[#2a2d33] shadow-sm transition hover:brightness-110 ${
                 leftToolbarSwatchPreview.noVectorStyle ? "cursor-not-allowed opacity-40" : ""
               }`}
@@ -15870,6 +16493,9 @@ export function FreehandStudioCanvas({
               type="button"
               disabled={leftToolbarSwatchPreview.noVectorStyle}
               onClick={openLeftToolbarColorPicker("fill")}
+              {...(!leftToolbarSwatchPreview.noVectorStyle
+                ? { onDragOver: leftToolbarSwatchDragOver, onDrop: leftToolbarDropFill }
+                : {})}
               className={`absolute bottom-0 right-0 z-10 flex h-[18px] w-[18px] items-center justify-center rounded-[3px] border-2 border-sky-500/45 bg-[#2a2d33] shadow-md transition hover:brightness-110 ${
                 leftToolbarSwatchPreview.noVectorStyle ? "cursor-not-allowed opacity-40" : ""
               }`}
@@ -15897,49 +16523,114 @@ export function FreehandStudioCanvas({
             <div
               ref={leftToolbarColorPopoverRef}
               data-left-toolbar-color-popover
-              className="fixed z-[100050] w-[196px] rounded-[6px] border border-white/[0.08] bg-[#12151a] p-3.5 shadow-xl"
+              className="fixed z-[100050] max-h-[min(420px,calc(100vh-24px))] w-[232px] overflow-y-auto rounded-[6px] border border-white/[0.08] bg-[#12151a] p-3.5 shadow-xl"
               style={{ top: leftToolbarColorPos.top, left: leftToolbarColorPos.left }}
               onMouseDown={(e) => e.stopPropagation()}
             >
               <div className="mb-2.5 text-[10px] font-medium uppercase tracking-wider text-zinc-500">
                 {leftToolbarColorTarget === "fill" ? "Relleno" : "Trazo"}
               </div>
-              <div className="flex max-h-[200px] flex-wrap content-start gap-1.5 overflow-y-auto pr-0.5">
+
+              <div className="mb-1 text-[8px] font-bold uppercase tracking-wider text-zinc-600">Sin color</div>
+              <button
+                type="button"
+                title={leftToolbarColorTarget === "fill" ? "Sin relleno" : "Sin trazo"}
+                className="relative flex h-[14px] w-[14px] min-h-[14px] min-w-[14px] shrink-0 items-center justify-center rounded-[3px] border border-white/[0.12] bg-white transition hover:border-white/25"
+                onClick={() => {
+                  if (leftToolbarColorTarget === "fill") applyLeftToolbarFill("none");
+                  else applyLeftToolbarStroke("none");
+                  closeLeftToolbarColorUI();
+                }}
+              >
+                <span className="absolute inset-y-0.5 left-1/2 w-px -translate-x-1/2 bg-red-500" />
+              </button>
+
+              <div className="my-2.5 h-px bg-white/[0.08]" />
+
+              <div className="mb-1 text-[8px] font-bold uppercase tracking-wider text-zinc-600">En uso</div>
+              <div className="flex flex-wrap gap-1">
+                {documentColorStats.length === 0 ? (
+                  <p className="text-[9px] text-zinc-600">Los colores del lienzo aparecen aquí.</p>
+                ) : (
+                  documentColorStats.map(({ hex, count }) => (
+                    <button
+                      key={`lt-inuse-${leftToolbarColorTarget}-${hex}`}
+                      type="button"
+                      draggable
+                      title={`${hex} · ${count}× — clic o arrastrar`}
+                      className={PALETTE_SWATCH_BTN_CLASS}
+                      style={{ backgroundColor: hex }}
+                      onDragStart={(e) => setColorDragData(e, hex)}
+                      onClick={() => applyLeftToolbarTargetHexAndClose(hex)}
+                    />
+                  ))
+                )}
+              </div>
+
+              <div className="my-2.5 h-px bg-white/[0.08]" />
+
+              <div className="mb-1 text-[8px] font-bold uppercase tracking-wider text-zinc-600">Guardados</div>
+              <div className="flex flex-wrap items-center gap-1">
                 <button
                   type="button"
-                  title={leftToolbarColorTarget === "fill" ? "Sin relleno" : "Sin trazo"}
-                  className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] border border-white/[0.12] bg-white transition hover:border-white/25"
-                  onClick={() => {
-                    if (leftToolbarColorTarget === "fill") applyLeftToolbarFill("none");
-                    else applyLeftToolbarStroke("none");
-                    setLeftToolbarColorTarget(null);
+                  draggable
+                  title="Negro — clic o arrastrar"
+                  className={PALETTE_SWATCH_BTN_CLASS}
+                  style={{ backgroundColor: "#000000" }}
+                  onDragStart={(e) => setColorDragData(e, "#000000")}
+                  onClick={() => applyLeftToolbarTargetHexAndClose("#000000")}
+                />
+                <button
+                  type="button"
+                  draggable
+                  title="Blanco — clic o arrastrar"
+                  className={PALETTE_SWATCH_BTN_CLASS}
+                  style={{
+                    backgroundColor: "#ffffff",
+                    boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.12)",
                   }}
+                  onDragStart={(e) => setColorDragData(e, "#ffffff")}
+                  onClick={() => applyLeftToolbarTargetHexAndClose("#ffffff")}
+                />
+                {savedPaletteColors.map((hex, realIndex) => {
+                  const n = normalizeHexColor(hex)?.toLowerCase();
+                  if (n === "#000000" || n === "#ffffff") return null;
+                  return (
+                    <button
+                      key={`lt-saved-${leftToolbarColorTarget}-${hex}-${realIndex}`}
+                      type="button"
+                      draggable
+                      title={`${hex} — clic o arrastrar`}
+                      className={PALETTE_SWATCH_BTN_CLASS}
+                      style={{ backgroundColor: hex }}
+                      onDragStart={(e) => setColorDragData(e, hex)}
+                      onClick={() => applyLeftToolbarTargetHexAndClose(hex)}
+                    />
+                  );
+                })}
+                <button
+                  type="button"
+                  title="Añadir con selector de color"
+                  className="flex h-[14px] w-[14px] min-h-[14px] min-w-[14px] shrink-0 items-center justify-center rounded-[3px] border border-dashed border-white/25 bg-white/[0.03] text-[11px] font-light text-zinc-500 hover:border-violet-400/50 hover:bg-white/[0.06] hover:text-white"
+                  onClick={() => setLeftToolbarAdvancedPickerOpen(true)}
                 >
-                  <span className="absolute inset-y-0.5 left-1/2 w-px -translate-x-1/2 bg-red-500" />
+                  +
                 </button>
-                {leftToolbarPaletteHexes.map((hex) => (
-                  <button
-                    key={`${leftToolbarColorTarget}-${hex}`}
-                    type="button"
-                    title={hex}
-                    className="h-6 w-6 shrink-0 rounded-[4px] border border-white/[0.12] shadow-sm transition hover:border-white/30 hover:brightness-110"
-                    style={{ backgroundColor: hex }}
-                    onClick={() => {
-                      if (leftToolbarColorTarget === "fill") applyLeftToolbarFill(hex);
-                      else applyLeftToolbarStroke(hex);
-                      setLeftToolbarColorTarget(null);
-                    }}
-                  />
-                ))}
               </div>
-              {leftToolbarPaletteHexes.length === 0 ? (
-                <p className="mt-3 text-[9px] leading-snug text-zinc-500">
-                  Añade colores en el lienzo o en el panel Color para verlos aquí.
-                </p>
-              ) : null}
             </div>,
             document.body,
           )}
+
+        {leftToolbarColorTarget ? (
+          <ColorPickerModal
+            open={leftToolbarAdvancedPickerOpen}
+            title={leftToolbarColorTarget === "fill" ? "Elegir color de relleno" : "Elegir color de trazo"}
+            confirmLabel="Aplicar y guardar"
+            initialHex={leftToolbarPickerInitialHex}
+            onClose={() => setLeftToolbarAdvancedPickerOpen(false)}
+            onConfirm={handleLeftToolbarPickerConfirm}
+          />
+        ) : null}
 
         <div className="flex-1 min-h-[8px]" />
 
@@ -16462,7 +17153,7 @@ export function FreehandStudioCanvas({
                   dragState?.type === "brushPaint" &&
                   sess?.cloneSourcePixel != null &&
                   sess?.cloneStrokeOriginPixel != null;
-                const imgForWorld = paintingClone ? sess!.image : img;
+                const imgForWorld = (paintingClone ? sess!.raster : img) as ImageObject;
                 const S = paintingClone ? sess!.cloneSourcePixel! : cloneSource.pixel;
                 const cw = paintingClone ? sess!.canvas.width : cloneSource.canvasW;
                 const ch = paintingClone ? sess!.canvas.height : cloneSource.canvasH;
@@ -17274,10 +17965,15 @@ export function FreehandStudioCanvas({
         )}
 
         {quickEditMode && firstSelected && quickEditPos && !canvasZenMode && (
-          <div
+          <ColorDropTarget
+            data-ui="quick-fill-stroke"
             className="absolute z-[10002] flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-sky-500/35 bg-zinc-950/98 shadow-xl pointer-events-auto"
             style={{ left: quickEditPos.left, top: quickEditPos.top, transform: "translate(-50%, 0)" }}
-            data-ui="quick-fill-stroke">
+            onApplyHex={(hex) => {
+              if (quickEditMode === "stroke") applyStrokeColorWithVisibleWidth(hex);
+              else updateSelectedFill(() => solidFill(hex));
+            }}
+          >
             <span className="text-[9px] font-bold uppercase tracking-wider text-sky-400/95">{quickEditMode}</span>
             <input
               type="color"
@@ -17301,7 +17997,7 @@ export function FreehandStudioCanvas({
               }}
             />
             <button type="button" className="text-[10px] text-zinc-500 hover:text-white px-1" onClick={() => setQuickEditMode(null)} title="Close">×</button>
-          </div>
+          </ColorDropTarget>
         )}
 
         {textEditingId && (() => {
@@ -17510,6 +18206,63 @@ export function FreehandStudioCanvas({
                     />
                     <span className="w-8 shrink-0 text-right font-mono text-[11px] text-zinc-300">{brushFlowPct}%</span>
                   </div>
+                  {activeTool === "brush" ? (
+                    <div className="space-y-2 border-t border-white/[0.06] pt-2.5">
+                      <div className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">Color</div>
+                      <div className="flex flex-col gap-2">
+                        <label className="flex cursor-pointer items-center gap-2 text-[11px] text-zinc-200">
+                          <input
+                            type="checkbox"
+                            checked={brushColorFromFill}
+                            onChange={(e) => setBrushColorFromFill(e.target.checked)}
+                            className="h-3.5 w-3.5 shrink-0 rounded border-white/20 bg-white/5 accent-violet-500"
+                          />
+                          Usar color de relleno (paleta)
+                        </label>
+                        {brushColorFromFill ? (
+                          <div className="flex items-center gap-2 pl-5">
+                            <ColorDropTarget
+                              className="inline-flex shrink-0"
+                              onApplyHex={(hex) => applyPaletteHex(hex)}
+                              title="Suelta un color para actualizar el relleno (y el pincel si usa esta opción)"
+                            >
+                              <span
+                                className="h-7 w-7 shrink-0 rounded border border-white/15 shadow-inner"
+                                style={{
+                                  backgroundColor: fillColor === "none" ? "#0a0a0a" : fillColor,
+                                  backgroundImage:
+                                    fillColor === "none"
+                                      ? "repeating-conic-gradient(#2a2d33 0% 25%, #1e2128 0% 50%) 50% / 8px 8px"
+                                      : undefined,
+                                }}
+                              />
+                            </ColorDropTarget>
+                            <span className="min-w-0 text-[10px] leading-snug text-zinc-500">
+                              {fillColor === "none"
+                                ? "Relleno «ninguno» → pincel negro. Elige un color en el panel Color (relleno)."
+                                : `Sigue el relleno activo: ${fillColor}`}
+                            </span>
+                          </div>
+                        ) : (
+                          <ColorDropTarget
+                            className="flex flex-wrap items-center gap-2 pl-5"
+                            onApplyHex={(hex) => setBrushCustomHex(hex)}
+                          >
+                            <input
+                              type="color"
+                              value={normalizeHexColor(brushCustomHex) ?? "#000000"}
+                              onChange={(e) => setBrushCustomHex(e.target.value)}
+                              className="h-8 w-10 cursor-pointer rounded border border-white/15 bg-transparent p-0"
+                              title="Color solo para el pincel"
+                            />
+                            <span className="font-mono text-[10px] text-zinc-400">
+                              {normalizeHexColor(brushCustomHex) ?? brushCustomHex}
+                            </span>
+                          </ColorDropTarget>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
                   <p className="text-[9px] leading-relaxed text-zinc-500">
                     <span className="block text-zinc-500/90">Ctrl + rueda: tamaño del pincel.</span>
                     {activeTool === "cloneStamp" ? (
@@ -17522,7 +18275,7 @@ export function FreehandStudioCanvas({
                       </>
                     ) : (
                       <>
-                        El color del pincel es el relleno actual (panel Color). Pinta sobre una capa imagen o crea una nueva en el pliego con un clic en vacío.
+                        Pinta sobre una capa imagen o crea una nueva en el pliego con un clic en vacío. El color depende de la opción de arriba (relleno de la paleta o color propio).
                       </>
                     )}
                   </p>
@@ -17791,8 +18544,6 @@ export function FreehandStudioCanvas({
                     inUse={documentColorStats}
                     savedColors={savedPaletteColors}
                     onSavedColorsChange={setSavedPaletteColors}
-                    applyTarget={paletteTarget}
-                    onApplyTargetChange={setPaletteTarget}
                     onApplyHex={applyPaletteHex}
                     onReplaceDocumentColor={replaceDocumentColorLive}
                     onCommitHistory={commitPaletteHistory}
@@ -17817,7 +18568,10 @@ export function FreehandStudioCanvas({
                     <div className="flex items-start justify-between gap-2">
                       <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Fill</span>
                       <div className="flex flex-col items-end gap-1">
-                        <div className="flex items-center gap-1.5">
+                        <ColorDropTarget
+                          className="flex items-center gap-1.5"
+                          onApplyHex={(hex) => updateSelectedProp("fill", hex)}
+                        >
                           <button
                             type="button"
                             title="Sin relleno"
@@ -17840,7 +18594,7 @@ export function FreehandStudioCanvas({
                             className="h-[22px] w-[22px] shrink-0 cursor-pointer rounded-[5px] border border-white/[0.08] bg-transparent"
                             title="Elige un color para el relleno del texto"
                           />
-                        </div>
+                        </ColorDropTarget>
                       </div>
                     </div>
                   </div>
@@ -17864,7 +18618,13 @@ export function FreehandStudioCanvas({
                     <div className="flex items-start justify-between gap-2">
                       <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Fill</span>
                       <div className="flex flex-col items-end gap-1">
-                        <div className="flex items-center gap-1.5">
+                        <ColorDropTarget
+                          className="flex items-center gap-1.5"
+                          onApplyHex={(hex) => {
+                            updateSelectedFill(() => solidFill(hex));
+                            setFillColor(hex);
+                          }}
+                        >
                           <button
                             type="button"
                             title="Sin relleno"
@@ -17898,7 +18658,7 @@ export function FreehandStudioCanvas({
                             className="h-[22px] w-[22px] shrink-0 cursor-pointer rounded-[5px] border border-white/[0.08] bg-transparent"
                             title="Elige un color para relleno sólido (reactiva el relleno)"
                           />
-                        </div>
+                        </ColorDropTarget>
                       </div>
                     </div>
                     {fillExpanded ? (
@@ -18004,15 +18764,26 @@ export function FreehandStudioCanvas({
                           <div className="space-y-1 max-h-28 overflow-y-auto">
                             {gf.stops.map((s, si) => (
                               <div key={si} className="flex items-center gap-1">
-                                <input type="color" value={s.color} className="h-6 w-6 shrink-0 rounded-[5px] border border-white/[0.08]"
-                                  onChange={(e) => {
-                                    const c = e.target.value;
+                                <ColorDropTarget
+                                  className="inline-flex shrink-0"
+                                  onApplyHex={(hex) => {
                                     updateSelectedFill((f) => {
                                       if (f.type !== "gradient-linear") return f;
-                                      const stops = f.stops.map((st, j) => (j === si ? { ...st, color: c } : st));
+                                      const stops = f.stops.map((st, j) => (j === si ? { ...st, color: hex } : st));
                                       return { ...f, stops };
                                     });
-                                  }} />
+                                  }}
+                                >
+                                  <input type="color" value={s.color} className="h-6 w-6 shrink-0 rounded-[5px] border border-white/[0.08]"
+                                    onChange={(e) => {
+                                      const c = e.target.value;
+                                      updateSelectedFill((f) => {
+                                        if (f.type !== "gradient-linear") return f;
+                                        const stops = f.stops.map((st, j) => (j === si ? { ...st, color: c } : st));
+                                        return { ...f, stops };
+                                      });
+                                    }} />
+                                </ColorDropTarget>
                                 <input type="range" min={0} max={1} step={0.01} value={s.opacity} className="flex-1 accent-violet-500"
                                   onChange={(e) => {
                                     const op = Number(e.target.value);
@@ -18083,15 +18854,26 @@ export function FreehandStudioCanvas({
                           </div>
                           {gf.stops.map((s, si) => (
                             <div key={si} className="flex items-center gap-1">
-                              <input type="color" value={s.color} className="h-6 w-6 shrink-0 rounded-[5px] border border-white/[0.08]"
-                                onChange={(e) => {
-                                  const c = e.target.value;
+                              <ColorDropTarget
+                                className="inline-flex shrink-0"
+                                onApplyHex={(hex) => {
                                   updateSelectedFill((f) => {
                                     if (f.type !== "gradient-radial") return f;
-                                    const stops = f.stops.map((st, j) => (j === si ? { ...st, color: c } : st));
+                                    const stops = f.stops.map((st, j) => (j === si ? { ...st, color: hex } : st));
                                     return { ...f, stops };
                                   });
-                                }} />
+                                }}
+                              >
+                                <input type="color" value={s.color} className="h-6 w-6 shrink-0 rounded-[5px] border border-white/[0.08]"
+                                  onChange={(e) => {
+                                    const c = e.target.value;
+                                    updateSelectedFill((f) => {
+                                      if (f.type !== "gradient-radial") return f;
+                                      const stops = f.stops.map((st, j) => (j === si ? { ...st, color: c } : st));
+                                      return { ...f, stops };
+                                    });
+                                  }} />
+                              </ColorDropTarget>
                               <input type="range" min={0} max={1} step={0.01} value={s.opacity} className="flex-1 accent-violet-500"
                                 onChange={(e) => {
                                   const op = Number(e.target.value);
@@ -18153,7 +18935,10 @@ export function FreehandStudioCanvas({
                   <div className="flex items-start justify-between gap-2">
                     <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Stroke</span>
                     <div className="flex flex-col items-end gap-1">
-                      <div className="flex items-center gap-1.5">
+                      <ColorDropTarget
+                        className="flex items-center gap-1.5"
+                        onApplyHex={(hex) => applyStrokeColorWithVisibleWidth(hex)}
+                      >
                         <button
                           type="button"
                           title="Sin trazo (ningún borde)"
@@ -18185,7 +18970,7 @@ export function FreehandStudioCanvas({
                           className="h-[22px] w-[22px] shrink-0 cursor-pointer rounded-[5px] border border-white/[0.08] bg-transparent"
                           title="Elige un color para activar el trazo de nuevo"
                         />
-                      </div>
+                      </ColorDropTarget>
                     </div>
                   </div>
                   {!noStroke ? (() => {
@@ -18531,18 +19316,85 @@ export function FreehandStudioCanvas({
                     onToggle={() => setImageInfoPanelExpanded((v) => !v)}
                   />
                 )}
-                {studioCaps.layerStyles && isLayerStylesEligible(firstSelected) ? (
+                {((studioCaps.layerStyles && isLayerStylesEligible(firstSelected)) ||
+                  (studioCaps.layerMask && isLayerMaskRasterEligible(firstSelected))) ? (
                   <div className="border-b border-white/[0.08] px-[14px] py-3">
                     <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
                       Effects
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => openLayerStylesModal(firstSelected)}
-                      className="w-full rounded-[5px] border border-white/[0.1] bg-white/[0.05] px-2.5 py-1.5 text-left text-[11px] text-zinc-200 transition-colors hover:bg-white/[0.09]"
-                    >
-                      Layer Styles…
-                    </button>
+                    <div className="flex flex-col gap-1.5">
+                      {studioCaps.layerStyles && isLayerStylesEligible(firstSelected) ? (
+                        <button
+                          type="button"
+                          onClick={() => openLayerStylesModal(firstSelected)}
+                          className="w-full rounded-[5px] border border-white/[0.1] bg-white/[0.05] px-2.5 py-1.5 text-left text-[11px] text-zinc-200 transition-colors hover:bg-white/[0.09]"
+                        >
+                          Layer Styles…
+                        </button>
+                      ) : null}
+                      {studioCaps.layerMask && isLayerMaskRasterEligible(firstSelected) ? (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {!hasLayerMaskBlock(firstSelected) ? (
+                            <button
+                              type="button"
+                              onClick={() => addLayerMaskToSelection(firstSelected)}
+                              className="inline-flex flex-1 min-w-0 items-center justify-center gap-1.5 rounded-[5px] border border-white/[0.1] bg-white/[0.05] px-2.5 py-1.5 text-left text-[11px] text-zinc-200 transition-colors hover:bg-white/[0.09]"
+                            >
+                              <Blend size={12} className="shrink-0 text-zinc-400" strokeWidth={2} />
+                              Layer mask…
+                            </button>
+                          ) : (
+                            <>
+                              <span className="w-9 h-9 shrink-0 overflow-hidden rounded border border-white/15 bg-zinc-900/80">
+                                {/** eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={(firstSelected as FreehandObjectBase).layerMask!.src}
+                                  alt=""
+                                  className="h-full w-full object-cover"
+                                />
+                              </span>
+                              <div className="flex min-w-0 flex-1 flex-col gap-1">
+                                <div className="flex flex-wrap gap-1">
+                                  <button
+                                    type="button"
+                                    className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-zinc-300 hover:bg-white/10"
+                                    onClick={() => {
+                                      const m = (firstSelected as FreehandObjectBase).layerMask!;
+                                      const on = m.enabled !== false;
+                                      updateSelectedProp("layerMask", { ...m, enabled: !on } as never);
+                                    }}
+                                  >
+                                    {(firstSelected as FreehandObjectBase).layerMask?.enabled === false
+                                      ? "Activar"
+                                      : "Desactivar"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-zinc-300 hover:bg-white/10"
+                                    onClick={() => {
+                                      const m = (firstSelected as FreehandObjectBase).layerMask!;
+                                      updateSelectedProp("layerMask", { ...m, inverted: !m.inverted } as never);
+                                    }}
+                                  >
+                                    Invert
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="rounded border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-[10px] text-rose-200/90 hover:bg-rose-500/20"
+                                    onClick={() => deleteLayerMaskForObject(firstSelected.id)}
+                                  >
+                                    Borrar
+                                  </button>
+                                </div>
+                                <p className="text-[9px] text-zinc-500 leading-snug">
+                                  Pincel (B) con edición de máscara encendida en el panel de capas.
+                                </p>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                 ) : null}
                 {/* Transform (plegable, plegado por defecto) */}
@@ -19703,6 +20555,41 @@ export function FreehandStudioCanvas({
                               }}
                             >
                               <Sparkles size={12} strokeWidth={2} />
+                            </button>
+                          ) : null}
+                          {studioCaps.layerMask && isLayerMaskRasterEligible(obj) ? (
+                            <button
+                              type="button"
+                              title={
+                                hasLayerMaskBlock(obj)
+                                  ? "Editar máscara (pincel) — clic otra vez para salir"
+                                  : "Añadir máscara de capa"
+                              }
+                              className={`shrink-0 overflow-hidden rounded border p-0.5 transition-colors ${
+                                maskEditObjectId === obj.id
+                                  ? "border-violet-400 ring-1 ring-violet-400/80 bg-violet-500/20"
+                                  : "border-white/10 hover:border-white/25 hover:bg-white/10"
+                              }`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedIds(new Set([obj.id]));
+                                setPrimarySelectedId(obj.id);
+                                if (hasLayerMaskBlock(obj)) {
+                                  setMaskEditObjectId((id) => (id === obj.id ? null : obj.id));
+                                } else {
+                                  addLayerMaskToSelection(obj);
+                                }
+                              }}
+                            >
+                              {hasLayerMaskBlock(obj) ? (
+                                <img
+                                  src={(obj as FreehandObjectBase).layerMask!.src}
+                                  alt=""
+                                  className="h-3.5 w-3.5 object-cover"
+                                />
+                              ) : (
+                                <Blend size={12} className="text-zinc-500 opacity-80" strokeWidth={2} />
+                              )}
                             </button>
                           ) : null}
                           {layerRowIcon(obj)}
