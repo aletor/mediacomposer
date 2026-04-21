@@ -86,6 +86,7 @@ import {
   Lasso,
   Spline,
   Plus,
+  Sparkles,
 } from "lucide-react";
 import { ScrubNumberInput } from "./ScrubNumberInput";
 import { FreehandExportModal, type ProfessionalExportOptions } from "./freehand/FreehandExportModal";
@@ -101,6 +102,14 @@ import {
   resolveStudioCapabilities,
   type FreehandStudioCapabilities,
 } from "./freehand/studio-capabilities";
+import type { LayerEffects } from "./freehand/layer-effects-types";
+import {
+  cloneLayerEffectsForEdit,
+  defaultLayerEffects,
+  hasActiveLayerEffects,
+  isLayerStylesEligible,
+} from "./freehand/layer-effects-types";
+import { LayerStylesModal } from "./freehand/LayerStylesModal";
 import {
   buildStandaloneSvgFromCanvasDom,
   expandExportIds,
@@ -291,7 +300,7 @@ function normalizeBezierPointForVertexMode(pt: BezierPoint, mode: VertexMode): B
 type StrokeMarkerKind = "none" | "arrow" | "dot";
 
 /** Valores admitidos por CSS `mix-blend-mode` en SVG (fusión con capas inferiores). */
-type LayerBlendMode =
+export type LayerBlendMode =
   | "normal"
   | "multiply"
   | "screen"
@@ -394,6 +403,8 @@ interface FreehandObjectBase {
   opacity: number;
   /** Fusión con el contenido inferior (CSS `mix-blend-mode`). */
   blendMode?: LayerBlendMode;
+  /** Estilos de capa no destructivos (p. ej. overlays). PhotoRoom / capas raster. */
+  layerEffects?: LayerEffects;
   rotation: number;
   /** Espejo horizontal/vertical (escala −1 en el eje local respecto al centro del recto de selección). */
   flipX?: boolean;
@@ -4806,7 +4817,116 @@ export type RenderObjOpts = {
    * cuando ya hay vídeo superpuesto en el mismo ancla.
    */
   presenterSuppressBitmapObjectIds?: ReadonlySet<string>;
+  /** Preview de `layerEffects` mientras el modal Layer Styles está abierto (id → borrador). */
+  previewLayerEffectsById?: ReadonlyMap<string, LayerEffects>;
 };
+
+function fhFxSanitizeId(id: string): string {
+  return id.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function resolveLayerEffectsForRender(obj: FreehandObject, opts?: RenderObjOpts): LayerEffects | undefined {
+  const preview = opts?.previewLayerEffectsById?.get(obj.id);
+  if (preview) return preview;
+  return (obj as FreehandObjectBase).layerEffects;
+}
+
+function RasterLayerEffectOverlays(props: {
+  objId: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  href: string;
+  preserveAspectRatio: string;
+  effects: LayerEffects | undefined;
+}): React.ReactNode {
+  const { objId, x, y, w, h, href, preserveAspectRatio, effects } = props;
+  if (!effects) return null;
+  const co = effects.colorOverlay;
+  const go = effects.gradientOverlay;
+  const coOn = !!co?.enabled;
+  const goOn = !!go?.enabled;
+  if (!coOn && !goOn) return null;
+
+  const maskId = `fh-fx-mask-${fhFxSanitizeId(objId)}`;
+  const gradId = `fh-fx-grad-${fhFxSanitizeId(objId)}`;
+
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+
+  let gradientDef: React.ReactNode = null;
+  if (goOn && go) {
+    const g = go.gradient;
+    if (g.type === "linear") {
+      const rad = ((g.angle - 90) * Math.PI) / 180;
+      const L = (Math.max(w, h) / 2) * Math.max(0.05, g.scale);
+      let x1 = cx - Math.cos(rad) * L;
+      let y1 = cy - Math.sin(rad) * L;
+      let x2 = cx + Math.cos(rad) * L;
+      let y2 = cy + Math.sin(rad) * L;
+      if (g.reverse) {
+        const t1 = x1;
+        x1 = x2;
+        x2 = t1;
+        const t2 = y1;
+        y1 = y2;
+        y2 = t2;
+      }
+      gradientDef = (
+        <linearGradient id={gradId} gradientUnits="userSpaceOnUse" x1={x1} y1={y1} x2={x2} y2={y2}>
+          {g.stops.map((s, i) => (
+            <stop key={i} offset={`${clamp(s.offset, 0, 1) * 100}%`} stopColor={s.color} />
+          ))}
+        </linearGradient>
+      );
+    } else {
+      const r = (Math.max(w, h) / 2) * Math.max(0.05, g.scale);
+      gradientDef = (
+        <radialGradient id={gradId} gradientUnits="userSpaceOnUse" cx={cx} cy={cy} r={r}>
+          {g.stops.map((s, i) => (
+            <stop key={i} offset={`${clamp(s.offset, 0, 1) * 100}%`} stopColor={s.color} />
+          ))}
+        </radialGradient>
+      );
+    }
+  }
+
+  return (
+    <>
+      <defs>
+        <mask id={maskId} maskUnits="userSpaceOnUse" x={x} y={y} width={w} height={h}>
+          <image href={href} x={x} y={y} width={w} height={h} preserveAspectRatio={preserveAspectRatio} />
+        </mask>
+        {gradientDef}
+      </defs>
+      {coOn && co ? (
+        <rect
+          x={x}
+          y={y}
+          width={w}
+          height={h}
+          fill={co.color}
+          mask={`url(#${maskId})`}
+          opacity={clamp(co.opacity, 0, 1)}
+          style={layerMixBlendStyle(co.blendMode as LayerBlendMode)}
+        />
+      ) : null}
+      {goOn && go ? (
+        <rect
+          x={x}
+          y={y}
+          width={w}
+          height={h}
+          fill={`url(#${gradId})`}
+          mask={`url(#${maskId})`}
+          opacity={clamp(go.opacity, 0, 1)}
+          style={layerMixBlendStyle(go.blendMode as LayerBlendMode)}
+        />
+      ) : null}
+    </>
+  );
+}
 
 export function renderObj(
   obj: FreehandObject,
@@ -5161,17 +5281,36 @@ export function renderObj(
           />
         );
       }
+      const le = resolveLayerEffectsForRender(obj, opts);
+      const fxActive = hasActiveLayerEffects(le);
+      const par = "xMidYMid meet";
       return (
-        <image
-          href={im.src}
-          x={obj.x}
-          y={obj.y}
-          width={obj.width}
-          height={obj.height}
-          preserveAspectRatio="xMidYMid meet"
-          transform={transform}
-          opacity={obj.opacity}
-        />
+        <g key={obj.id} transform={transform} opacity={obj.opacity}>
+          {fxActive ? (
+            <g style={{ isolation: "isolate" }}>
+              <image href={im.src} x={obj.x} y={obj.y} width={obj.width} height={obj.height} preserveAspectRatio={par} />
+              <RasterLayerEffectOverlays
+                objId={im.id}
+                x={obj.x}
+                y={obj.y}
+                w={obj.width}
+                h={obj.height}
+                href={im.src}
+                preserveAspectRatio={par}
+                effects={le}
+              />
+            </g>
+          ) : (
+            <image
+              href={im.src}
+              x={obj.x}
+              y={obj.y}
+              width={obj.width}
+              height={obj.height}
+              preserveAspectRatio={par}
+            />
+          )}
+        </g>
       );
     }
     case "booleanGroup": {
@@ -5193,17 +5332,43 @@ export function renderObj(
             />
           );
         }
+        const le = resolveLayerEffectsForRender(obj, opts);
+        const fxActive = hasActiveLayerEffects(le);
+        const par = "xMidYMid meet";
         return (
-          <image
-            href={bg.cachedResult}
-            x={bg.x}
-            y={bg.y}
-            width={bg.width}
-            height={bg.height}
-            preserveAspectRatio="xMidYMid meet"
-            transform={transform}
-            opacity={bg.opacity}
-          />
+          <g key={bg.id} transform={transform} opacity={bg.opacity}>
+            {fxActive ? (
+              <g style={{ isolation: "isolate" }}>
+                <image
+                  href={bg.cachedResult}
+                  x={bg.x}
+                  y={bg.y}
+                  width={bg.width}
+                  height={bg.height}
+                  preserveAspectRatio={par}
+                />
+                <RasterLayerEffectOverlays
+                  objId={bg.id}
+                  x={bg.x}
+                  y={bg.y}
+                  w={bg.width}
+                  h={bg.height}
+                  href={bg.cachedResult}
+                  preserveAspectRatio={par}
+                  effects={le}
+                />
+              </g>
+            ) : (
+              <image
+                href={bg.cachedResult}
+                x={bg.x}
+                y={bg.y}
+                width={bg.width}
+                height={bg.height}
+                preserveAspectRatio={par}
+              />
+            )}
+          </g>
         );
       }
       return null;
@@ -7422,6 +7587,16 @@ export function FreehandStudioCanvas({
   useEffect(() => {
     setImageInfoPanelExpanded(false);
   }, [primarySelectedId]);
+  /** Modal Layer Styles (PhotoRoom): borrador + preview en lienzo hasta OK. */
+  const [layerStylesUi, setLayerStylesUi] = useState<{
+    open: boolean;
+    targetId: string | null;
+    draft: LayerEffects | null;
+  }>({ open: false, targetId: null, draft: null });
+  const previewLayerEffectsById = useMemo(() => {
+    if (!layerStylesUi.open || !layerStylesUi.targetId || !layerStylesUi.draft) return undefined;
+    return new Map<string, LayerEffects>([[layerStylesUi.targetId, layerStylesUi.draft]]);
+  }, [layerStylesUi.open, layerStylesUi.targetId, layerStylesUi.draft]);
   /** Bloque Color (paleta + fill + stroke): plegado por defecto. */
   const [colorPanelExpanded, setColorPanelExpanded] = useState(false);
   /** Quick fill/stroke popover: which channel is being edited from canvas. */
@@ -8174,6 +8349,44 @@ export function FreehandStudioCanvas({
     () => (layerPanelTargetId ? objects.find((o) => o.id === layerPanelTargetId) ?? null : null),
     [objects, layerPanelTargetId],
   );
+
+  const openLayerStylesModal = useCallback(
+    (explicitTarget?: FreehandObject) => {
+      if (!studioCaps.layerStyles) return;
+      const target =
+        explicitTarget ??
+        (primarySelectedId ? objects.find((o) => o.id === primarySelectedId) : null) ??
+        firstSelected;
+      if (!target || !isLayerStylesEligible(target)) {
+        setToast("Selecciona una capa de imagen o bitmap para Layer Styles.");
+        window.setTimeout(() => setToast(null), 3200);
+        return;
+      }
+      setLayerStylesUi({
+        open: true,
+        targetId: target.id,
+        draft: cloneLayerEffectsForEdit((target as FreehandObjectBase).layerEffects),
+      });
+    },
+    [studioCaps.layerStyles, primarySelectedId, objects, firstSelected],
+  );
+
+  const commitLayerStylesModal = useCallback(() => {
+    const { targetId, draft } = layerStylesUi;
+    if (!targetId || !draft) return;
+    setObjects((prev) => {
+      const next = prev.map((o) =>
+        o.id === targetId ? ({ ...o, layerEffects: draft } as FreehandObject) : o,
+      );
+      pushHistory(next, new Set([targetId]));
+      return next;
+    });
+    setLayerStylesUi({ open: false, targetId: null, draft: null });
+  }, [layerStylesUi, pushHistory]);
+
+  const cancelLayerStylesModal = useCallback(() => {
+    setLayerStylesUi({ open: false, targetId: null, draft: null });
+  }, []);
 
   const canConvertSelectionToPhotoMarquee = useMemo(() => {
     if (!studioCaps.photoMarqueeFromVector) return false;
@@ -16080,6 +16293,7 @@ export function FreehandStudioCanvas({
                       designerMode,
                       textEditingId,
                       imageFrameOptimizeShowFrameId,
+                      previewLayerEffectsById,
                     })}
                   </g>
                 );
@@ -16105,6 +16319,7 @@ export function FreehandStudioCanvas({
                         designerMode,
                         textEditingId,
                         imageFrameOptimizeShowFrameId,
+                        previewLayerEffectsById,
                       })}
                       </g>
                     );
@@ -17182,6 +17397,7 @@ export function FreehandStudioCanvas({
                           designerMode,
                           textEditingId,
                           imageFrameOptimizeShowFrameId,
+                          previewLayerEffectsById,
                         })}
                       </g>
                     ));
@@ -18298,6 +18514,20 @@ export function FreehandStudioCanvas({
                     onToggle={() => setImageInfoPanelExpanded((v) => !v)}
                   />
                 )}
+                {studioCaps.layerStyles && isLayerStylesEligible(firstSelected) ? (
+                  <div className="border-b border-white/[0.08] px-[14px] py-3">
+                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                      Effects
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => openLayerStylesModal(firstSelected)}
+                      className="w-full rounded-[5px] border border-white/[0.1] bg-white/[0.05] px-2.5 py-1.5 text-left text-[11px] text-zinc-200 transition-colors hover:bg-white/[0.09]"
+                    >
+                      Layer Styles…
+                    </button>
+                  </div>
+                ) : null}
                 {/* Transform (plegable, plegado por defecto) */}
                 <div className="border-b border-white/[0.08] px-[14px] py-3">
                   <button
@@ -19439,6 +19669,25 @@ export function FreehandStudioCanvas({
                           >
                             {obj.locked ? <Lock size={12} className="text-amber-400" /> : <Unlock size={12} className="opacity-40" />}
                           </button>
+                          {studioCaps.layerStyles && isLayerStylesEligible(obj) ? (
+                            <button
+                              type="button"
+                              title="Layer Styles…"
+                              className={`shrink-0 rounded p-0.5 hover:bg-white/10 hover:text-white ${
+                                hasActiveLayerEffects((obj as FreehandObjectBase).layerEffects)
+                                  ? "text-violet-400"
+                                  : "text-zinc-500 opacity-70"
+                              }`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedIds(new Set([obj.id]));
+                                setPrimarySelectedId(obj.id);
+                                openLayerStylesModal(obj);
+                              }}
+                            >
+                              <Sparkles size={12} strokeWidth={2} />
+                            </button>
+                          ) : null}
                           {layerRowIcon(obj)}
                           <span
                             className="flex-1 truncate"
@@ -19786,6 +20035,21 @@ export function FreehandStudioCanvas({
           P o Esc · salir del modo lienzo
         </div>
       )}
+
+      {layerStylesUi.open && layerStylesUi.draft ? (
+        <LayerStylesModal
+          open
+          draft={layerStylesUi.draft}
+          onDraftChange={(next) =>
+            setLayerStylesUi((s) => (s.draft != null ? { ...s, draft: next } : s))
+          }
+          onOk={commitLayerStylesModal}
+          onCancel={cancelLayerStylesModal}
+          onReset={() =>
+            setLayerStylesUi((s) => (s.draft != null ? { ...s, draft: defaultLayerEffects() } : s))
+          }
+        />
+      ) : null}
 
       {toast && (
         <div className="pointer-events-none fixed bottom-8 left-1/2 z-[100001] -translate-x-1/2 rounded-lg border border-white/[0.12] bg-[#1a1f28] px-4 py-2 text-[12px] font-medium text-white shadow-xl">

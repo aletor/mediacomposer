@@ -22,6 +22,8 @@ export type FreehandStudioCapabilities = {
   photoRoomGraphActions: boolean;
   /** Panel Propiedades: «Combinar capas» (rasterizar selección / visibles / todo). Solo PhotoRoom por defecto. */
   combineRasterLayers: boolean;
+  /** Layer Styles (color / gradient overlay no destructivos). Solo PhotoRoom por defecto. */
+  layerStyles: boolean;
 };
 
 const CAPS_DESIGNER: FreehandStudioCapabilities = {
@@ -31,6 +33,7 @@ const CAPS_DESIGNER: FreehandStudioCapabilities = {
   photoMarqueeFromVector: false,
   photoRoomGraphActions: false,
   combineRasterLayers: false,
+  layerStyles: false,
 };
 
 const CAPS_PHOTOROOM: FreehandStudioCapabilities = {
@@ -40,6 +43,7 @@ const CAPS_PHOTOROOM: FreehandStudioCapabilities = {
   photoMarqueeFromVector: true,
   photoRoomGraphActions: true,
   combineRasterLayers: true,
+  layerStyles: true,
 };
 
 /** Entorno sin Designer ni panel PhotoRoom: mismo perfil conservador que Designer. */
