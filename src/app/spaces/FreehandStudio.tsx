@@ -99,6 +99,10 @@ import {
 } from "./freehand/artboard";
 import type { DesignerEmbedProps } from "./freehand/designer-embed-props";
 import {
+  resolveStudioCapabilities,
+  type FreehandStudioCapabilities,
+} from "./freehand/studio-capabilities";
+import {
   buildStandaloneSvgFromCanvasDom,
   expandExportIds,
   type Rect as ExportRect,
@@ -595,7 +599,14 @@ export interface FreehandStudioProps extends DesignerEmbedProps {
     /** Documento ya transformado (capa local sin ranura); debe persistirse junto con la desconexión. */
     studioObjects: FreehandObject[];
   }) => void;
+  /**
+   * Herramientas y acciones permitidas en esta instancia (allowlist).
+   * Si se omite, se infiere de `designerMode` y del panel PhotoRoom (`studioPhotoRoomCanvasPanel`).
+   */
+  studioCapabilities?: Partial<FreehandStudioCapabilities>;
 }
+
+export type { FreehandStudioCapabilities };
 
 export interface DesignerStudioApi {
   patchObject: (id: string, patch: Partial<FreehandObject>) => void;
@@ -6553,6 +6564,7 @@ export function FreehandStudioCanvas({
   studioPhotoRoomCanvasPanel,
   photoRoomOnModificarImagenIA,
   photoRoomOnRasterizeInputImage,
+  studioCapabilities,
   designerMode,
   onDesignerTextFrameCreate,
   onDesignerImageFramePlace,
@@ -6669,6 +6681,16 @@ export function FreehandStudioCanvas({
   /** Studio del nodo PhotoRoom (incluye solo imágenes importadas en el lienzo; no exige cables al grafo). */
   const isPhotoRoomStudioEmbed = studioPhotoRoomCanvasPanel != null;
 
+  const studioCaps = useMemo(
+    () =>
+      resolveStudioCapabilities({
+        designerMode: !!designerMode,
+        isPhotoRoomEmbed: isPhotoRoomStudioEmbed,
+        override: studioCapabilities,
+      }),
+    [designerMode, isPhotoRoomStudioEmbed, studioCapabilities],
+  );
+
   const artboardW = artboards[0]?.width ?? 1920;
   const artboardH = artboards[0]?.height ?? 1080;
 
@@ -6741,6 +6763,26 @@ export function FreehandStudioCanvas({
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [activeTool, setActiveTool] = useState<Tool>("select");
+
+  useEffect(() => {
+    if (activeTool === "brush" && !studioCaps.toolBrush) {
+      setActiveTool("select");
+      return;
+    }
+    if (activeTool === "cloneStamp" && !studioCaps.toolCloneStamp) {
+      setActiveTool("select");
+      return;
+    }
+    if (
+      (activeTool === "rectMarquee" ||
+        activeTool === "ellipseMarquee" ||
+        activeTool === "lassoMarquee" ||
+        activeTool === "polygonMarquee") &&
+      !studioCaps.toolPhotoMarquee
+    ) {
+      setActiveTool("select");
+    }
+  }, [activeTool, studioCaps]);
 
   /**
    * Entradas del grafo: no poner `photoRoomConnectedInputs` ni `initialObjects` en deps — en React Flow `nodes`/arrays
@@ -7787,9 +7829,10 @@ export function FreehandStudioCanvas({
   );
 
   const canConvertSelectionToPhotoMarquee = useMemo(() => {
+    if (!studioCaps.photoMarqueeFromVector) return false;
     if (selectedObjects.length !== 1) return false;
     return vectorObjectToPhotoMarqueeParts(selectedObjects[0]!) != null;
-  }, [selectedObjects]);
+  }, [selectedObjects, studioCaps.photoMarqueeFromVector]);
 
   const replacePhotoMarqueeWithVectorOutline = useCallback(() => {
     if (selectedIds.size !== 1) return;
@@ -10543,28 +10586,28 @@ export function FreehandStudioCanvas({
       if ((e.key === "v" || e.key === "V") && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault(); setActiveTool("select"); return;
       }
-      if ((e.key === "m" || e.key === "M") && !e.metaKey && !e.ctrlKey && !e.altKey && isPhotoRoomStudioEmbed) {
+      if ((e.key === "m" || e.key === "M") && !e.metaKey && !e.ctrlKey && !e.altKey && studioCaps.toolPhotoMarquee) {
         e.preventDefault();
         setActiveTool("rectMarquee");
         return;
       }
-      if ((e.key === "l" || e.key === "L") && !e.metaKey && !e.ctrlKey && !e.altKey && isPhotoRoomStudioEmbed) {
+      if ((e.key === "l" || e.key === "L") && !e.metaKey && !e.ctrlKey && !e.altKey && studioCaps.toolPhotoMarquee) {
         e.preventDefault();
         setActiveTool(e.shiftKey ? "polygonMarquee" : "lassoMarquee");
         return;
       }
-      if ((e.key === "o" || e.key === "O") && !e.metaKey && !e.ctrlKey && !e.altKey && isPhotoRoomStudioEmbed) {
+      if ((e.key === "o" || e.key === "O") && !e.metaKey && !e.ctrlKey && !e.altKey && studioCaps.toolPhotoMarquee) {
         e.preventDefault();
         setActiveTool("ellipseMarquee");
         return;
       }
       if (e.key === "a" && !e.metaKey && !e.ctrlKey) { e.preventDefault(); setActiveTool("directSelect"); return; }
-      if ((e.key === "b" || e.key === "B") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if ((e.key === "b" || e.key === "B") && !e.metaKey && !e.ctrlKey && !e.altKey && studioCaps.toolBrush) {
         e.preventDefault();
         setActiveTool("brush");
         return;
       }
-      if ((e.key === "s" || e.key === "S") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if ((e.key === "s" || e.key === "S") && !e.metaKey && !e.ctrlKey && !e.altKey && studioCaps.toolCloneStamp) {
         e.preventDefault();
         setActiveTool("cloneStamp");
         return;
@@ -10625,6 +10668,7 @@ export function FreehandStudioCanvas({
           objectsRef.current,
         );
         if (
+          studioCaps.toolPhotoMarquee &&
           srcImg &&
           (photoRectMarqueeSelectionRef.current.length > 0 ||
             photoPolygonMarqueeSelectionRef.current.length > 0 ||
@@ -10643,6 +10687,7 @@ export function FreehandStudioCanvas({
           objectsRef.current,
         );
         if (
+          studioCaps.toolPhotoMarquee &&
           srcImg &&
           (photoRectMarqueeSelectionRef.current.length > 0 ||
             photoPolygonMarqueeSelectionRef.current.length > 0 ||
@@ -10671,6 +10716,7 @@ export function FreehandStudioCanvas({
         const delImg = findSingleSelectedImageForPhotoMarquee(selectedIdsRef.current, objectsRef.current);
         if (
           isPhotoRoomStudioEmbed &&
+          studioCaps.toolPhotoMarquee &&
           delImg &&
           (photoRectMarqueeSelectionRef.current.length > 0 ||
             photoPolygonMarqueeSelectionRef.current.length > 0 ||
@@ -10768,6 +10814,7 @@ export function FreehandStudioCanvas({
 
         if (
           isPhotoRoomStudioEmbed &&
+          studioCaps.toolPhotoMarquee &&
           marqueeSrcImg &&
           (activeTool === "select" ||
             activeTool === "rectMarquee" ||
@@ -10980,7 +11027,7 @@ export function FreehandStudioCanvas({
       copySelectedObjects, cutSelectedObjects, pasteClipboardObjects, pasteInside, quickExportSelectionPng, convertTextToOutlines,
       copyPhotoMarqueeRasterSelection,
       designerMode, onDesignerNavigatePage, designerStoryModalOpen, imageFrameContentEditId, clipContentEditId, canvasZenMode, scheduleFitAllAfterLayout,
-      isPhotoRoomStudioEmbed, finishBrushStroke]);
+      isPhotoRoomStudioEmbed, studioCaps, finishBrushStroke]);
 
   // ── Mouse handlers ────────────────────────────────────────────────
 
@@ -11442,7 +11489,7 @@ export function FreehandStudioCanvas({
     }
 
     // ── Brush (pincel raster sobre capa imagen; clic vacío = nueva capa al tamaño del pliego) ─
-    if (activeTool === "brush" && e.button === 0) {
+    if (activeTool === "brush" && e.button === 0 && studioCaps.toolBrush) {
       e.preventDefault();
       setSelectedPoints(new Map());
       const rgb = parseFillColorHexToRgb(fillColor === "none" ? "#000000" : fillColor);
@@ -11503,7 +11550,7 @@ export function FreehandStudioCanvas({
     }
 
     // ── Tampón de clon (mismo pincel; Alt+clic = origen; puede ampliar el bitmap al pintar fuera del marco) ─
-    if (activeTool === "cloneStamp" && e.button === 0) {
+    if (activeTool === "cloneStamp" && e.button === 0 && studioCaps.toolCloneStamp) {
       e.preventDefault();
       setSelectedPoints(new Map());
       let hit = pickTopImageForBrush(pos, objects);
@@ -12282,7 +12329,7 @@ export function FreehandStudioCanvas({
       isClipContentIsolation, clipContentEditId, isPhotoRoomStudioEmbed, photoRectMarqueeSelection,
       photoPolygonMarqueeSelection, photoEllipseMarqueeSelection,
       fillColor, brushSize, brushHardnessPct, brushOpacityPct, brushFlowPct, scheduleBrushPreview,
-      cloneSource, setToast]);
+      cloneSource, setToast, studioCaps]);
 
   const flushSelectionGeometryGesture = useCallback(() => {
     const dragState = dragStateRef.current;
@@ -12684,6 +12731,7 @@ export function FreehandStudioCanvas({
       (e.buttons & 1) &&
       !dragState &&
       isPhotoRoomStudioEmbed &&
+      studioCaps.toolPhotoMarquee &&
       (activeTool === "rectMarquee" ||
         activeTool === "ellipseMarquee" ||
         activeTool === "lassoMarquee" ||
@@ -13280,6 +13328,7 @@ export function FreehandStudioCanvas({
     isPenDrawing,
     penDragging,
     isPhotoRoomStudioEmbed,
+    studioCaps.toolPhotoMarquee,
     fillColor,
     brushSize,
     brushHardnessPct,
@@ -14745,6 +14794,7 @@ export function FreehandStudioCanvas({
           </button>
         </ToolFlyoutGroup>
 
+        {studioCaps.toolBrush && (
         <ToolBtn
           active={activeTool === "brush"}
           onClick={() => setActiveTool("brush")}
@@ -14752,6 +14802,8 @@ export function FreehandStudioCanvas({
         >
           <Paintbrush size={19} strokeWidth={TOOLBAR_ICON_STROKE} />
         </ToolBtn>
+        )}
+        {studioCaps.toolCloneStamp && (
         <ToolBtn
           active={activeTool === "cloneStamp"}
           onClick={() => setActiveTool("cloneStamp")}
@@ -14759,8 +14811,9 @@ export function FreehandStudioCanvas({
         >
           <Copy size={19} strokeWidth={TOOLBAR_ICON_STROKE} />
         </ToolBtn>
+        )}
 
-        {isPhotoRoomStudioEmbed && (
+        {studioCaps.toolPhotoMarquee && (
           <ToolFlyoutGroup
             groupId="tf-photo-marquee"
             flyoutOpen={leftToolbarToolFlyout}

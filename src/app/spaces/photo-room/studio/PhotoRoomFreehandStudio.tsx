@@ -7,9 +7,9 @@ import { FreehandStudioCanvas, type FreehandStudioProps } from "../../FreehandSt
  * Studio PhotoRoom: única entrada de lienzo para este nodo.
  * El motor compartido es `FreehandStudioCanvas` (mismo archivo que el default export de Designer).
  *
- * Convención: nuevas herramientas, overlays raster y reglas solo PhotoRoom se añaden aquí o en
- * módulos bajo `photo-room/`, evitando tocar `DesignerStudio` y minimizando cambios en el
- * bundle “Designer” (import default desde `FreehandStudio`).
+ * Capacidades del lienzo: por defecto `FreehandStudio` infiere PhotoRoom vs Designer
+ * (`studioPhotoRoomCanvasPanel`, `designerMode`) y aplica allowlists en
+ * `freehand/studio-capabilities.ts`. Para casos raros, el padre puede pasar `studioCapabilities`.
  */
 export default function PhotoRoomFreehandStudio(props: FreehandStudioProps) {
   return <FreehandStudioCanvas {...props} />;
