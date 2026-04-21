@@ -13,7 +13,7 @@ import React, {
   type WheelEvent as ReactWheelEvent,
   type DragEvent as ReactDragEvent,
 } from "react";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { usePreventBrowserPinchZoom } from "@/lib/use-prevent-browser-pinch-zoom";
 import { useClampedFixedPosition } from "@/lib/use-clamped-fixed-position";
 import { fetchBlobViaSpacesProxy } from "@/lib/spaces-proxy-fetch";
@@ -2076,6 +2076,117 @@ function isShiftHeld(e: ReactMouseEvent): boolean {
   if (e.shiftKey) return true;
   const ne = e.nativeEvent as MouseEvent;
   return typeof ne.getModifierState === "function" && ne.getModifierState("Shift");
+}
+
+/** Evento mínimo para `isShiftHeld` / snap durante rAF (sin `ReactMouseEvent` real). */
+function syntheticShiftMouseEvent(tail: {
+  clientX: number;
+  clientY: number;
+  shiftKey: boolean;
+}): ReactMouseEvent {
+  return {
+    shiftKey: tail.shiftKey,
+    clientX: tail.clientX,
+    clientY: tail.clientY,
+    nativeEvent: {
+      getModifierState: (k: string) => (k === "Shift" ? tail.shiftKey : false),
+    },
+  } as unknown as ReactMouseEvent;
+}
+
+/** Máximo lado del bitmap para preview durante mover / rotar / escalar (el original se restaura al soltar). */
+const RASTER_SELECTION_GESTURE_PROXY_MAX_EDGE_PX = 2560;
+
+function rasterSelectionGestureNeedsProxy(iw: number, ih: number): boolean {
+  if (!iw || !ih) return false;
+  if (Math.max(iw, ih) > RASTER_SELECTION_GESTURE_PROXY_MAX_EDGE_PX) return true;
+  if (iw * ih >= 6_000_000) return true;
+  return false;
+}
+
+function buildRasterSelectionGestureProxyDataUrl(src: string): Promise<string | null> {
+  if (typeof document === "undefined") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const im = new Image();
+    im.decoding = "async";
+    im.onload = () => {
+      const iw = im.naturalWidth || 0;
+      const ih = im.naturalHeight || 0;
+      if (!iw || !ih) {
+        resolve(null);
+        return;
+      }
+      const maxE = Math.max(iw, ih);
+      const scale = Math.min(1, RASTER_SELECTION_GESTURE_PROXY_MAX_EDGE_PX / maxE);
+      if (scale >= 1) {
+        resolve(null);
+        return;
+      }
+      const tw = Math.max(1, Math.round(iw * scale));
+      const th = Math.max(1, Math.round(ih * scale));
+      const c = document.createElement("canvas");
+      c.width = tw;
+      c.height = th;
+      const ctx = c.getContext("2d");
+      if (!ctx) {
+        resolve(null);
+        return;
+      }
+      ctx.drawImage(im, 0, 0, tw, th);
+      try {
+        resolve(c.toDataURL("image/jpeg", 0.92));
+      } catch {
+        resolve(null);
+      }
+    };
+    im.onerror = () => resolve(null);
+    im.src = src;
+  });
+}
+
+function applyRasterGestureProxiesToObject(
+  o: FreehandObject,
+  proxyMap: Map<string, { originalSrc: string; proxySrc: string }>,
+): FreehandObject {
+  const p = proxyMap.get(o.id);
+  if (!p) return o;
+  if (o.type === "image") {
+    const im = o as ImageObject;
+    return { ...im, src: p.proxySrc };
+  }
+  if (o.type === "rect") {
+    const r = o as RectObject;
+    if (r.isImageFrame && r.imageFrameContent?.src) {
+      return {
+        ...r,
+        imageFrameContent: { ...r.imageFrameContent, src: p.proxySrc },
+      };
+    }
+  }
+  return o;
+}
+
+function restoreRasterGestureProxiesInObjects(
+  objs: FreehandObject[],
+  proxyMap: Map<string, { originalSrc: string; proxySrc: string }>,
+): FreehandObject[] {
+  return objs.map((o) => {
+    const p = proxyMap.get(o.id);
+    if (!p) return o;
+    if (o.type === "image") {
+      return { ...(o as ImageObject), src: p.originalSrc };
+    }
+    if (o.type === "rect") {
+      const r = o as RectObject;
+      if (r.isImageFrame && r.imageFrameContent) {
+        return {
+          ...r,
+          imageFrameContent: { ...r.imageFrameContent, src: p.originalSrc },
+        };
+      }
+    }
+    return o;
+  });
 }
 
 /** Marco PhotoRoom: sumar — Ctrl/⌘ (no cuenta si Alt/Option: eso es restar). */
@@ -7047,6 +7158,8 @@ export function FreehandStudioCanvas({
   const [layerMergeBusy, setLayerMergeBusy] = useState(false);
   const [exportFlash, setExportFlash] = useState<ExportRect | null>(null);
   const [snapEnabled, setSnapEnabled] = useState(true);
+  const snapEnabledRef = useRef(snapEnabled);
+  snapEnabledRef.current = snapEnabled;
   const [snapGuides, setSnapGuides] = useState<SnapVisual[]>([]);
   /** Popover de color en la barra de herramientas izquierda (fill / stroke). */
   const [leftToolbarColorTarget, setLeftToolbarColorTarget] = useState<null | "fill" | "stroke">(null);
@@ -7106,6 +7219,13 @@ export function FreehandStudioCanvas({
   artboardsRef.current = artboards;
   const layoutGuidesRef = useRef<LayoutGuide[]>(layoutGuides);
   layoutGuidesRef.current = layoutGuides;
+
+  /** Preview raster liviano durante mover/redimensionar/rotar; restaurar al soltar y al sync al nodo. */
+  const selectionGestureRafRef = useRef<number | null>(null);
+  const selectionPointerTailRef = useRef<{ clientX: number; clientY: number; shiftKey: boolean } | null>(null);
+  const selectionGestureProxyByIdRef = useRef<Map<string, { originalSrc: string; proxySrc: string }>>(new Map());
+  const selectionGestureProxySessionRef = useRef(0);
+  const flushSelectionGeometryGestureRef = useRef<(() => void) | null>(null);
 
   /** Props de la página activa (Designer); se lee al cambiar `designerActivePageId` sin depender de la referencia del array. */
   const designerPagePropsRef = useRef({ objects: initialObjects, layoutGuides: initialLayoutGuides ?? [] });
@@ -7426,7 +7546,9 @@ export function FreehandStudioCanvas({
   useEffect(() => {
     clearTimeout(syncRef.current);
     syncRef.current = setTimeout(() => {
-      let fullObjects = objects;
+      const prox = selectionGestureProxyByIdRef.current;
+      let fullObjects =
+        prox.size > 0 ? restoreRasterGestureProxiesInObjects(objects, prox) : objects;
       for (let i = isolationStackRef.current.length - 1; i >= 0; i--) {
         const frame = isolationStackRef.current[i];
         if (frame.kind === "clipping") {
@@ -12162,6 +12284,397 @@ export function FreehandStudioCanvas({
       fillColor, brushSize, brushHardnessPct, brushOpacityPct, brushFlowPct, scheduleBrushPreview,
       cloneSource, setToast]);
 
+  const flushSelectionGeometryGesture = useCallback(() => {
+    const dragState = dragStateRef.current;
+    const tail = selectionPointerTailRef.current;
+    if (!dragState || !tail) return;
+    const e = syntheticShiftMouseEvent(tail);
+    const dx = tail.clientX - dragState.startX;
+    const dy = tail.clientY - dragState.startY;
+    const viewport = viewportRef.current;
+    const snapEnabled = snapEnabledRef.current;
+    const objects = objectsRef.current;
+
+    if (dragState.type === "move" && dragState.positions) {
+      const scale = canvasScaleFromPointer(viewport.zoom);
+      let mdx = dx * scale, mdy = dy * scale;
+
+      if (isShiftHeld(e)) {
+        const c = snapDeltaTo45(mdx, mdy);
+        mdx = c.x; mdy = c.y;
+      }
+
+      if (snapEnabled && dragState.positions.size > 0) {
+        const tentBounds = getGroupBounds(
+          Array.from(dragState.positions.entries()).map(([id, p]) => {
+            const obj = objects.find((o) => o.id === id)!;
+            return { ...obj, x: p.x + mdx, y: p.y + mdy };
+          })
+        );
+        const vg = layoutGuidesRef.current.filter((g) => g.orientation === "vertical").map((g) => g.position);
+        const hg = layoutGuidesRef.current.filter((g) => g.orientation === "horizontal").map((g) => g.position);
+        const snap = computeSnap(tentBounds, objects, selectedIdsRef.current, viewport.zoom, { vertical: vg, horizontal: hg });
+        mdx += snap.dx;
+        mdy += snap.dy;
+        setSnapGuides(snap.guides);
+      } else {
+        setSnapGuides([]);
+      }
+
+      setObjects((prev) => prev.map((o) => {
+        const sp = dragState.positions!.get(o.id);
+        if (!sp) return o;
+        if (
+          o.type === "path" &&
+          dragState.pathPointsMap?.has(o.id) &&
+          (dragState.pathPointsMap.get(o.id)?.length ?? 0) > 0
+        ) {
+          const origPts = dragState.pathPointsMap.get(o.id)!;
+          const newPts = origPts.map(pt => ({
+            ...pt,
+            anchor: { x: pt.anchor.x + mdx, y: pt.anchor.y + mdy },
+            handleIn: { x: pt.handleIn.x + mdx, y: pt.handleIn.y + mdy },
+            handleOut: { x: pt.handleOut.x + mdx, y: pt.handleOut.y + mdy },
+          }));
+          const pb = getPathBoundsFromPoints(newPts);
+          return { ...o, x: pb.x, y: pb.y, width: pb.w, height: pb.h, points: newPts };
+        }
+        if (o.type === "path") {
+          const po = o as PathObject;
+          const m0 = dragState.pathSvgMatrixStart?.get(o.id);
+          if (
+            m0 != null &&
+            po.svgPathD &&
+            (!po.points || po.points.length < 2) &&
+            (po.svgPathIntrinsicW == null || po.svgPathIntrinsicH == null)
+          ) {
+            const base = po.svgPathMatrix ?? { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+            return {
+              ...o,
+              x: sp.x + mdx,
+              y: sp.y + mdy,
+              svgPathMatrix: { ...base, e: m0.e + mdx, f: m0.f + mdy },
+            };
+          }
+        }
+        return { ...o, x: sp.x + mdx, y: sp.y + mdy };
+      }));
+      return;
+    }
+
+    if (dragState.type === "resize" && dragState.allBounds && dragState.initialOrientedFrame) {
+      const scale = canvasScaleFromPointer(viewport.zoom);
+      const dCanvas = { x: dx * scale, y: dy * scale };
+      const f0 = dragState.initialOrientedFrame;
+      const h = dragState.handle!;
+      const dLocal = worldDeltaToLocal(dCanvas, f0.angleDeg);
+      let nw = f0.w, nh = f0.h;
+      if (h.includes("e")) nw = Math.max(10, f0.w + dLocal.x);
+      if (h.includes("w")) nw = Math.max(10, f0.w - dLocal.x);
+      if (h.includes("s")) nh = Math.max(10, f0.h + dLocal.y);
+      if (h.includes("n")) nh = Math.max(10, f0.h - dLocal.y);
+
+      if (isShiftHeld(e)) {
+        const aspect = f0.w / f0.h;
+        if (h === "n" || h === "s") nw = Math.max(10, nh * aspect);
+        else if (h === "e" || h === "w") nh = Math.max(10, nw / aspect);
+        else {
+          const avgScale = ((nw / f0.w) + (nh / f0.h)) / 2;
+          nw = Math.max(10, f0.w * avgScale);
+          nh = Math.max(10, f0.h * avgScale);
+        }
+      } else {
+        const snaps = dragState.resizeSnapshot;
+        if (snaps && dragState.allBounds) {
+          const ids = Array.from(dragState.allBounds.keys());
+          if (ids.length > 0 && ids.every((id) => snaps.get(id)?.type === "image")) {
+            const u = (nw / f0.w + nh / f0.h) / 2;
+            nw = Math.max(10, f0.w * u);
+            nh = Math.max(10, f0.h * u);
+          }
+        }
+      }
+
+      const dw = nw - f0.w, dh = nh - f0.h;
+      const th = degToRad(f0.angleDeg);
+      const ux = Math.cos(th), uy = Math.sin(th);
+      const vx = -Math.sin(th), vy = Math.cos(th);
+      let tcx = 0, tcy = 0;
+      if (h.includes("e")) { tcx += (dw / 2) * ux; tcy += (dw / 2) * uy; }
+      if (h.includes("w")) { tcx -= (dw / 2) * ux; tcy -= (dw / 2) * uy; }
+      if (h.includes("s")) { tcx += (dh / 2) * vx; tcy += (dh / 2) * vy; }
+      if (h.includes("n")) { tcx -= (dh / 2) * vx; tcy -= (dh / 2) * vy; }
+      const ncx = f0.cx + tcx;
+      const ncy = f0.cy + tcy;
+      const sx = nw / f0.w, sy = nh / f0.h;
+
+      setObjects((prev) => prev.map((o) => {
+        if (!dragState.allBounds!.has(o.id)) return o;
+        const src = dragState.resizeSnapshot?.get(o.id);
+        if (!src) return o;
+        const mapWorld = (p: Point) => {
+          const L = worldToLocalOBB(p, f0.cx, f0.cy, f0.angleDeg);
+          return localToWorldOBB({ x: L.x * sx, y: L.y * sy }, ncx, ncy, f0.angleDeg);
+        };
+        if (src.type === "path") {
+          const pp = src as PathObject;
+          if (pp.svgPathD && (!pp.points || pp.points.length < 2)) {
+            const newW = Math.max(4, src.width * sx);
+            const newH = Math.max(4, src.height * sy);
+            const pivot = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
+            const newC = mapWorld(pivot);
+            return { ...o, x: newC.x - newW / 2, y: newC.y - newH / 2, width: newW, height: newH };
+          }
+          const pts = pp.points.map((pt) => ({
+            ...pt,
+            anchor: mapWorld(pt.anchor),
+            handleIn: mapWorld(pt.handleIn),
+            handleOut: mapWorld(pt.handleOut),
+          }));
+          const pb = getPathBoundsFromPoints(pts);
+          return { ...o, x: pb.x, y: pb.y, width: pb.w, height: pb.h, points: pts };
+        }
+        if (src.type === "clippingContainer") {
+          return mapObjectPointsWithWorld(src, mapWorld) as ClippingContainerObject;
+        }
+        if (src.type === "text") {
+          const t = src as TextObject;
+          if (t.isTextFrame) {
+            const newW = Math.max(20, src.width * sx);
+            const newH = Math.max(20, src.height * sy);
+            const pivot = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
+            const newC = mapWorld(pivot);
+            return { ...o, x: newC.x - newW / 2, y: newC.y - newH / 2, width: newW, height: newH };
+          }
+          const { w: lw, h: lh } = textLayoutDims(t);
+          const pivot = { x: src.x + lw / 2, y: src.y + lh / 2 };
+          const newC = mapWorld(pivot);
+          return {
+            ...o,
+            x: newC.x - lw / 2,
+            y: newC.y - lh / 2,
+            width: t.width,
+            height: t.height,
+            scaleX: (t.scaleX ?? 1) * sx,
+            scaleY: (t.scaleY ?? 1) * sy,
+          };
+        }
+        const newW = Math.max(4, src.width * sx);
+        const newH = Math.max(4, src.height * sy);
+        const pivot = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
+        const newC = mapWorld(pivot);
+        return { ...o, x: newC.x - newW / 2, y: newC.y - newH / 2, width: newW, height: newH };
+      }));
+      return;
+    }
+
+    if (dragState.type === "resize" && dragState.bounds && dragState.allBounds && !dragState.initialOrientedFrame) {
+      const scale = canvasScaleFromPointer(viewport.zoom);
+      const b = dragState.bounds;
+      const h = dragState.handle!;
+      let nx = b.x, ny = b.y, nw = b.w, nh = b.h;
+      if (h.includes("e")) nw = Math.max(10, b.w + dx * scale);
+      if (h.includes("s")) nh = Math.max(10, b.h + dy * scale);
+      if (h.includes("w")) { nw = Math.max(10, b.w - dx * scale); nx = b.x + (b.w - nw); }
+      if (h.includes("n")) { nh = Math.max(10, b.h - dy * scale); ny = b.y + (b.h - nh); }
+
+      if (isShiftHeld(e)) {
+        const aspect = b.w / b.h;
+        if (h === "n" || h === "s") { nw = Math.max(10, nh * aspect); nx = b.x + (b.w - nw) / 2; }
+        else if (h === "e" || h === "w") { nh = Math.max(10, nw / aspect); ny = b.y + (b.h - nh) / 2; }
+        else {
+          const avgScale = ((nw / b.w) + (nh / b.h)) / 2;
+          nw = Math.max(10, b.w * avgScale); nh = Math.max(10, b.h * avgScale);
+          if (h.includes("w")) nx = b.x + b.w - nw;
+          if (h.includes("n")) ny = b.y + b.h - nh;
+        }
+      } else {
+        const snaps = dragState.resizeSnapshot;
+        if (snaps && dragState.allBounds) {
+          const ids = Array.from(dragState.allBounds.keys());
+          if (ids.length > 0 && ids.every((id) => snaps.get(id)?.type === "image")) {
+            const u = (nw / b.w + nh / b.h) / 2;
+            nw = Math.max(10, b.w * u);
+            nh = Math.max(10, b.h * u);
+          }
+        }
+      }
+
+      if (snapEnabled && !isShiftHeld(e)) {
+        const vg = layoutGuidesRef.current.filter((g) => g.orientation === "vertical").map((g) => g.position);
+        const hg = layoutGuidesRef.current.filter((g) => g.orientation === "horizontal").map((g) => g.position);
+        const sn = snapAxisAlignedResizeToGuides({ x: nx, y: ny, w: nw, h: nh }, h, vg, hg, viewport.zoom);
+        nx = sn.rect.x;
+        ny = sn.rect.y;
+        nw = sn.rect.w;
+        nh = sn.rect.h;
+        setSnapGuides(sn.guides);
+      } else {
+        setSnapGuides([]);
+      }
+
+      const sx = nw / b.w, sy = nh / b.h;
+      setObjects((prev) => prev.map((o) => {
+        const ob = dragState.allBounds!.get(o.id);
+        const src = dragState.resizeSnapshot?.get(o.id);
+        if (!ob || !src) return o;
+        const newX = nx + (ob.x - b.x) * sx;
+        const newY = ny + (ob.y - b.y) * sy;
+        if (src.type === "path") {
+          const pp = src as PathObject;
+          if (pp.svgPathD && (!pp.points || pp.points.length < 2)) {
+            return { ...o, x: newX, y: newY, width: ob.w * sx, height: ob.h * sy };
+          }
+          const pts = pp.points.map(pt => ({
+            ...pt,
+            anchor: { x: nx + (pt.anchor.x - b.x) * sx, y: ny + (pt.anchor.y - b.y) * sy },
+            handleIn: { x: nx + (pt.handleIn.x - b.x) * sx, y: ny + (pt.handleIn.y - b.y) * sy },
+            handleOut: { x: nx + (pt.handleOut.x - b.x) * sx, y: ny + (pt.handleOut.y - b.y) * sy },
+          }));
+          const pb = getPathBoundsFromPoints(pts);
+          return { ...o, x: pb.x, y: pb.y, width: pb.w, height: pb.h, points: pts };
+        }
+        if (src.type === "clippingContainer") {
+          const mapWorld = (p: Point) => ({
+            x: nx + (p.x - b.x) * sx,
+            y: ny + (p.y - b.y) * sy,
+          });
+          return mapObjectPointsWithWorld(src, mapWorld) as ClippingContainerObject;
+        }
+        if (src.type === "text") {
+          const tt = src as TextObject;
+          const { w: lw, h: lh } = textLayoutDims(tt);
+          const vx = nx + (ob.x - b.x) * sx;
+          const vy = ny + (ob.y - b.y) * sy;
+          const vw = ob.w * sx, vh = ob.h * sy;
+          const tcx = vx + vw / 2, tcy = vy + vh / 2;
+          return {
+            ...o,
+            x: tcx - lw / 2,
+            y: tcy - lh / 2,
+            width: tt.width,
+            height: tt.height,
+            scaleX: (tt.scaleX ?? 1) * sx,
+            scaleY: (tt.scaleY ?? 1) * sy,
+          };
+        }
+        return {
+          ...o,
+          x: newX, y: newY,
+          width: ob.w * sx,
+          height: ob.h * sy,
+        };
+      }));
+      return;
+    }
+
+    if (dragState.type === "rotate" && dragState.rotateCenter && dragState.rotateStartAngle != null) {
+      const pos = screenToCanvasRef.current(tail.clientX, tail.clientY);
+      const pivot = dragState.rotateCenter;
+      const currentAngle = Math.atan2(pos.y - pivot.y, pos.x - pivot.x);
+      const radDelta = shortestAngleDeltaRad(currentAngle, dragState.rotateStartAngle);
+      let angleDelta = (radDelta * 180) / Math.PI;
+      if (e.shiftKey) angleDelta = Math.round(angleDelta / 15) * 15;
+      const snaps = dragState.rotateInitialSnapshots;
+      const proxyMap = selectionGestureProxyByIdRef.current;
+      setObjects((prev) =>
+        prev.map((o) => {
+          const initRot = dragState.rotateInitialRotations?.get(o.id);
+          if (initRot == null) return o;
+          if (snaps?.has(o.id)) {
+            const init = snaps.get(o.id)!;
+            return applyRasterGestureProxiesToObject(
+              applyRotateAroundSelectionPivot(init, pivot, angleDelta),
+              proxyMap,
+            );
+          }
+          return { ...o, rotation: initRot + angleDelta };
+        }),
+      );
+    }
+  }, [setSnapGuides, setObjects]);
+
+  flushSelectionGeometryGestureRef.current = flushSelectionGeometryGesture;
+
+  const scheduleSelectionGeometryRaf = useCallback(() => {
+    if (selectionGestureRafRef.current != null) return;
+    selectionGestureRafRef.current = requestAnimationFrame(() => {
+      selectionGestureRafRef.current = null;
+      flushSelectionGeometryGestureRef.current?.();
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (selectionGestureRafRef.current != null) {
+        cancelAnimationFrame(selectionGestureRafRef.current);
+        selectionGestureRafRef.current = null;
+      }
+    };
+  }, []);
+
+  const queueRasterProxiesForSelectionTargets = useCallback(
+    (targets: FreehandObject[]) => {
+      if (targets.length === 0) return;
+      selectionGestureProxySessionRef.current += 1;
+      const session = selectionGestureProxySessionRef.current;
+      void (async () => {
+        const map = selectionGestureProxyByIdRef.current;
+        let added = 0;
+        for (const obj of targets) {
+          if (map.has(obj.id)) continue;
+          let src: string | null = null;
+          if (obj.type === "image") src = (obj as ImageObject).src;
+          else if (obj.type === "rect" && (obj as RectObject).isImageFrame)
+            src = (obj as RectObject).imageFrameContent?.src ?? null;
+          if (
+            !src ||
+            (!src.startsWith("http") && !src.startsWith("data:") && !src.startsWith("blob:"))
+          )
+            continue;
+
+          const dims = await new Promise<{ iw: number; ih: number }>((res) => {
+            const im = new Image();
+            im.decoding = "async";
+            im.onload = () => res({ iw: im.naturalWidth || 0, ih: im.naturalHeight || 0 });
+            im.onerror = () => res({ iw: 0, ih: 0 });
+            im.src = src;
+          });
+          if (session !== selectionGestureProxySessionRef.current) return;
+          if (!rasterSelectionGestureNeedsProxy(dims.iw, dims.ih)) continue;
+          const proxy = await buildRasterSelectionGestureProxyDataUrl(src);
+          if (session !== selectionGestureProxySessionRef.current) return;
+          if (!proxy) continue;
+          map.set(obj.id, { originalSrc: src, proxySrc: proxy });
+          added += 1;
+        }
+        if (session !== selectionGestureProxySessionRef.current) return;
+        if (added === 0) return;
+        setObjects((prev) => prev.map((o) => applyRasterGestureProxiesToObject(o, map)));
+      })();
+    },
+    [setObjects],
+  );
+
+  useEffect(() => {
+    const ds = dragState;
+    if (!ds) return;
+    if (ds.type === "move" && ds.positions && ds.positions.size > 0) {
+      queueRasterProxiesForSelectionTargets(objectsRef.current.filter((o) => ds.positions!.has(o.id)));
+      return;
+    }
+    if (ds.type === "rotate" && ds.rotateInitialSnapshots && ds.rotateInitialSnapshots.size > 0) {
+      queueRasterProxiesForSelectionTargets(
+        objectsRef.current.filter((o) => ds.rotateInitialSnapshots!.has(o.id)),
+      );
+      return;
+    }
+    if (ds.type === "resize" && ds.allBounds && ds.allBounds.size > 0) {
+      queueRasterProxiesForSelectionTargets(objectsRef.current.filter((o) => ds.allBounds!.has(o.id)));
+    }
+  }, [dragState, queueRasterProxiesForSelectionTargets]);
+
+
   const handleMouseMove = useCallback((e: ReactMouseEvent) => {
     /** Ref sincrónico; el state de React puede no haber hecho commit tras mousedown/setDragState. */
     const dragState = dragStateRef.current;
@@ -12688,300 +13201,19 @@ export function FreehandStudioCanvas({
       return;
     }
 
-    if (dragState.type === "move" && dragState.positions) {
-      const scale = canvasScaleFromPointer(viewport.zoom);
-      let mdx = dx * scale, mdy = dy * scale;
-
-      if (isShiftHeld(e)) {
-        const c = snapDeltaTo45(mdx, mdy);
-        mdx = c.x; mdy = c.y;
-      }
-
-      if (snapEnabled && dragState.positions.size > 0) {
-        const firstPos = Array.from(dragState.positions.values())[0];
-        const tentBounds = getGroupBounds(
-          Array.from(dragState.positions.entries()).map(([id, p]) => {
-            const obj = objects.find((o) => o.id === id)!;
-            return { ...obj, x: p.x + mdx, y: p.y + mdy };
-          })
-        );
-        const vg = layoutGuidesRef.current.filter((g) => g.orientation === "vertical").map((g) => g.position);
-        const hg = layoutGuidesRef.current.filter((g) => g.orientation === "horizontal").map((g) => g.position);
-        const snap = computeSnap(tentBounds, objects, selectedIds, viewport.zoom, { vertical: vg, horizontal: hg });
-        mdx += snap.dx;
-        mdy += snap.dy;
-        setSnapGuides(snap.guides);
-      } else {
-        setSnapGuides([]);
-      }
-
-      setObjects((prev) => prev.map((o) => {
-        const sp = dragState.positions!.get(o.id);
-        if (!sp) return o;
-        if (
-          o.type === "path" &&
-          dragState.pathPointsMap?.has(o.id) &&
-          (dragState.pathPointsMap.get(o.id)?.length ?? 0) > 0
-        ) {
-          const origPts = dragState.pathPointsMap.get(o.id)!;
-          const newPts = origPts.map(pt => ({
-            ...pt,
-            anchor: { x: pt.anchor.x + mdx, y: pt.anchor.y + mdy },
-            handleIn: { x: pt.handleIn.x + mdx, y: pt.handleIn.y + mdy },
-            handleOut: { x: pt.handleOut.x + mdx, y: pt.handleOut.y + mdy },
-          }));
-          const pb = getPathBoundsFromPoints(newPts);
-          return { ...o, x: pb.x, y: pb.y, width: pb.w, height: pb.h, points: newPts };
-        }
-        if (o.type === "path") {
-          const po = o as PathObject;
-          const m0 = dragState.pathSvgMatrixStart?.get(o.id);
-          if (
-            m0 != null &&
-            po.svgPathD &&
-            (!po.points || po.points.length < 2) &&
-            (po.svgPathIntrinsicW == null || po.svgPathIntrinsicH == null)
-          ) {
-            const base = po.svgPathMatrix ?? { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
-            return {
-              ...o,
-              x: sp.x + mdx,
-              y: sp.y + mdy,
-              svgPathMatrix: { ...base, e: m0.e + mdx, f: m0.f + mdy },
-            };
-          }
-        }
-        return { ...o, x: sp.x + mdx, y: sp.y + mdy };
-      }));
-      return;
-    }
-
-    if (dragState.type === "resize" && dragState.allBounds && dragState.initialOrientedFrame) {
-      const scale = canvasScaleFromPointer(viewport.zoom);
-      const dCanvas = { x: dx * scale, y: dy * scale };
-      const f0 = dragState.initialOrientedFrame;
-      const h = dragState.handle!;
-      const dLocal = worldDeltaToLocal(dCanvas, f0.angleDeg);
-      let nw = f0.w, nh = f0.h;
-      if (h.includes("e")) nw = Math.max(10, f0.w + dLocal.x);
-      if (h.includes("w")) nw = Math.max(10, f0.w - dLocal.x);
-      if (h.includes("s")) nh = Math.max(10, f0.h + dLocal.y);
-      if (h.includes("n")) nh = Math.max(10, f0.h - dLocal.y);
-
-      if (isShiftHeld(e)) {
-        const aspect = f0.w / f0.h;
-        if (h === "n" || h === "s") nw = Math.max(10, nh * aspect);
-        else if (h === "e" || h === "w") nh = Math.max(10, nw / aspect);
-        else {
-          const avgScale = ((nw / f0.w) + (nh / f0.h)) / 2;
-          nw = Math.max(10, f0.w * avgScale);
-          nh = Math.max(10, f0.h * avgScale);
-        }
-      } else {
-        const snaps = dragState.resizeSnapshot;
-        if (snaps && dragState.allBounds) {
-          const ids = Array.from(dragState.allBounds.keys());
-          if (ids.length > 0 && ids.every((id) => snaps.get(id)?.type === "image")) {
-            const u = (nw / f0.w + nh / f0.h) / 2;
-            nw = Math.max(10, f0.w * u);
-            nh = Math.max(10, f0.h * u);
-          }
-        }
-      }
-
-      const dw = nw - f0.w, dh = nh - f0.h;
-      const th = degToRad(f0.angleDeg);
-      const ux = Math.cos(th), uy = Math.sin(th);
-      const vx = -Math.sin(th), vy = Math.cos(th);
-      /** Borde opuesto fijo: e/s suman mitad; w/n restan (antes +/+ para todos y n/w movían el lado equivocado). */
-      let tcx = 0, tcy = 0;
-      if (h.includes("e")) { tcx += (dw / 2) * ux; tcy += (dw / 2) * uy; }
-      if (h.includes("w")) { tcx -= (dw / 2) * ux; tcy -= (dw / 2) * uy; }
-      if (h.includes("s")) { tcx += (dh / 2) * vx; tcy += (dh / 2) * vy; }
-      if (h.includes("n")) { tcx -= (dh / 2) * vx; tcy -= (dh / 2) * vy; }
-      const ncx = f0.cx + tcx;
-      const ncy = f0.cy + tcy;
-      const sx = nw / f0.w, sy = nh / f0.h;
-
-      setObjects((prev) => prev.map((o) => {
-        if (!dragState.allBounds!.has(o.id)) return o;
-        const src = dragState.resizeSnapshot?.get(o.id);
-        if (!src) return o;
-        const mapWorld = (p: Point) => {
-          const L = worldToLocalOBB(p, f0.cx, f0.cy, f0.angleDeg);
-          return localToWorldOBB({ x: L.x * sx, y: L.y * sy }, ncx, ncy, f0.angleDeg);
-        };
-        if (src.type === "path") {
-          const pp = src as PathObject;
-          if (pp.svgPathD && (!pp.points || pp.points.length < 2)) {
-            const newW = Math.max(4, src.width * sx);
-            const newH = Math.max(4, src.height * sy);
-            const pivot = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
-            const newC = mapWorld(pivot);
-            return { ...o, x: newC.x - newW / 2, y: newC.y - newH / 2, width: newW, height: newH };
-          }
-          const pts = pp.points.map((pt) => ({
-            ...pt,
-            anchor: mapWorld(pt.anchor),
-            handleIn: mapWorld(pt.handleIn),
-            handleOut: mapWorld(pt.handleOut),
-          }));
-          const pb = getPathBoundsFromPoints(pts);
-          return { ...o, x: pb.x, y: pb.y, width: pb.w, height: pb.h, points: pts };
-        }
-        if (src.type === "clippingContainer") {
-          return mapObjectPointsWithWorld(src, mapWorld) as ClippingContainerObject;
-        }
-        if (src.type === "text") {
-          const t = src as TextObject;
-          if (t.isTextFrame) {
-            const newW = Math.max(20, src.width * sx);
-            const newH = Math.max(20, src.height * sy);
-            const pivot = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
-            const newC = mapWorld(pivot);
-            return { ...o, x: newC.x - newW / 2, y: newC.y - newH / 2, width: newW, height: newH };
-          }
-          const { w: lw, h: lh } = textLayoutDims(t);
-          const pivot = { x: src.x + lw / 2, y: src.y + lh / 2 };
-          const newC = mapWorld(pivot);
-          return {
-            ...o,
-            x: newC.x - lw / 2,
-            y: newC.y - lh / 2,
-            width: t.width,
-            height: t.height,
-            scaleX: (t.scaleX ?? 1) * sx,
-            scaleY: (t.scaleY ?? 1) * sy,
-          };
-        }
-        const newW = Math.max(4, src.width * sx);
-        const newH = Math.max(4, src.height * sy);
-        const pivot = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
-        const newC = mapWorld(pivot);
-        return { ...o, x: newC.x - newW / 2, y: newC.y - newH / 2, width: newW, height: newH };
-      }));
-      return;
-    }
-
-    if (dragState.type === "resize" && dragState.bounds && dragState.allBounds && !dragState.initialOrientedFrame) {
-      const scale = canvasScaleFromPointer(viewport.zoom);
-      const b = dragState.bounds;
-      const h = dragState.handle!;
-      let nx = b.x, ny = b.y, nw = b.w, nh = b.h;
-      if (h.includes("e")) nw = Math.max(10, b.w + dx * scale);
-      if (h.includes("s")) nh = Math.max(10, b.h + dy * scale);
-      if (h.includes("w")) { nw = Math.max(10, b.w - dx * scale); nx = b.x + (b.w - nw); }
-      if (h.includes("n")) { nh = Math.max(10, b.h - dy * scale); ny = b.y + (b.h - nh); }
-
-      if (isShiftHeld(e)) {
-        const aspect = b.w / b.h;
-        if (h === "n" || h === "s") { nw = Math.max(10, nh * aspect); nx = b.x + (b.w - nw) / 2; }
-        else if (h === "e" || h === "w") { nh = Math.max(10, nw / aspect); ny = b.y + (b.h - nh) / 2; }
-        else {
-          const avgScale = ((nw / b.w) + (nh / b.h)) / 2;
-          nw = Math.max(10, b.w * avgScale); nh = Math.max(10, b.h * avgScale);
-          if (h.includes("w")) nx = b.x + b.w - nw;
-          if (h.includes("n")) ny = b.y + b.h - nh;
-        }
-      } else {
-        const snaps = dragState.resizeSnapshot;
-        if (snaps && dragState.allBounds) {
-          const ids = Array.from(dragState.allBounds.keys());
-          if (ids.length > 0 && ids.every((id) => snaps.get(id)?.type === "image")) {
-            const u = (nw / b.w + nh / b.h) / 2;
-            nw = Math.max(10, b.w * u);
-            nh = Math.max(10, b.h * u);
-          }
-        }
-      }
-
-      if (snapEnabled && !isShiftHeld(e)) {
-        const vg = layoutGuidesRef.current.filter((g) => g.orientation === "vertical").map((g) => g.position);
-        const hg = layoutGuidesRef.current.filter((g) => g.orientation === "horizontal").map((g) => g.position);
-        const sn = snapAxisAlignedResizeToGuides({ x: nx, y: ny, w: nw, h: nh }, h, vg, hg, viewport.zoom);
-        nx = sn.rect.x;
-        ny = sn.rect.y;
-        nw = sn.rect.w;
-        nh = sn.rect.h;
-        setSnapGuides(sn.guides);
-      } else {
-        setSnapGuides([]);
-      }
-
-      const sx = nw / b.w, sy = nh / b.h;
-      setObjects((prev) => prev.map((o) => {
-        const ob = dragState.allBounds!.get(o.id);
-        const src = dragState.resizeSnapshot?.get(o.id);
-        if (!ob || !src) return o;
-        const newX = nx + (ob.x - b.x) * sx;
-        const newY = ny + (ob.y - b.y) * sy;
-        if (src.type === "path") {
-          const pp = src as PathObject;
-          if (pp.svgPathD && (!pp.points || pp.points.length < 2)) {
-            return { ...o, x: newX, y: newY, width: ob.w * sx, height: ob.h * sy };
-          }
-          const pts = pp.points.map(pt => ({
-            ...pt,
-            anchor: { x: nx + (pt.anchor.x - b.x) * sx, y: ny + (pt.anchor.y - b.y) * sy },
-            handleIn: { x: nx + (pt.handleIn.x - b.x) * sx, y: ny + (pt.handleIn.y - b.y) * sy },
-            handleOut: { x: nx + (pt.handleOut.x - b.x) * sx, y: ny + (pt.handleOut.y - b.y) * sy },
-          }));
-          const pb = getPathBoundsFromPoints(pts);
-          return { ...o, x: pb.x, y: pb.y, width: pb.w, height: pb.h, points: pts };
-        }
-        if (src.type === "clippingContainer") {
-          const mapWorld = (p: Point) => ({
-            x: nx + (p.x - b.x) * sx,
-            y: ny + (p.y - b.y) * sy,
-          });
-          return mapObjectPointsWithWorld(src, mapWorld) as ClippingContainerObject;
-        }
-        if (src.type === "text") {
-          const tt = src as TextObject;
-          const { w: lw, h: lh } = textLayoutDims(tt);
-          const vx = nx + (ob.x - b.x) * sx;
-          const vy = ny + (ob.y - b.y) * sy;
-          const vw = ob.w * sx, vh = ob.h * sy;
-          const tcx = vx + vw / 2, tcy = vy + vh / 2;
-          return {
-            ...o,
-            x: tcx - lw / 2,
-            y: tcy - lh / 2,
-            width: tt.width,
-            height: tt.height,
-            scaleX: (tt.scaleX ?? 1) * sx,
-            scaleY: (tt.scaleY ?? 1) * sy,
-          };
-        }
-        return {
-          ...o,
-          x: newX, y: newY,
-          width: ob.w * sx,
-          height: ob.h * sy,
-        };
-      }));
-      return;
-    }
-
-    if (dragState.type === "rotate" && dragState.rotateCenter && dragState.rotateStartAngle != null) {
-      const pos = screenToCanvas(e.clientX, e.clientY);
-      const pivot = dragState.rotateCenter;
-      const currentAngle = Math.atan2(pos.y - pivot.y, pos.x - pivot.x);
-      const radDelta = shortestAngleDeltaRad(currentAngle, dragState.rotateStartAngle);
-      let angleDelta = (radDelta * 180) / Math.PI;
-      if (e.shiftKey) angleDelta = Math.round(angleDelta / 15) * 15;
-      const snaps = dragState.rotateInitialSnapshots;
-      setObjects((prev) =>
-        prev.map((o) => {
-          const initRot = dragState.rotateInitialRotations?.get(o.id);
-          if (initRot == null) return o;
-          if (snaps?.has(o.id)) {
-            const init = snaps.get(o.id)!;
-            return applyRotateAroundSelectionPivot(init, pivot, angleDelta);
-          }
-          return { ...o, rotation: initRot + angleDelta };
-        }),
-      );
+    const useSelectionGeometryRaf =
+      (dragState.type === "move" && !!dragState.positions) ||
+      (dragState.type === "rotate" &&
+        dragState.rotateCenter != null &&
+        dragState.rotateStartAngle != null) ||
+      (dragState.type === "resize" && !!dragState.allBounds);
+    if (useSelectionGeometryRaf) {
+      selectionPointerTailRef.current = {
+        clientX: e.clientX,
+        clientY: e.clientY,
+        shiftKey: isShiftHeld(e),
+      };
+      scheduleSelectionGeometryRaf();
       return;
     }
 
@@ -13068,6 +13300,25 @@ export function FreehandStudioCanvas({
     const ds = dragStateRef.current;
     if (!ds) return;
     setSnapGuides([]);
+
+    if (selectionGestureRafRef.current != null) {
+      cancelAnimationFrame(selectionGestureRafRef.current);
+      selectionGestureRafRef.current = null;
+    }
+    const flushSelectionGeometryOnUp =
+      (ds.type === "move" && !!ds.positions) ||
+      (ds.type === "rotate" && ds.rotateCenter != null && ds.rotateStartAngle != null) ||
+      (ds.type === "resize" && !!ds.allBounds);
+    if (flushSelectionGeometryOnUp) {
+      selectionPointerTailRef.current = {
+        clientX: e.clientX,
+        clientY: e.clientY,
+        shiftKey: isShiftHeld(e),
+      };
+      flushSync(() => {
+        flushSelectionGeometryGestureRef.current?.();
+      });
+    }
 
     if (ds.type === "penHandle") {
       setPenDragging(false);
@@ -13535,7 +13786,7 @@ export function FreehandStudioCanvas({
       const firstId = Array.from(ds.positions.keys())[0];
       if (firstId) {
         const init = ds.positions.get(firstId);
-        const cur = objects.find((o) => o.id === firstId);
+        const cur = objectsRef.current.find((o) => o.id === firstId);
         if (init && cur) {
           duplicateStepRef.current = { dx: cur.x - init.x, dy: cur.y - init.y };
         }
@@ -13551,7 +13802,18 @@ export function FreehandStudioCanvas({
       ds.type === "imageContentPan" ||
       ds.type === "imageContentResize"
     ) {
-      pushHistory(objects, selectedIds);
+      const prox = selectionGestureProxyByIdRef.current;
+      let snapshot = objectsRef.current;
+      if (
+        (ds.type === "move" || ds.type === "resize" || ds.type === "rotate") &&
+        prox.size > 0
+      ) {
+        snapshot = restoreRasterGestureProxiesInObjects(snapshot, prox);
+        prox.clear();
+        setObjects(snapshot);
+        selectionGestureProxySessionRef.current += 1;
+      }
+      pushHistory(snapshot, selectedIds);
     }
 
     setDragState(null);
