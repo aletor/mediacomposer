@@ -159,6 +159,20 @@ import {
   useSpacesCanvasKeyboard,
 } from "./hooks";
 
+type SavedProjectMeta = {
+  createdAt?: string;
+  id: string;
+  metadata?: Record<string, unknown>;
+  name: string;
+  rootSpaceId?: string;
+  spacesCount?: number | null;
+  updatedAt?: string;
+};
+
+type SavedProjectDetail = SavedProjectMeta & {
+  spaces: Record<string, any>;
+};
+
 export function SpacesContent() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<any>(initialNodes);
@@ -199,7 +213,7 @@ export function SpacesContent() {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [activeSpaceId, setActiveSpaceId] = useState<string>('root');
   const [currentName, setCurrentName] = useState<string>('');
-  const [savedProjects, setSavedProjects] = useState<any[]>([]);
+  const [savedProjects, setSavedProjects] = useState<SavedProjectMeta[]>([]);
   const [spacesMap, setSpacesMap] = useState<Record<string, any>>({});
   const [metadata, setMetadata] = useState<any>({});
   
@@ -1972,18 +1986,35 @@ export function SpacesContent() {
     return () => clearTimeout(timer);
   }, [nodes, edges, activeSpaceId, spacesMap, syncCurrentSpaceState]); 
 
+  const refreshProjectsList = useCallback(async () => {
+    const res = await fetch('/api/spaces?meta=1');
+    const data = await readResponseJson<unknown[]>(res, 'GET /api/spaces?meta=1');
+    if (Array.isArray(data)) {
+      setSavedProjects(data as SavedProjectMeta[]);
+      return data as SavedProjectMeta[];
+    }
+    return [];
+  }, []);
+
+  const upsertSavedProjectMeta = useCallback((project: SavedProjectMeta) => {
+    setSavedProjects((prev) => {
+      const next = prev.filter((p) => p.id !== project.id);
+      next.unshift(project);
+      return next;
+    });
+  }, []);
+
+  const fetchProjectDetailById = useCallback(async (projectId: string) => {
+    const res = await fetch(`/api/spaces?id=${encodeURIComponent(projectId)}`);
+    return readJsonWithHttpError<SavedProjectDetail>(res, 'GET /api/spaces?id=...');
+  }, []);
+
   // Lista de proyectos al montar y al validar la clave (lista actualizada al entrar)
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch('/api/spaces');
-        const data = await readResponseJson<unknown[]>(res, 'GET /api/spaces');
-        if (Array.isArray(data)) setSavedProjects(data);
-      } catch (err) {
-        console.error('Fetch error:', err);
-      }
-    })();
-  }, [isAuthenticated]);
+    void refreshProjectsList().catch((err) => {
+      console.error('Fetch error:', err);
+    });
+  }, [isAuthenticated, refreshProjectsList]);
 
   const saveProject = async (
     nameToSave?: string,
@@ -2034,20 +2065,25 @@ export function SpacesContent() {
         body: JSON.stringify(projectToSave)
       });
       
-      const updatedList = await readResponseJson<any[]>(res, 'POST /api/spaces (save)');
-      
-      if (!Array.isArray(updatedList)) {
+      const savedProject = await readJsonWithHttpError<SavedProjectDetail>(res, 'POST /api/spaces (save)');
+      if (!savedProject || typeof savedProject !== 'object' || !savedProject.id) {
         return false;
       }
-      setSavedProjects(updatedList);
+      upsertSavedProjectMeta({
+        id: savedProject.id,
+        name: savedProject.name,
+        rootSpaceId: savedProject.rootSpaceId,
+        createdAt: savedProject.createdAt,
+        updatedAt: savedProject.updatedAt,
+        metadata: savedProject.metadata,
+        spacesCount: Object.keys(savedProject.spaces || {}).length,
+      });
 
-      // If we were saving a new project, we need the active IDs from the server's last added project
       if (!activeProjectId) {
-        const newest = updatedList[updatedList.length - 1];
-        setActiveProjectId(newest.id);
+        setActiveProjectId(savedProject.id);
         setActiveSpaceId(activeSpaceId);
-        setCurrentName(newest.name);
-        setSpacesMap(newest.spaces || spacesToSave);
+        setCurrentName(savedProject.name);
+        setSpacesMap(savedProject.spaces || spacesToSave);
       } else {
         setSpacesMap(spacesToSave as Record<string, unknown>);
       }
@@ -2161,8 +2197,17 @@ export function SpacesContent() {
     }
   }, [newProjectNameInput, projectDeleteInProgress, postAuthProjectsGate, setNodes, setEdges]);
 
-  const loadProject = (project: any) => {
+  const loadProject = (projectMeta: SavedProjectMeta) => {
     void (async () => {
+      let project: SavedProjectDetail;
+      try {
+        project = await fetchProjectDetailById(projectMeta.id);
+      } catch (error) {
+        console.error('[loadProject] detail fetch failed:', error);
+        alert('Error: could not fetch this project from server.');
+        return;
+      }
+
       const rootSpaceId = project.rootSpaceId || 'root';
       const rootSpace = project.spaces?.[rootSpaceId] || project.spaces?.['root'];
 
@@ -2219,7 +2264,7 @@ export function SpacesContent() {
       setEdges(nextEdges);
       setActiveProjectId(project.id);
       setActiveSpaceId(targetSpaceId);
-      setCurrentName(project.name);
+      setCurrentName(project.name || projectMeta.name);
       setSpacesMap(spaces as Record<string, any>);
       setMetadata(project.metadata || {});
 
@@ -2272,8 +2317,8 @@ export function SpacesContent() {
         console.error('[deleteProject] HTTP', res.status, await res.text().catch(() => ''));
         return false;
       }
-      const data = await readResponseJson<any[]>(res, 'DELETE /api/spaces');
-      if (Array.isArray(data)) setSavedProjects(data);
+      await readResponseJson<{ ok?: boolean }>(res, 'DELETE /api/spaces');
+      await refreshProjectsList();
       if (activeProjectId === idToDelete) {
         setActiveProjectId(null);
         setActiveSpaceId('root');
@@ -2287,9 +2332,10 @@ export function SpacesContent() {
     }
   };
 
-  const duplicateProject = async (project: any) => {
+  const duplicateProject = async (projectMeta: SavedProjectMeta) => {
     setIsSaving(true);
     try {
+      const project = await fetchProjectDetailById(projectMeta.id);
       const copyToSave = {
         name: `${project.name} (Copy)`,
         spaces: project.spaces,
@@ -2303,8 +2349,16 @@ export function SpacesContent() {
         body: JSON.stringify(copyToSave)
       });
       
-      const updatedList = await readResponseJson<any[]>(res, 'POST /api/spaces (duplicate)');
-      if (Array.isArray(updatedList)) setSavedProjects(updatedList);
+      const savedProject = await readJsonWithHttpError<SavedProjectDetail>(res, 'POST /api/spaces (duplicate)');
+      upsertSavedProjectMeta({
+        id: savedProject.id,
+        name: savedProject.name,
+        rootSpaceId: savedProject.rootSpaceId,
+        createdAt: savedProject.createdAt,
+        updatedAt: savedProject.updatedAt,
+        metadata: savedProject.metadata,
+        spacesCount: Object.keys(savedProject.spaces || {}).length,
+      });
     } catch (err) {
       console.error('Duplicate error:', err);
     } finally {
@@ -2317,19 +2371,26 @@ export function SpacesContent() {
     if (!projectToUpdate) return;
 
     try {
+      const projectDetail = await fetchProjectDetailById(id);
       const res = await fetch('/api/spaces', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ...projectToUpdate,
+          ...projectDetail,
           name: newName
         })
       });
-      const updatedList = await readResponseJson<any[]>(res, 'POST /api/spaces (rename)');
-      if (Array.isArray(updatedList)) {
-        setSavedProjects(updatedList);
-        if (activeProjectId === id) setCurrentName(newName);
-      }
+      const savedProject = await readJsonWithHttpError<SavedProjectDetail>(res, 'POST /api/spaces (rename)');
+      upsertSavedProjectMeta({
+        id: savedProject.id,
+        name: savedProject.name,
+        rootSpaceId: savedProject.rootSpaceId,
+        createdAt: savedProject.createdAt,
+        updatedAt: savedProject.updatedAt,
+        metadata: savedProject.metadata,
+        spacesCount: Object.keys(savedProject.spaces || {}).length,
+      });
+      if (activeProjectId === id) setCurrentName(newName);
       setEditingId(null);
     } catch (err) {
       console.error('Rename error:', err);
@@ -4542,10 +4603,12 @@ export function SpacesContent() {
                           )}
                           <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0 text-[9px] font-bold uppercase tracking-wider text-slate-500">
                             <div className="flex items-center gap-1">
-                              <Calendar size={10} /> {new Date(project.updatedAt).toLocaleDateString()}
+                              <Calendar size={10} />{" "}
+                              {project.updatedAt ? new Date(project.updatedAt).toLocaleDateString() : "-"}
                             </div>
                             <div className="flex items-center gap-1">
-                              <Settings2 size={10} /> {Object.keys(project.spaces || {}).length} spaces
+                              <Settings2 size={10} />{" "}
+                              {typeof project.spacesCount === 'number' ? project.spacesCount : '...'} spaces
                             </div>
                           </div>
                         </div>

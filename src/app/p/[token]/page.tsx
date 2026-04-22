@@ -1,10 +1,11 @@
 import { notFound } from "next/navigation";
-import { findShareByTokenSync } from "@/lib/presenter-share-db";
+import { findShareByToken } from "@/lib/presenter-share-db";
+import { toPublicPresenterShareRecord } from "@/lib/presenter-share-types";
 import { PublicPresenterClient } from "./PublicPresenterClient";
 
 export default async function PublicPresenterPage(props: { params: Promise<{ token: string }> }) {
   const { token } = await props.params;
-  const row = findShareByTokenSync(token);
+  const row = await findShareByToken(token);
   if (!row) notFound();
 
   if (row.options.autoDisableLink && row.options.autoDisableAt) {
@@ -18,5 +19,5 @@ export default async function PublicPresenterPage(props: { params: Promise<{ tok
     }
   }
 
-  return <PublicPresenterClient initial={row} />;
+  return <PublicPresenterClient initial={toPublicPresenterShareRecord(row)} />;
 }

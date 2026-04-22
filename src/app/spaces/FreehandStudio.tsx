@@ -15369,6 +15369,41 @@ export function FreehandStudioCanvas({
           !subtractFromPending &&
           (photoRectMarqueeAddModRef.current || isPhotoMarqueeAdditivePointerHeld(e));
         if (!additiveFromPending && !subtractFromPending) {
+          const sole = findSingleSelectedImageForPhotoMarquee(selectedIdsRef.current, objectsRef.current);
+          if (sole?.type === "image" && sole.visible && !sole.locked) {
+            if (!photoMarqueeFloatLiftRef.current && !photoMarqueeFloatExtractingRef.current) {
+              photoMarqueeFloatExtractingRef.current = true;
+              void buildPhotoMarqueeFloatLiftFromMarquee(
+                sole,
+                photoRectMarqueeSelectionRef.current.map((r) => ({ ...r })),
+                photoPolygonMarqueeSelectionRef.current.map((ring) => ring.map((p) => ({ ...p }))),
+                photoEllipseMarqueeSelectionRef.current.map((el) => ({ ...el })),
+                photoMarqueeMaskFeatherPxRef.current,
+              ).then((lift) => {
+                photoMarqueeFloatExtractingRef.current = false;
+                if (lift) {
+                  photoMarqueeFloatLiftRef.current = lift;
+                  setPhotoMarqueeFloatLift(lift);
+                  setPhotoMarqueeFloatTf({ rotationDeg: 0, scaleX: 1, scaleY: 1 });
+                }
+              });
+            }
+            const nudge = {
+              type: "photoMarqueeNudge" as const,
+              startX: prPending.clientX,
+              startY: prPending.clientY,
+              photoMarqueeSnapRects: photoRectMarqueeSelectionRef.current.map((r) => ({ ...r })),
+              photoMarqueeSnapPolys: photoPolygonMarqueeSelectionRef.current.map((ring) =>
+                ring.map((p) => ({ ...p })),
+              ),
+              photoMarqueeSnapEllipses: photoEllipseMarqueeSelectionRef.current.map((el) => ({ ...el })),
+            };
+            dragStateRef.current = nudge;
+            setDragState(nudge);
+            return;
+          }
+        }
+        if (!additiveFromPending && !subtractFromPending) {
           setPhotoRectMarqueeSelection([]);
           setPhotoPolygonMarqueeSelection([]);
           setPhotoEllipseMarqueeSelection([]);
@@ -17698,15 +17733,6 @@ export function FreehandStudioCanvas({
           </button>
         </ToolFlyoutGroup>
 
-        {studioCaps.toolBrush && (
-        <ToolBtn
-          active={activeTool === "brush"}
-          onClick={() => setActiveTool("brush")}
-          title="Pincel (B) — pinta en capas imagen; clic en vacío crea capa del tamaño del pliego"
-        >
-          <PhotoBrushToolIcon size={19} />
-        </ToolBtn>
-        )}
         {studioCaps.toolCloneStamp && (
         <ToolBtn
           active={activeTool === "cloneStamp"}
@@ -17714,6 +17740,15 @@ export function FreehandStudioCanvas({
           title="Tampón de clon (S) — Alt+clic en la imagen = origen; pinta clonando con el mismo tamaño/dureza/opacidad/flow"
         >
           <PhotoCloneStampToolIcon size={19} />
+        </ToolBtn>
+        )}
+        {studioCaps.toolBrush && (
+        <ToolBtn
+          active={activeTool === "brush"}
+          onClick={() => setActiveTool("brush")}
+          title="Pincel (B) — pinta en capas imagen; clic en vacío crea capa del tamaño del pliego"
+        >
+          <PhotoBrushToolIcon size={19} />
         </ToolBtn>
         )}
 

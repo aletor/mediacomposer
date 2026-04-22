@@ -46,3 +46,17 @@ export type PresenterShareRecord = {
   /** Visitas (incremento al abrir /p/[token]). */
   visits: number;
 };
+
+export type PublicPresenterShareOptions = Omit<PresenterShareOptions, "passcodePlain">;
+
+export type PublicPresenterShareRecord = Omit<PresenterShareRecord, "options"> & {
+  options: PublicPresenterShareOptions;
+};
+
+export function toPublicPresenterShareRecord(row: PresenterShareRecord): PublicPresenterShareRecord {
+  const { passcodePlain: _passcodePlain, ...safeOptions } = row.options;
+  return {
+    ...row,
+    options: safeOptions,
+  };
+}

@@ -11,6 +11,15 @@ Abre [http://localhost:3000](http://localhost:3000) (redirige a `/spaces`).
 
 Despliegue y variables de entorno: **[DEPLOY.md](./DEPLOY.md)**.
 
+En local, la app puede seguir persistiendo en `data/spaces-db.json` y `data/presenter-shares.json`.
+En produccion sobre Vercel, conviene usar S3 tambien para esos metadatos mediante
+`FOLDDER_SPACES_DB_S3_KEY` y `FOLDDER_PRESENTER_SHARES_S3_KEY`.
+
+Tambien puedes activar DynamoDB para persistencia por item:
+- `FOLDDER_SPACES_DDB_TABLE`
+- `FOLDDER_PRESENTER_SHARES_DDB_TABLE`
+- (opcional) `FOLDDER_PRESENTER_SHARES_DDB_DECK_GSI` para listar por `deckKey` sin `scan`
+
 **Repositorio:** [github.com/aletor/foldder](https://github.com/aletor/foldder). Si el remoto local apunta al nombre antiguo: `git remote set-url origin https://github.com/aletor/foldder.git`
 
 En el repo de marketing, `NEXT_PUBLIC_MEDIA_COMPOSER_URL` debe apuntar a la URL de despliegue de esta app (Labs).

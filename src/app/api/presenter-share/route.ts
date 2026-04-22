@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { v4 as uuidv4 } from "uuid";
 import {
-  readPresenterSharesSync,
-  withPresenterShares,
-  writePresenterSharesSync,
+  createPresenterShare,
+  listPresenterShares,
 } from "@/lib/presenter-share-db";
 import type { PresenterShareOptions, PresenterSharePayload, PresenterShareRecord } from "@/lib/presenter-share-types";
 import { DEFAULT_PRESENTER_SHARE_OPTIONS } from "@/lib/presenter-share-types";
+
+const PRESENTER_LIST_CACHE_TTL_MS = 1500;
+const presenterListCache = new Map<string, { expiresAt: number; links: unknown[] }>();
 
 function slugifyBase(s: string): string {
   const t = s
@@ -29,11 +31,21 @@ function randomToken(): string {
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const deckKey = searchParams.get("deckKey");
-    const rows = readPresenterSharesSync();
-    const list = deckKey
-      ? rows.filter((r) => r.deckKey === deckKey)
-      : rows;
+    const deckKey = searchParams.get("deckKey") || "";
+    if (!deckKey.trim()) {
+      return NextResponse.json(
+        { error: "deckKey required for listing shares" },
+        { status: 400 },
+      );
+    }
+    const cacheKey = deckKey.trim() || "__all__";
+    const now = Date.now();
+    const cached = presenterListCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return NextResponse.json({ links: cached.links });
+    }
+
+    const list = await listPresenterShares(deckKey || undefined);
     const safe = list.map((r) => ({
       id: r.id,
       token: r.token,
@@ -45,8 +57,13 @@ export async function GET(req: Request) {
       createdAt: r.createdAt,
       options: r.options,
     }));
+    presenterListCache.set(cacheKey, {
+      links: safe,
+      expiresAt: now + PRESENTER_LIST_CACHE_TTL_MS,
+    });
     return NextResponse.json({ links: safe });
-  } catch {
+  } catch (error) {
+    console.error("[presenter-share][GET] failed:", error);
     return NextResponse.json({ error: "Failed to list shares" }, { status: 500 });
   }
 }
@@ -100,10 +117,8 @@ export async function POST(req: Request) {
       visits: 0,
     };
 
-    await withPresenterShares(async (rows) => {
-      rows.push(record);
-      writePresenterSharesSync(rows);
-    });
+    await createPresenterShare(record);
+    presenterListCache.clear();
 
     return NextResponse.json({
       link: {

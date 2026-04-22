@@ -1,12 +1,6 @@
 import type { Metadata } from "next";
-import { Outfit } from "next/font/google";
 import "./globals.css";
 import { AppShell } from "@/components/AppShell";
-
-const outfit = Outfit({
-  variable: "--font-outfit",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "Foldder",
@@ -22,7 +16,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${outfit.variable} antialiased`}>
+      <body className="antialiased">
         <AppShell>{children}</AppShell>
       </body>
     </html>

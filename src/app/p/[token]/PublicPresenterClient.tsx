@@ -10,7 +10,7 @@ import {
   presenterStepKey,
 } from "@/app/spaces/presenter/presenter-group-animations";
 import type { SlideTransitionId } from "@/app/spaces/presenter/slide-transition-types";
-import type { PresenterShareRecord } from "@/lib/presenter-share-types";
+import type { PublicPresenterShareRecord } from "@/lib/presenter-share-types";
 import {
   firstPlayableIndex,
   isPresenterSlideSkipped,
@@ -27,17 +27,17 @@ type PendingAnim = {
 };
 
 type Props = {
-  initial: PresenterShareRecord;
+  initial: PublicPresenterShareRecord;
 };
 
 export function PublicPresenterClient({ initial }: Props) {
   const pages = initial.payload.pages;
   const transitionsByPageId = initial.payload.transitionsByPageId ?? {};
 
-  const [gatePass, setGatePass] = useState(
-    () => !initial.options.requirePasscode || !initial.options.passcodePlain?.trim(),
-  );
+  const [gatePass, setGatePass] = useState(() => !initial.options.requirePasscode);
   const [passInput, setPassInput] = useState("");
+  const [passError, setPassError] = useState("");
+  const [isVerifyingPass, setIsVerifyingPass] = useState(false);
   const [gateEmail, setGateEmail] = useState(
     () => !initial.options.requireVisitorEmail,
   );
@@ -159,12 +159,40 @@ export function PublicPresenterClient({ initial }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [gateEmail, gatePass, playAdvanceRight, playAdvanceLeft, goToIdx, pages]);
 
-  const tryPass = () => {
+  const tryPass = async () => {
     if (!initial.options.requirePasscode) {
       setGatePass(true);
       return;
     }
-    if (passInput === initial.options.passcodePlain) setGatePass(true);
+
+    if (!passInput.trim() || isVerifyingPass) {
+      return;
+    }
+
+    setPassError("");
+    setIsVerifyingPass(true);
+
+    try {
+      const response = await fetch("/api/presenter-share/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: initial.token,
+          passcode: passInput,
+        }),
+      });
+
+      if (response.ok) {
+        setGatePass(true);
+        return;
+      }
+
+      setPassError("Codigo incorrecto");
+    } catch {
+      setPassError("No se pudo verificar el codigo");
+    } finally {
+      setIsVerifyingPass(false);
+    }
   };
 
   const tryEmail = () => {
@@ -182,16 +210,23 @@ export function PublicPresenterClient({ initial }: Props) {
         <input
           type="password"
           value={passInput}
-          onChange={(e) => setPassInput(e.target.value)}
+          onChange={(e) => {
+            setPassInput(e.target.value);
+            if (passError) setPassError("");
+          }}
           className="w-full max-w-xs rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-violet-500/50"
           placeholder="Código"
         />
+        {passError ? (
+          <p className="text-xs text-rose-400">{passError}</p>
+        ) : null}
         <button
           type="button"
-          onClick={tryPass}
-          className="rounded-xl bg-violet-600 px-5 py-2 text-sm font-bold text-white hover:bg-violet-500"
+          onClick={() => void tryPass()}
+          disabled={isVerifyingPass}
+          className="rounded-xl bg-violet-600 px-5 py-2 text-sm font-bold text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Continuar
+          {isVerifyingPass ? "Verificando..." : "Continuar"}
         </button>
       </div>
     );
