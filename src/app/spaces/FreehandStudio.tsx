@@ -120,9 +120,25 @@ function inferBrainTextBlockKind(opts: {
   return "Subtítulo";
 }
 
-function toSvgPreviewDataUrl(svg: string): string {
-  const compact = svg.replace(/\s+/g, " ").trim();
-  return `data:image/svg+xml;utf8,${encodeURIComponent(compact)}`;
+function brainAspectRatioForGemini(width: number, height: number): string {
+  const ratio = width > 0 && height > 0 ? width / height : 1;
+  const options = [
+    { id: "1:1", r: 1 },
+    { id: "4:3", r: 4 / 3 },
+    { id: "3:4", r: 3 / 4 },
+    { id: "16:9", r: 16 / 9 },
+    { id: "9:16", r: 9 / 16 },
+  ];
+  let best = options[0]!;
+  let bestDist = Math.abs(ratio - best.r);
+  for (const opt of options.slice(1)) {
+    const d = Math.abs(ratio - opt.r);
+    if (d < bestDist) {
+      best = opt;
+      bestDist = d;
+    }
+  }
+  return best.id;
 }
 import {
   type Artboard,
@@ -9214,6 +9230,11 @@ export function FreehandStudioCanvas({
   const [brainManualTextKind, setBrainManualTextKind] = useState<BrainTextBlockKind | "">("");
   const [brainTonePreset, setBrainTonePreset] = useState<"auto" | "directo" | "editorial">("auto");
   const [brainLengthPreset, setBrainLengthPreset] = useState<"auto" | "corto" | "medio" | "largo">("auto");
+  const [brainImageSuggestions, setBrainImageSuggestions] = useState<
+    Array<{ id: string; label: string; prompt: string; src: string }>
+  >([]);
+  const [brainImageLoading, setBrainImageLoading] = useState(false);
+  const [brainImageError, setBrainImageError] = useState<string | null>(null);
   /** Quick fill/stroke popover: which channel is being edited from canvas. */
   const [quickEditMode, setQuickEditMode] = useState<"fill" | "stroke" | null>(null);
   /** Lienzo a pantalla completa (P). En Designer el estado vive en `DesignerStudio` para no perderse al cambiar de página. */
@@ -10113,36 +10134,89 @@ export function FreehandStudioCanvas({
     brainLengthPreset,
   ]);
 
-  const brainImageSuggestions = useMemo(() => {
-    if (!supportsBrainImageSuggestions) return [];
-    const primary = brainAssets.brand.colorPrimary || "#111827";
-    const secondary = brainAssets.brand.colorSecondary || "#334155";
-    const accent = brainAssets.brand.colorAccent || "#f59e0b";
-    const claim = brainClaims[(brainSuggestionsTick + 0) % Math.max(1, brainClaims.length)] ?? "Narrativa con evidencia";
-    const claimB = brainClaims[(brainSuggestionsTick + 1) % Math.max(1, brainClaims.length)] ?? "Sistema creativo conectado";
-    const ratio = singleSelected && singleSelected.height > 0 ? singleSelected.width / singleSelected.height : 16 / 9;
-    const w = Math.max(640, Math.min(1400, Math.round(720 * Math.max(0.6, Math.min(2.2, ratio)))));
-    const h = Math.max(360, Math.round(w / Math.max(0.6, Math.min(2.2, ratio))));
-    const mk = (title: string, c1: string, c2: string) =>
-      toSvgPreviewDataUrl(`
-      <svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}' viewBox='0 0 ${w} ${h}'>
-        <defs>
-          <linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>
-            <stop offset='0%' stop-color='${c1}'/>
-            <stop offset='100%' stop-color='${c2}'/>
-          </linearGradient>
-        </defs>
-        <rect width='100%' height='100%' fill='url(#g)'/>
-        <rect x='24' y='24' width='${Math.max(180, w - 48)}' height='${Math.max(70, Math.round(h * 0.24))}' rx='18' fill='rgba(0,0,0,0.24)'/>
-        <text x='44' y='${Math.max(68, Math.round(h * 0.13))}' fill='white' font-size='${Math.max(24, Math.round(h * 0.06))}' font-family='Arial, sans-serif' font-weight='700'>${title.replace(/&/g, "&amp;")}</text>
-        <circle cx='${Math.round(w * 0.85)}' cy='${Math.round(h * 0.24)}' r='${Math.max(26, Math.round(h * 0.07))}' fill='${accent}' fill-opacity='0.82'/>
-      </svg>
-      `);
+  const brainImageAspectRatio = useMemo(
+    () => brainAspectRatioForGemini(singleSelected?.width ?? 1, singleSelected?.height ?? 1),
+    [singleSelected?.width, singleSelected?.height],
+  );
+
+  const brainImagePromptPlans = useMemo(() => {
+    const claim = brainClaims[0] ?? "Narrativa con evidencia";
+    const claimB = brainClaims[1] ?? "Sistema creativo conectado";
+    const support = brainSupport[0] ?? "contexto de marca y mercado";
+    const nearby = brainNearbyText[0] ?? selectedTextValue ?? "";
+    const common =
+      "High-quality editorial marketing image, clean composition, no text, no logos, no watermark, suitable for professional creative deck.";
     return [
-      { id: "brain-img-1", label: "Visual editorial", prompt: claim, src: mk(claim, primary, secondary) },
-      { id: "brain-img-2", label: "Visual performance", prompt: claimB, src: mk(claimB, secondary, accent) },
+      {
+        id: "brain-img-1",
+        label: "Visual editorial",
+        prompt: `Concepto: ${claim}. Soporte: ${support}. Contexto de página: ${nearby}. ${common}`,
+      },
+      {
+        id: "brain-img-2",
+        label: "Visual performance",
+        prompt: `Concepto: ${claimB}. Soporte: ${support}. Contexto de página: ${nearby}. ${common}`,
+      },
     ];
-  }, [supportsBrainImageSuggestions, brainAssets, brainClaims, brainSuggestionsTick, singleSelected]);
+  }, [brainClaims, brainSupport, brainNearbyText, selectedTextValue]);
+
+  const brainImageSeedKey = useMemo(() => {
+    const sid = singleSelected?.id ?? "none";
+    const p = brainImagePromptPlans.map((x) => x.prompt).join("|").slice(0, 240);
+    return `${sid}|${brainImageAspectRatio}|${p}`;
+  }, [singleSelected?.id, brainImageAspectRatio, brainImagePromptPlans]);
+
+  useEffect(() => {
+    if (!supportsBrainImageSuggestions) {
+      setBrainImageSuggestions([]);
+      setBrainImageLoading(false);
+      setBrainImageError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setBrainImageLoading(true);
+    setBrainImageError(null);
+
+    const run = async () => {
+      const created: Array<{ id: string; label: string; prompt: string; src: string }> = [];
+      for (const plan of brainImagePromptPlans.slice(0, 2)) {
+        try {
+          const resp = await fetch("/api/gemini/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              prompt: plan.prompt,
+              model: "flash31",
+              resolution: "0.5k",
+              aspect_ratio: brainImageAspectRatio,
+            }),
+          });
+          const json = (await resp.json().catch(() => ({}))) as {
+            output?: string;
+            error?: string;
+            details?: string;
+          };
+          if (!resp.ok || !json?.output) {
+            throw new Error(json?.error || json?.details || `HTTP ${resp.status}`);
+          }
+          created.push({ ...plan, src: json.output });
+        } catch {
+          // Skip failed image and continue; we still show any successful suggestions.
+        }
+      }
+
+      if (cancelled) return;
+      setBrainImageSuggestions(created);
+      setBrainImageLoading(false);
+      setBrainImageError(created.length === 0 ? "No se pudo generar sugerencia visual con Brain." : null);
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [supportsBrainImageSuggestions, brainImageSeedKey, brainImagePromptPlans, brainImageAspectRatio]);
 
   const brainPaletteColors = useMemo(() => {
     const out: string[] = [];
@@ -21045,30 +21119,33 @@ export function FreehandStudioCanvas({
                   {supportsBrainImageSuggestions && (
                     <div className="space-y-2 rounded-[8px] border border-white/[0.08] bg-white/[0.03] p-2.5">
                       <div className="text-[10px] uppercase tracking-wider text-zinc-500">Imagen</div>
-                      <div className="grid grid-cols-2 gap-2">
-                        {brainImageSuggestions.slice(0, 2).map((it) => (
-                          <div key={it.id} className="overflow-hidden rounded-[8px] border border-white/[0.1] bg-[#171a21]">
-                            <img src={it.src} alt={it.prompt} className="h-[68px] w-full object-cover" />
-                            <div className="space-y-1 p-1.5">
-                              <div className="line-clamp-2 text-[10px] text-zinc-300">{it.prompt}</div>
-                              <button
-                                type="button"
-                                onClick={() => applyBrainImageSuggestion(it.src)}
-                                className="w-full rounded-[5px] border border-violet-400/30 bg-violet-500/15 px-1.5 py-1 text-[9px] font-semibold text-violet-100 transition-colors hover:bg-violet-500/25"
-                              >
-                                Usar esta imagen
-                              </button>
+                      {brainImageLoading ? (
+                        <div className="rounded-[6px] border border-white/[0.08] bg-[#171a21] px-2.5 py-2 text-[10px] text-zinc-400">
+                          Generando sugerencias visuales con Nano Banana…
+                        </div>
+                      ) : brainImageSuggestions.length === 0 ? (
+                        <div className="rounded-[6px] border border-white/[0.08] bg-[#171a21] px-2.5 py-2 text-[10px] text-zinc-400">
+                          {brainImageError ?? "No hay sugerencias visuales disponibles."}
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-2">
+                          {brainImageSuggestions.slice(0, 2).map((it) => (
+                            <div key={it.id} className="overflow-hidden rounded-[8px] border border-white/[0.1] bg-[#171a21]">
+                              <img src={it.src} alt={it.prompt} className="h-[68px] w-full object-cover" />
+                              <div className="space-y-1 p-1.5">
+                                <div className="line-clamp-2 text-[10px] text-zinc-300">{it.label}</div>
+                                <button
+                                  type="button"
+                                  onClick={() => applyBrainImageSuggestion(it.src)}
+                                  className="w-full rounded-[5px] border border-violet-400/30 bg-violet-500/15 px-1.5 py-1 text-[9px] font-semibold text-violet-100 transition-colors hover:bg-violet-500/25"
+                                >
+                                  Usar esta imagen
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                        ))}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setBrainSuggestionsTick((v) => v + 1)}
-                        className="w-full rounded-[5px] border border-white/[0.12] bg-white/[0.04] px-2 py-1.5 text-[10px] font-semibold text-zinc-200 transition-colors hover:bg-white/[0.08]"
-                      >
-                        Regenerar
-                      </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
 
