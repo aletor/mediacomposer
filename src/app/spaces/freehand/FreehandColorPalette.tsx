@@ -167,6 +167,7 @@ type CtxState =
 
 type Props = {
   inUse: DocumentColorStat[];
+  brainColors?: string[];
   savedColors: string[];
   onSavedColorsChange: (colors: string[]) => void;
   onApplyHex: (hex: string) => void;
@@ -525,6 +526,7 @@ export function ColorPickerModal({
 
 export function FreehandColorPalette({
   inUse,
+  brainColors = [],
   savedColors,
   onSavedColorsChange,
   onApplyHex,
@@ -645,6 +647,30 @@ export function FreehandColorPalette({
         onClose={() => setColorModal(null)}
         onConfirm={handleModalConfirm}
       />
+
+      <div>
+        <div className="mb-1 text-[8px] font-bold uppercase tracking-wider text-zinc-600">Brain</div>
+        <div className="flex flex-wrap gap-1">
+          {brainColors.length === 0 ? (
+            <p className="text-[9px] text-zinc-600">Sin colores de Brain conectados.</p>
+          ) : (
+            brainColors.map((hex) => (
+              <button
+                key={`brain-${hex}`}
+                type="button"
+                draggable
+                title={`${hex} — clic o arrastrar al relleno/trazo`}
+                className={`${SW_BTN} ${SW_BORDER_IDLE}`}
+                style={{ backgroundColor: hex }}
+                onDragStart={(e) => onSwatchDragStart(e, hex)}
+                onClick={() => onApplyHex(hex)}
+              />
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="h-px bg-white/[0.08]" />
 
       <div>
         <div className="mb-1 text-[8px] font-bold uppercase tracking-wider text-zinc-600">En uso</div>

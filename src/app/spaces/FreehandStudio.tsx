@@ -10159,6 +10159,19 @@ export function FreehandStudioCanvas({
     return out.slice(0, 8);
   }, [brainAssets, documentColorStats]);
 
+  const brainPaletteColors = useMemo(() => {
+    const out: string[] = [];
+    const push = (c?: string | null) => {
+      const n = normalizeHexColor(c || "");
+      if (!n) return;
+      if (!out.includes(n)) out.push(n);
+    };
+    push(brainAssets.brand.colorPrimary);
+    push(brainAssets.brand.colorSecondary);
+    push(brainAssets.brand.colorAccent);
+    return out.slice(0, 12);
+  }, [brainAssets]);
+
   const applyBrainTextSuggestion = useCallback(
     (nextText: string) => {
       if (!singleSelected) return;
@@ -18840,6 +18853,28 @@ export function FreehandStudioCanvas({
 
               <div className="my-2.5 h-px bg-white/[0.08]" />
 
+              <div className="mb-1 text-[8px] font-bold uppercase tracking-wider text-zinc-600">Brain</div>
+              <div className="flex flex-wrap gap-1">
+                {!brainConnected || brainPaletteColors.length === 0 ? (
+                  <p className="text-[9px] text-zinc-600">Sin colores de Brain conectados.</p>
+                ) : (
+                  brainPaletteColors.map((hex) => (
+                    <button
+                      key={`lt-brain-${leftToolbarColorTarget}-${hex}`}
+                      type="button"
+                      draggable
+                      title={`${hex} — clic o arrastrar`}
+                      className={PALETTE_SWATCH_BTN_CLASS}
+                      style={{ backgroundColor: hex }}
+                      onDragStart={(e) => setColorDragData(e, hex)}
+                      onClick={() => applyLeftToolbarTargetHexAndClose(hex)}
+                    />
+                  ))
+                )}
+              </div>
+
+              <div className="my-2.5 h-px bg-white/[0.08]" />
+
               <div className="mb-1 text-[8px] font-bold uppercase tracking-wider text-zinc-600">En uso</div>
               <div className="flex flex-wrap gap-1">
                 {documentColorStats.length === 0 ? (
@@ -21114,6 +21149,7 @@ export function FreehandStudioCanvas({
                   <FreehandColorPalette
                     embedded
                     inUse={documentColorStats}
+                    brainColors={brainConnected ? brainPaletteColors : []}
                     savedColors={savedPaletteColors}
                     onSavedColorsChange={setSavedPaletteColors}
                     onApplyHex={applyPaletteHex}
