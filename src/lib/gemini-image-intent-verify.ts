@@ -157,6 +157,7 @@ export async function filterImageUrlsByIntent(
     targetCount?: number;
     relaxedFallback?: boolean;
     onUsage?: (u: { inputTokens: number; outputTokens: number; totalTokens: number }) => void;
+    usageUserEmail?: string;
   }
 ): Promise<string[]> {
   const target = Math.min(options?.targetCount ?? 10, 20);
@@ -178,6 +179,7 @@ export async function filterImageUrlsByIntent(
       } else if (usage) {
         await recordApiUsage({
           provider: "gemini",
+          userEmail: options?.usageUserEmail,
           serviceId: "gemini-search-verify",
           route: "/api/spaces/search",
           model: VISION_MODEL,

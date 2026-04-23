@@ -13,6 +13,7 @@ export type ProjectBrainNodeData = {
   label?: string;
 };
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const ProjectBrainNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const nodeData = data as ProjectBrainNodeData;
   const ctx = useProjectBrainCanvas();
@@ -22,6 +23,8 @@ export const ProjectBrainNode = memo(({ id, data, selected }: NodeProps<any>) =>
     (d) => d.mime === "application/pdf",
   ).length;
   const otherDocCount = assets.knowledge.documents.length - pdfCount;
+  const coreCount = assets.knowledge.documents.filter((d) => d.scope !== "context").length;
+  const contextCount = assets.knowledge.documents.filter((d) => d.scope === "context").length;
   const linkCount = assets.knowledge.urls.length;
   const hasLogos = Boolean(assets.brand.logoPositive || assets.brand.logoNegative);
 
@@ -63,6 +66,12 @@ export const ProjectBrainNode = memo(({ id, data, selected }: NodeProps<any>) =>
             <div className="flex items-start gap-2 text-[11px] leading-snug text-slate-800">
               <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500" strokeWidth={2} aria-hidden />
               <span>{linkCount === 1 ? "1 enlace" : `${linkCount} enlaces`}</span>
+            </div>
+            <div className="flex items-start gap-2 text-[11px] leading-snug text-slate-800">
+              <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500" strokeWidth={2} aria-hidden />
+              <span>
+                Core: {coreCount} · Contexto: {contextCount}
+              </span>
             </div>
           </div>
         </div>

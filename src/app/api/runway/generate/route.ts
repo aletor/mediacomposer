@@ -1,6 +1,13 @@
 import { NextResponse } from 'next/server';
-import { recordApiUsage } from '@/lib/api-usage';
+import {
+  recordApiUsage,
+  resolveUsageUserEmailFromRequest,
+} from '@/lib/api-usage';
 import RunwayML from '@runwayml/sdk';
+import {
+  ApiServiceDisabledError,
+  assertApiServiceEnabled,
+} from "@/lib/api-usage-controls";
 
 function getRunwayClient() {
   const apiKey =
@@ -10,6 +17,8 @@ function getRunwayClient() {
 
 export async function POST(req: Request) {
   try {
+    await assertApiServiceEnabled("runway-gen3");
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const { promptText, videoUrl, imageUrl, duration = 5 } = await req.json();
 
     if (!promptText) {
@@ -31,6 +40,7 @@ export async function POST(req: Request) {
     const dur = duration === 10 ? 10 : 5;
     await recordApiUsage({
       provider: "runway",
+      userEmail: usageUserEmail,
       serviceId: "runway-gen3",
       route: "/api/runway/generate",
       model: "gen3a_turbo",
@@ -42,8 +52,15 @@ export async function POST(req: Request) {
     });
 
     return NextResponse.json({ taskId: task.id });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof ApiServiceDisabledError) {
+      return NextResponse.json(
+        { error: `API bloqueada en admin: ${error.label}` },
+        { status: 423 },
+      );
+    }
     console.error("[Runway API Error]:", error);
-    return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 500 });
+    return NextResponse.json({ error: message || "Internal Server Error" }, { status: 500 });
   }
 }

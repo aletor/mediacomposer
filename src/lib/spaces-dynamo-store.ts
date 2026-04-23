@@ -23,6 +23,9 @@ export type ProjectRecord = {
   id: string;
   metadata: Record<string, unknown>;
   name: string;
+  ownerUserEmail?: string;
+  ownerUserImage?: string | null;
+  ownerUserName?: string | null;
   rootSpaceId: string;
   spaces: Record<string, SpaceNodeGraph>;
   updatedAt: string;
@@ -33,6 +36,9 @@ export type ProjectListItem = {
   id: string;
   metadata: Record<string, unknown>;
   name: string;
+  ownerUserEmail?: string;
+  ownerUserImage?: string | null;
+  ownerUserName?: string | null;
   rootSpaceId: string;
   spacesCount: number | null;
   updatedAt: string;
@@ -45,6 +51,9 @@ type SpacesMetaItem = {
   createdAt: string;
   metadata: Record<string, unknown>;
   name: string;
+  ownerUserEmail?: string;
+  ownerUserImage?: string | null;
+  ownerUserName?: string | null;
   rootSpaceId: string;
   storageFormat: "chunks-v1";
   chunkCount: number;
@@ -168,6 +177,9 @@ async function scanMetaItems(tableName: string): Promise<Record<string, unknown>
             "#entityType": "entityType",
             "#metadata": "metadata",
             "#name": "name",
+            "#ownerUserEmail": "ownerUserEmail",
+            "#ownerUserImage": "ownerUserImage",
+            "#ownerUserName": "ownerUserName",
             "#projectId": "projectId",
             "#rootSpaceId": "rootSpaceId",
             "#updatedAt": "updatedAt",
@@ -176,7 +188,7 @@ async function scanMetaItems(tableName: string): Promise<Record<string, unknown>
             ":meta": "project-meta",
           },
           ProjectionExpression:
-            "id, #projectId, #entityType, #name, #rootSpaceId, #metadata, #createdAt, #updatedAt, #chunkCount",
+            "id, #projectId, #entityType, #name, #rootSpaceId, #metadata, #ownerUserEmail, #ownerUserName, #ownerUserImage, #createdAt, #updatedAt, #chunkCount",
           ExclusiveStartKey: exclusiveStartKey,
         }),
       ),
@@ -250,6 +262,9 @@ export async function readDdbProjectById(tableName: string, id: string): Promise
     name: row.name,
     rootSpaceId: row.rootSpaceId,
     metadata: row.metadata ?? {},
+    ownerUserEmail: row.ownerUserEmail,
+    ownerUserName: row.ownerUserName,
+    ownerUserImage: row.ownerUserImage,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     spaces: parseSpacesFromChunks(row, chunks),
@@ -287,6 +302,9 @@ export async function readAllDdbProjects(tableName: string): Promise<ProjectReco
         name: meta.name,
         rootSpaceId: meta.rootSpaceId,
         metadata: meta.metadata ?? {},
+        ownerUserEmail: meta.ownerUserEmail,
+        ownerUserName: meta.ownerUserName,
+        ownerUserImage: meta.ownerUserImage,
         createdAt: meta.createdAt,
         updatedAt: meta.updatedAt,
         spaces: parseSpacesFromChunks(meta, chunks),
@@ -320,6 +338,9 @@ export async function readAllDdbProjectsMeta(tableName: string): Promise<Project
                     "#listPk": "listPk",
                     "#metadata": "metadata",
                     "#name": "name",
+                    "#ownerUserEmail": "ownerUserEmail",
+                    "#ownerUserImage": "ownerUserImage",
+                    "#ownerUserName": "ownerUserName",
                     "#projectId": "projectId",
                     "#rootSpaceId": "rootSpaceId",
                     "#updatedAt": "updatedAt",
@@ -328,7 +349,7 @@ export async function readAllDdbProjectsMeta(tableName: string): Promise<Project
                     ":listPk": SPACES_LIST_PK,
                   },
                   ProjectionExpression:
-                    "id, #projectId, #entityType, #name, #rootSpaceId, #metadata, #createdAt, #updatedAt, #chunkCount",
+                    "id, #projectId, #entityType, #name, #rootSpaceId, #metadata, #ownerUserEmail, #ownerUserName, #ownerUserImage, #createdAt, #updatedAt, #chunkCount",
                   ScanIndexForward: false,
                   ExclusiveStartKey: exclusiveStartKey,
                 }),
@@ -356,6 +377,9 @@ export async function readAllDdbProjectsMeta(tableName: string): Promise<Project
         name: item.name,
         rootSpaceId: item.rootSpaceId,
         metadata: item.metadata ?? {},
+        ownerUserEmail: item.ownerUserEmail,
+        ownerUserName: item.ownerUserName,
+        ownerUserImage: item.ownerUserImage,
         createdAt: item.createdAt,
         updatedAt: item.updatedAt,
         spacesCount: null,
@@ -369,6 +393,9 @@ export async function readAllDdbProjectsMeta(tableName: string): Promise<Project
         name: item.name,
         rootSpaceId: item.rootSpaceId,
         metadata: item.metadata ?? {},
+        ownerUserEmail: item.ownerUserEmail,
+        ownerUserName: item.ownerUserName,
+        ownerUserImage: item.ownerUserImage,
         createdAt: item.createdAt,
         updatedAt: item.updatedAt,
         spacesCount: Object.keys(item.spaces || {}).length,
@@ -415,6 +442,9 @@ export async function upsertDdbProject(tableName: string, project: ProjectRecord
         listSk: buildListSortKey(project.updatedAt, project.id),
         metadata: project.metadata ?? {},
         name: project.name,
+        ownerUserEmail: project.ownerUserEmail,
+        ownerUserName: project.ownerUserName,
+        ownerUserImage: project.ownerUserImage,
         rootSpaceId: project.rootSpaceId,
         storageFormat: "chunks-v1",
         chunkCount: chunks.length,

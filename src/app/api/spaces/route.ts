@@ -8,13 +8,12 @@ import { deleteFromS3 } from "@/lib/s3-utils";
 import {
   deleteDdbProject as deleteDdbProjectStore,
   readAllDdbProjects as readAllDdbProjectsStore,
-  readAllDdbProjectsMeta as readAllDdbProjectsMetaStore,
   readDdbProjectById as readDdbProjectByIdStore,
   upsertDdbProject as upsertDdbProjectStore,
-  type ProjectListItem,
   type ProjectRecord,
 } from "@/lib/spaces-dynamo-store";
 import { runSpacesDbExclusive } from "@/lib/spaces-db-queue";
+import { auth } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -36,6 +35,12 @@ type ProjectBody = {
   spaces?: Record<string, SpaceNodeGraph>;
 };
 
+type AuthUser = {
+  email: string;
+  name: string | null;
+  image: string | null;
+};
+
 const spacesStore = {
   createEmpty: (): ProjectRecord[] => [],
   defaultS3Key: "foldder-meta/spaces-db.json",
@@ -50,7 +55,6 @@ const SPACES_META_EDGE_STALE_SECONDS = 60;
 const SPACES_DETAIL_EDGE_S_MAXAGE_SECONDS = 5;
 const SPACES_DETAIL_EDGE_STALE_SECONDS = 30;
 let spacesGetCache: { expiresAt: number; rows: ProjectRecord[] } | null = null;
-let spacesMetaCache: { expiresAt: number; rows: ProjectListItem[] } | null = null;
 
 function isSpacesDdbEnabled(): boolean {
   return isDynamoEnabled(SPACES_DDB_TABLE_ENV);
@@ -62,10 +66,6 @@ function spacesTableName(): string {
 
 async function scanDdbProjects(): Promise<ProjectRecord[]> {
   return readAllDdbProjectsStore(spacesTableName());
-}
-
-async function scanDdbProjectsMeta(): Promise<ProjectListItem[]> {
-  return readAllDdbProjectsMetaStore(spacesTableName());
 }
 
 async function readDdbProjectById(id: string): Promise<ProjectRecord | null> {
@@ -93,30 +93,19 @@ async function readProjects(): Promise<ProjectRecord[]> {
   return readJsonStore(spacesStore);
 }
 
-function projectToMeta(project: ProjectRecord): ProjectListItem {
+function projectToMeta(project: ProjectRecord) {
   return {
     id: project.id,
     name: project.name,
     rootSpaceId: project.rootSpaceId,
     metadata: project.metadata ?? {},
+    ownerUserEmail: project.ownerUserEmail,
+    ownerUserName: project.ownerUserName,
+    ownerUserImage: project.ownerUserImage,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     spacesCount: Object.keys(project.spaces || {}).length,
   };
-}
-
-async function readProjectsMeta(): Promise<ProjectListItem[]> {
-  if (isSpacesDdbEnabled()) {
-    const now = Date.now();
-    if (spacesMetaCache && spacesMetaCache.expiresAt > now) {
-      return spacesMetaCache.rows;
-    }
-    const rows = await scanDdbProjectsMeta();
-    spacesMetaCache = { rows, expiresAt: now + SPACES_GET_CACHE_TTL_MS };
-    return rows;
-  }
-  const rows = await readJsonStore(spacesStore);
-  return rows.map(projectToMeta).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 async function writeProjects(
@@ -128,8 +117,56 @@ async function writeProjects(
   return updateJsonStore(spacesStore, updater);
 }
 
+function normalizeOwnerEmail(email: string | null | undefined): string {
+  return (email || "").trim().toLowerCase();
+}
+
+function projectBelongsToOwner(project: ProjectRecord, ownerEmail: string): boolean {
+  return normalizeOwnerEmail(project.ownerUserEmail) === ownerEmail;
+}
+
+function devBypassUserFromRequest(req: Request): AuthUser | null {
+  if (process.env.NODE_ENV === "production") return null;
+  const code = req.headers.get("x-foldder-dev-passcode");
+  if (code !== "6666") return null;
+  return {
+    email: "dev-bypass@local.foldder",
+    name: "Local Bypass",
+    image: null,
+  };
+}
+
+async function requireAuthUser(req: Request): Promise<
+  { ok: true; user: AuthUser } | { ok: false; response: NextResponse }
+> {
+  const bypass = devBypassUserFromRequest(req);
+  if (bypass) {
+    return { ok: true, user: bypass };
+  }
+  const session = await auth();
+  const email = normalizeOwnerEmail(session?.user?.email);
+  if (!email) {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
+    };
+  }
+  return {
+    ok: true,
+    user: {
+      email,
+      name: session?.user?.name ?? null,
+      image: session?.user?.image ?? null,
+    },
+  };
+}
+
 export async function GET(req: Request) {
   try {
+    const authState = await requireAuthUser(req);
+    if (!authState.ok) return authState.response;
+    const ownerEmail = authState.user.email;
+
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id")?.trim();
     const wantsFull = searchParams.get("full") === "1";
@@ -141,7 +178,7 @@ export async function GET(req: Request) {
       const project = isSpacesDdbEnabled()
         ? await readDdbProjectById(id)
         : (await readProjects()).find((row) => row.id === id) ?? null;
-      if (!project) {
+      if (!project || !projectBelongsToOwner(project, ownerEmail)) {
         return NextResponse.json({ error: "Project not found" }, { status: 404 });
       }
       return NextResponse.json(project, {
@@ -152,10 +189,16 @@ export async function GET(req: Request) {
     }
 
     if (wantsFull && !wantsMeta) {
-      return NextResponse.json(await readProjects());
+      const rows = (await readProjects()).filter((p) =>
+        projectBelongsToOwner(p, ownerEmail),
+      );
+      return NextResponse.json(rows);
     }
 
-    const meta = await readProjectsMeta();
+    const meta = (await readProjects())
+      .filter((p) => projectBelongsToOwner(p, ownerEmail))
+      .map(projectToMeta)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     if (Number.isFinite(limitRaw) && limitRaw > 0) {
       const cursorIdx = cursor ? meta.findIndex((row) => row.id === cursor) : -1;
       const start = cursorIdx >= 0 ? cursorIdx + 1 : 0;
@@ -183,13 +226,19 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const authState = await requireAuthUser(req);
+    if (!authState.ok) return authState.response;
+    const ownerEmail = authState.user.email;
+    const ownerName = authState.user.name;
+    const ownerImage = authState.user.image;
+
     const body = (await req.json()) as ProjectBody;
 
     if (isSpacesDdbEnabled()) {
       const { id, name, rootSpaceId, spaces, metadata } = body;
       if (id) {
         const existing = await readDdbProjectById(id);
-        if (!existing) {
+        if (!existing || !projectBelongsToOwner(existing, ownerEmail)) {
           return NextResponse.json({ error: "Project not found" }, { status: 404 });
         }
 
@@ -199,15 +248,19 @@ export async function POST(req: Request) {
           rootSpaceId: rootSpaceId || existing.rootSpaceId,
           spaces: spaces || existing.spaces,
           metadata: metadata || existing.metadata,
+          ownerUserEmail: existing.ownerUserEmail || ownerEmail,
+          ownerUserName: ownerName,
+          ownerUserImage: ownerImage,
           updatedAt: new Date().toISOString(),
         };
         await writeDdbProject(savedProject);
         spacesGetCache = null;
-        spacesMetaCache = null;
         return NextResponse.json(savedProject);
       }
 
-      const allProjectsMeta = await readProjectsMeta();
+      const allProjectsMeta = (await readProjects()).filter((p) =>
+        projectBelongsToOwner(p, ownerEmail),
+      );
       const projectId = uuidv4();
       const initialSpaceId = uuidv4();
       const resolvedRoot =
@@ -234,13 +287,15 @@ export async function POST(req: Request) {
             },
           },
         metadata: metadata ?? {},
+        ownerUserEmail: ownerEmail,
+        ownerUserName: ownerName,
+        ownerUserImage: ownerImage,
         createdAt: timestamp,
         updatedAt: timestamp,
       };
 
       await writeDdbProject(newProject);
       spacesGetCache = null;
-      spacesMetaCache = null;
       return NextResponse.json(newProject);
     }
 
@@ -253,7 +308,7 @@ export async function POST(req: Request) {
 
         if (id) {
           const index = projectsCopy.findIndex((project) => project.id === id);
-          if (index === -1) {
+          if (index === -1 || !projectBelongsToOwner(projectsCopy[index], ownerEmail)) {
             projectFound = false;
             return projectsCopy;
           }
@@ -264,6 +319,9 @@ export async function POST(req: Request) {
             rootSpaceId: rootSpaceId || projectsCopy[index].rootSpaceId,
             spaces: spaces || projectsCopy[index].spaces,
             metadata: metadata || projectsCopy[index].metadata,
+            ownerUserEmail: projectsCopy[index].ownerUserEmail || ownerEmail,
+            ownerUserName: ownerName,
+            ownerUserImage: ownerImage,
             updatedAt: new Date().toISOString(),
           };
           savedProject = projectsCopy[index];
@@ -280,9 +338,12 @@ export async function POST(req: Request) {
               : initialSpaceId;
 
         const timestamp = new Date().toISOString();
+        const myProjectsCount = projectsCopy.filter((p) =>
+          projectBelongsToOwner(p, ownerEmail),
+        ).length;
         const newProject: ProjectRecord = {
           id: projectId,
-          name: name || `New Project ${projectsCopy.length + 1}`,
+          name: name || `New Project ${myProjectsCount + 1}`,
           rootSpaceId: resolvedRoot,
           spaces:
             spaces || {
@@ -294,8 +355,11 @@ export async function POST(req: Request) {
                 createdAt: timestamp,
                 updatedAt: timestamp,
               },
-            },
+          },
           metadata: metadata ?? {},
+          ownerUserEmail: ownerEmail,
+          ownerUserName: ownerName,
+          ownerUserImage: ownerImage,
           createdAt: timestamp,
           updatedAt: timestamp,
         };
@@ -310,7 +374,6 @@ export async function POST(req: Request) {
       }
 
       spacesGetCache = null;
-      spacesMetaCache = null;
       const fallback = projects[projects.length - 1] ?? null;
       return NextResponse.json(savedProject ?? fallback);
     });
@@ -322,12 +385,19 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
+    const authState = await requireAuthUser(req);
+    if (!authState.ok) return authState.response;
+    const ownerEmail = authState.user.email;
+
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
     if (!id) return NextResponse.json({ error: "ID required" }, { status: 400 });
 
     if (isSpacesDdbEnabled()) {
       const projectToDelete = await readDdbProjectById(id);
+      if (!projectToDelete || !projectBelongsToOwner(projectToDelete, ownerEmail)) {
+        return NextResponse.json({ error: "Project not found" }, { status: 404 });
+      }
       if (projectToDelete) {
         const s3Keys = collectS3KeysFromProjectSpaces(
           (projectToDelete.spaces || {}) as Record<string, unknown>,
@@ -343,7 +413,6 @@ export async function DELETE(req: Request) {
 
       await deleteDdbProject(id);
       spacesGetCache = null;
-      spacesMetaCache = null;
       return NextResponse.json({ ok: true, id });
     }
 
@@ -351,6 +420,9 @@ export async function DELETE(req: Request) {
       const projects = await readProjects();
       const projectToDelete = projects.find((project) => project.id === id);
 
+      if (!projectToDelete || !projectBelongsToOwner(projectToDelete, ownerEmail)) {
+        return NextResponse.json({ error: "Project not found" }, { status: 404 });
+      }
       if (projectToDelete) {
         console.log(`[Cleanup] Deleting project "${projectToDelete.name}"...`);
 
@@ -375,7 +447,6 @@ export async function DELETE(req: Request) {
         currentProjects.filter((project) => project.id !== id),
       );
       spacesGetCache = null;
-      spacesMetaCache = null;
       return NextResponse.json({ ok: true, id, remaining: filtered.length });
     });
   } catch (error) {

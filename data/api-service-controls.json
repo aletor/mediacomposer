@@ -1,0 +1,88 @@
+{
+  "services": {
+    "gemini-nano": {
+      "id": "gemini-nano",
+      "label": "Gemini · Nano Banana (imagen 3 Flash / Pro)",
+      "enabled": true,
+      "updatedAt": "2026-04-23T07:19:10.192Z",
+      "updatedBy": "system-default"
+    },
+    "gemini-veo": {
+      "id": "gemini-veo",
+      "label": "Gemini · Veo 3.1 (vídeo)",
+      "enabled": true,
+      "updatedAt": "2026-04-23T07:19:10.192Z",
+      "updatedBy": "system-default"
+    },
+    "seedance-video": {
+      "id": "seedance-video",
+      "label": "Volcengine Ark · Seedance (vídeo)",
+      "enabled": true,
+      "updatedAt": "2026-04-23T07:19:10.192Z",
+      "updatedBy": "system-default"
+    },
+    "gemini-analyze": {
+      "id": "gemini-analyze",
+      "label": "Gemini · Análisis de áreas (2.5 Flash)",
+      "enabled": true,
+      "updatedAt": "2026-04-23T07:19:10.192Z",
+      "updatedBy": "system-default"
+    },
+    "gemini-search-verify": {
+      "id": "gemini-search-verify",
+      "label": "Gemini · Verificación imágenes (búsqueda web)",
+      "enabled": true,
+      "updatedAt": "2026-04-23T07:19:10.192Z",
+      "updatedBy": "system-default"
+    },
+    "openai-assistant": {
+      "id": "openai-assistant",
+      "label": "OpenAI · Asistente del lienzo (GPT-4o mini)",
+      "enabled": true,
+      "updatedAt": "2026-04-23T07:19:10.192Z",
+      "updatedBy": "system-default"
+    },
+    "openai-enhance": {
+      "id": "openai-enhance",
+      "label": "OpenAI · Mejorar prompt (GPT-4o)",
+      "enabled": true,
+      "updatedAt": "2026-04-23T07:19:10.192Z",
+      "updatedBy": "system-default"
+    },
+    "openai-describe": {
+      "id": "openai-describe",
+      "label": "OpenAI · Describir imagen/vídeo (GPT-4o)",
+      "enabled": true,
+      "updatedAt": "2026-04-23T07:20:24.040Z",
+      "updatedBy": "dev-bypass@local.foldder"
+    },
+    "grok-video": {
+      "id": "grok-video",
+      "label": "xAI Grok · Vídeo (Imagine)",
+      "enabled": true,
+      "updatedAt": "2026-04-23T07:19:10.192Z",
+      "updatedBy": "system-default"
+    },
+    "runway-gen3": {
+      "id": "runway-gen3",
+      "label": "Runway · Gen-3 Alpha Turbo",
+      "enabled": true,
+      "updatedAt": "2026-04-23T07:19:10.192Z",
+      "updatedBy": "system-default"
+    },
+    "replicate-bg": {
+      "id": "replicate-bg",
+      "label": "Replicate · Quitar fondo",
+      "enabled": true,
+      "updatedAt": "2026-04-23T07:19:10.192Z",
+      "updatedBy": "system-default"
+    },
+    "replicate-vmatte": {
+      "id": "replicate-vmatte",
+      "label": "Replicate · Video matte (RVM)",
+      "enabled": true,
+      "updatedAt": "2026-04-23T07:19:10.192Z",
+      "updatedBy": "system-default"
+    }
+  }
+}

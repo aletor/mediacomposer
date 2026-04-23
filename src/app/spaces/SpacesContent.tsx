@@ -2,6 +2,8 @@
 
 import React, { useState, useCallback, useMemo, useRef, useEffect, useLayoutEffect } from "react";
 import { createPortal, flushSync } from "react-dom";
+import Image from "next/image";
+import { signIn, signOut, useSession } from "next-auth/react";
 import {
   ReactFlow,
   Controls,
@@ -107,6 +109,7 @@ import {
   ChevronDown,
   Download,
   ZoomIn,
+  LogOut,
   MessageCircle,
   CheckCircle2,
   AlertCircle,
@@ -175,6 +178,12 @@ type SavedProjectDetail = SavedProjectMeta & {
 
 export function SpacesContent() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
+  const { data: session, status: sessionStatus } = useSession();
+  const [passcodeBypass, setPasscodeBypass] = useState(false);
+  const [passcode, setPasscode] = useState("");
+  const [passError, setPassError] = useState(false);
+  const isAuthenticated = sessionStatus === "authenticated" || passcodeBypass;
+  const authLoading = sessionStatus === "loading";
   const [nodes, setNodes, onNodesChange] = useNodesState<any>(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<any>(initialEdges);
   /** Siempre la misma referencia que `nodes` / `edges` (sync en render, no en useEffect) */
@@ -1467,27 +1476,41 @@ export function SpacesContent() {
   }, []);
 
   // Access Security
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [passcode, setPasscode] = useState('');
-  const [passError, setPassError] = useState(false);
+  const prevAuthRef = useRef(false);
+  useEffect(() => {
+    if (!isAuthenticated) {
+      prevAuthRef.current = false;
+      return;
+    }
+    if (prevAuthRef.current) return;
+    prevAuthRef.current = true;
+    setShowWelcome(false);
+    setShowLoadModal(true);
+    setPostAuthProjectsGate(true);
+    // Intento de fullscreen tras login (puede ser bloqueado por navegador).
+    void enterFullscreen(document.documentElement).catch(() => undefined);
+  }, [isAuthenticated]);
 
-  const handleAuth = (val: string) => {
+  const handleTempPasscode = useCallback((val: string) => {
     setPasscode(val);
-    if (val === '6666') {
-      setIsAuthenticated(true);
-      setShowWelcome(false);
-      setShowLoadModal(true);
-      setPostAuthProjectsGate(true);
-      // Mismo gesto que el input: intentar lienzo a pantalla completa (puede fallar en iOS / si el usuario lo bloqueó).
-      void enterFullscreen(document.documentElement).catch(() => undefined);
-    } else if (val.length === 4) {
+    if (val === "6666") {
+      setPasscodeBypass(true);
+      setPassError(false);
+      return;
+    }
+    if (val.length === 4) {
       setPassError(true);
       setTimeout(() => {
-        setPasscode('');
+        setPasscode("");
         setPassError(false);
       }, 500);
     }
-  };
+  }, []);
+
+  const devBypassHeaders = useMemo<Record<string, string>>(
+    () => (passcodeBypass ? { "x-foldder-dev-passcode": "6666" } : {}),
+    [passcodeBypass],
+  );
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -1987,14 +2010,16 @@ export function SpacesContent() {
   }, [nodes, edges, activeSpaceId, spacesMap, syncCurrentSpaceState]); 
 
   const refreshProjectsList = useCallback(async () => {
-    const res = await fetch('/api/spaces?meta=1');
+    const res = await fetch('/api/spaces?meta=1', {
+      headers: devBypassHeaders,
+    });
     const data = await readResponseJson<unknown[]>(res, 'GET /api/spaces?meta=1');
     if (Array.isArray(data)) {
       setSavedProjects(data as SavedProjectMeta[]);
       return data as SavedProjectMeta[];
     }
     return [];
-  }, []);
+  }, [devBypassHeaders]);
 
   const upsertSavedProjectMeta = useCallback((project: SavedProjectMeta) => {
     setSavedProjects((prev) => {
@@ -2005,12 +2030,18 @@ export function SpacesContent() {
   }, []);
 
   const fetchProjectDetailById = useCallback(async (projectId: string) => {
-    const res = await fetch(`/api/spaces?id=${encodeURIComponent(projectId)}`);
+    const res = await fetch(`/api/spaces?id=${encodeURIComponent(projectId)}`, {
+      headers: devBypassHeaders,
+    });
     return readJsonWithHttpError<SavedProjectDetail>(res, 'GET /api/spaces?id=...');
-  }, []);
+  }, [devBypassHeaders]);
 
   // Lista de proyectos al montar y al validar la clave (lista actualizada al entrar)
   useEffect(() => {
+    if (!isAuthenticated) {
+      setSavedProjects([]);
+      return;
+    }
     void refreshProjectsList().catch((err) => {
       console.error('Fetch error:', err);
     });
@@ -2061,7 +2092,7 @@ export function SpacesContent() {
 
       const res = await fetch('/api/spaces', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...devBypassHeaders },
         body: JSON.stringify(projectToSave)
       });
       
@@ -2312,7 +2343,10 @@ export function SpacesContent() {
 
   const deleteProject = async (idToDelete: string): Promise<boolean> => {
     try {
-      const res = await fetch(`/api/spaces?id=${idToDelete}`, { method: 'DELETE' });
+      const res = await fetch(`/api/spaces?id=${idToDelete}`, {
+        method: 'DELETE',
+        headers: devBypassHeaders,
+      });
       if (!res.ok) {
         console.error('[deleteProject] HTTP', res.status, await res.text().catch(() => ''));
         return false;
@@ -2345,7 +2379,7 @@ export function SpacesContent() {
 
       const res = await fetch('/api/spaces', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...devBypassHeaders },
         body: JSON.stringify(copyToSave)
       });
       
@@ -2374,7 +2408,7 @@ export function SpacesContent() {
       const projectDetail = await fetchProjectDetailById(id);
       const res = await fetch('/api/spaces', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...devBypassHeaders },
         body: JSON.stringify({
           ...projectDetail,
           name: newName
@@ -3984,9 +4018,13 @@ export function SpacesContent() {
 
         {!isAuthenticated && (
           <SpacesPasswordOverlay
+            loading={authLoading}
+            onGoogleSignIn={() => {
+              void signIn("google", { callbackUrl: "/spaces" });
+            }}
             passcode={passcode}
             passError={passError}
-            onPasscodeChange={handleAuth}
+            onPasscodeChange={handleTempPasscode}
           />
         )}
 
@@ -4254,6 +4292,46 @@ export function SpacesContent() {
                   )}
                   <span className="hidden sm:inline">Nuevo proyecto</span>
                 </button>
+                {isAuthenticated && !windowMode && (
+                  <div className="ml-1 flex items-center gap-1.5">
+                    <div
+                      className="h-9 w-9 overflow-hidden rounded-full border border-white/30 bg-white/10 shadow-sm"
+                      title={session?.user?.email || "Usuario"}
+                    >
+                      {session?.user?.image ? (
+                        <Image
+                          src={session.user.image}
+                          alt={session.user.name || "Perfil"}
+                          width={36}
+                          height={36}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-xs font-bold text-white/80">
+                          {(session?.user?.name || session?.user?.email || "U")
+                            .trim()
+                            .charAt(0)
+                            .toUpperCase()}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPasscodeBypass(false);
+                        setPasscode("");
+                        setPassError(false);
+                        if (sessionStatus === "authenticated") {
+                          void signOut({ callbackUrl: "/spaces" });
+                        }
+                      }}
+                      title="Cerrar sesión"
+                      className="group flex h-9 w-9 items-center justify-center rounded-xl border border-white/25 bg-white/[0.08] text-slate-700 shadow-sm backdrop-blur-xl transition-all hover:scale-105 hover:bg-white/[0.15] hover:text-slate-900"
+                    >
+                      <LogOut size={14} className="text-slate-700 group-hover:text-slate-900" />
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>

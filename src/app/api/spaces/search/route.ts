@@ -1,21 +1,28 @@
 import { NextResponse } from 'next/server';
 import { MAX_CANDIDATES, filterImageUrlsByIntent } from '@/lib/gemini-image-intent-verify';
-const gis = require('g-i-s');
+import { resolveUsageUserEmailFromRequest } from "@/lib/api-usage";
+import {
+  ApiServiceDisabledError,
+  assertApiServiceEnabled,
+} from "@/lib/api-usage-controls";
+import gis from "g-i-s";
 
-const searchGoogleImages = (query: string): Promise<any[]> => {
-  return new Promise((resolve, reject) => {
+type GisResult = { url?: string };
+
+const searchGoogleImages = (query: string): Promise<GisResult[]> => {
+  return new Promise((resolve) => {
     const timer = setTimeout(() => {
       console.warn(`[Search API] Search timeout for: "${query}"`);
       resolve([]);
     }, 8000);
 
-    gis(query, (error: any, results: any[]) => {
+    gis(query, (error: unknown, results: unknown[]) => {
       clearTimeout(timer);
       if (error) {
         console.error(`[Search API] GIS Error for "${query}":`, error);
         resolve([]);
       } else {
-        resolve(results || []);
+        resolve((results || []) as GisResult[]);
       }
     });
   });
@@ -28,7 +35,9 @@ const searchWikipediaImage = async (query: string): Promise<string[]> => {
     // 1. Search for the page title
     const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*`;
     const searchRes = await fetch(searchUrl, { headers });
-    const searchData: any = await searchRes.json();
+    const searchData = (await searchRes.json()) as {
+      query?: { search?: Array<{ title?: string }> };
+    };
     const title = searchData.query?.search?.[0]?.title;
     
     if (!title) return [];
@@ -36,16 +45,18 @@ const searchWikipediaImage = async (query: string): Promise<string[]> => {
     // 2. Get images from that page
     const imagesUrl = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=images&format=json&origin=*`;
     const imagesRes = await fetch(imagesUrl, { headers });
-    const imagesData: any = await imagesRes.json();
-    const pages = imagesData.query.pages;
+    const imagesData = (await imagesRes.json()) as {
+      query?: { pages?: Record<string, { images?: Array<{ title?: string }> }> };
+    };
+    const pages = imagesData.query?.pages || {};
     const pageId = Object.keys(pages)[0];
-    const images = pages[pageId].images;
+    const images = pageId ? pages[pageId]?.images : undefined;
 
     if (!images) return [];
 
     // 3. Filter for likely good images (JPG, PNG)
-    const validImages = images.filter((img: any) => {
-      const t = img.title.toLowerCase();
+    const validImages = images.filter((img: { title?: string }) => {
+      const t = (img.title || "").toLowerCase();
       return (t.endsWith('.jpg') || t.endsWith('.jpeg') || t.endsWith('.png')) && 
              !t.includes('increase') && !t.includes('decrease') && !t.includes('stub') && !t.includes('icon');
     }).slice(0, 5);
@@ -55,10 +66,12 @@ const searchWikipediaImage = async (query: string): Promise<string[]> => {
     for (const img of validImages) {
       const infoUrl = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(img.title)}&prop=imageinfo&iiprop=url&format=json&origin=*`;
       const infoRes = await fetch(infoUrl, { headers });
-      const infoData: any = await infoRes.json();
-      const infoPages = infoData.query.pages;
+      const infoData = (await infoRes.json()) as {
+        query?: { pages?: Record<string, { imageinfo?: Array<{ url?: string }> }> };
+      };
+      const infoPages = infoData.query?.pages || {};
       const infoPageId = Object.keys(infoPages)[0];
-      const url = infoPages[infoPageId].imageinfo?.[0]?.url;
+      const url = infoPageId ? infoPages[infoPageId]?.imageinfo?.[0]?.url : undefined;
       if (url) urls.push(url);
     }
 
@@ -83,11 +96,16 @@ export async function POST(req: Request) {
     }
 
     const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const intentForVision =
       typeof verifyIntentRaw === 'string' && verifyIntentRaw.trim()
         ? verifyIntentRaw.trim()
         : query.trim();
     const useVision = verify && !!apiKey && intentForVision.length > 0;
+
+    if (useVision) {
+      await assertApiServiceEnabled("gemini-search-verify");
+    }
 
     const poolCap = useVision
       ? Math.min(Math.max(limit * 5, 24), MAX_CANDIDATES)
@@ -97,10 +115,10 @@ export async function POST(req: Request) {
       `[Search API] Searching for: "${query}" (limit: ${limit}, vision: ${useVision})`
     );
 
-    const normalizeUrls = (raw: any[]) =>
+    const normalizeUrls = (raw: GisResult[]) =>
       raw
-        .map((r: any) => r.url)
-        .filter((u: any) => {
+        .map((r) => r.url)
+        .filter((u): u is string => {
           if (!u || typeof u !== 'string') return false;
           return u.startsWith('http') && !u.includes('lookaside.fbsbx.com');
         })
@@ -110,7 +128,7 @@ export async function POST(req: Request) {
     try {
       const searchResults = await searchGoogleImages(query);
       gisUrls = normalizeUrls(searchResults);
-    } catch (e) {
+    } catch {
       console.warn('[Search API] GIS failed, falling back to Wikipedia');
     }
 
@@ -131,6 +149,7 @@ export async function POST(req: Request) {
       return filterImageUrlsByIntent(candidateUrls, intentForVision, apiKey!, {
         targetCount: limit,
         relaxedFallback: true,
+        usageUserEmail,
       });
     };
 
@@ -159,8 +178,15 @@ export async function POST(req: Request) {
       urls: urls.slice(0, limit),
       verified: false,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    if (error instanceof ApiServiceDisabledError) {
+      return NextResponse.json(
+        { error: `API bloqueada en admin: ${error.label}` },
+        { status: 423 },
+      );
+    }
     console.error('Search API Error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const message = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

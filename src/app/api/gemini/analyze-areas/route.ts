@@ -1,7 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { parseGeminiUsageMetadata, recordApiUsage } from "@/lib/api-usage";
+import {
+  parseGeminiUsageMetadata,
+  recordApiUsage,
+  resolveUsageUserEmailFromRequest,
+} from "@/lib/api-usage";
 import { parseReferenceImageForGemini } from "@/lib/parse-reference-image";
 import sharp from "sharp";
+import {
+  ApiServiceDisabledError,
+  assertApiServiceEnabled,
+} from "@/lib/api-usage-controls";
 
 // Cheapest Gemini model with vision capability (text output only)
 const VISION_MODEL = "gemini-2.5-flash";
@@ -75,7 +83,7 @@ async function buildMarkedImageWithSharp(
         const strokeBuffer = Buffer.from(b64, "base64");
 
         // Get stroke as raw RGBA pixels, resize to match base
-        const { data: raw, info } = await sharp(strokeBuffer)
+        const { data: raw } = await sharp(strokeBuffer)
           .resize(W, H, { fit: "fill" })
           .ensureAlpha()
           .raw()
@@ -114,14 +122,17 @@ async function buildMarkedImageWithSharp(
       .toBuffer();
     console.log("[analyze-areas] Marked image built (PNG lossless), size:", resultBuffer.length);
     return resultBuffer.toString("base64");
-  } catch (e: any) {
-    console.warn("[analyze-areas] Sharp compositing failed:", e.message);
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.warn("[analyze-areas] Sharp compositing failed:", message);
     return null;
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
+    await assertApiServiceEnabled("gemini-analyze");
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const { baseImage, colorMapImage, changes } = await req.json();
 
     const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -130,7 +141,7 @@ export async function POST(req: NextRequest) {
 
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${VISION_MODEL}:generateContent?key=${apiKey}`;
 
-    const parts: any[] = [];
+    const parts: Array<Record<string, unknown>> = [];
     const typedChanges = changes as AreaChange[];
     const zoneChanges = typedChanges.filter((c) => !c.isGlobal);
     const globalChanges = typedChanges.filter((c) => c.isGlobal);
@@ -302,13 +313,17 @@ Devuelve SOLO el prompt, sin texto adicional.`;
       return NextResponse.json({ error: data.error.message || "Gemini error" }, { status: 500 });
     }
 
-    const text = data.candidates?.[0]?.content?.parts?.find((p: any) => p.text)?.text || "";
+    const text =
+      data.candidates?.[0]?.content?.parts?.find(
+        (p: { text?: string }) => typeof p.text === "string",
+      )?.text || "";
     if (!text) return NextResponse.json({ error: "No text response from AI" }, { status: 500 });
 
     const usage = parseGeminiUsageMetadata(data);
     if (usage) {
       await recordApiUsage({
         provider: "gemini",
+        userEmail: usageUserEmail,
         serviceId: "gemini-analyze",
         route: "/api/gemini/analyze-areas",
         model: VISION_MODEL,
@@ -319,6 +334,7 @@ Devuelve SOLO el prompt, sin texto adicional.`;
     } else {
       await recordApiUsage({
         provider: "gemini",
+        userEmail: usageUserEmail,
         serviceId: "gemini-analyze",
         route: "/api/gemini/analyze-areas",
         model: VISION_MODEL,
@@ -337,8 +353,15 @@ Devuelve SOLO el prompt, sin texto adicional.`;
       markedImageMime: useMarked && markedImgData ? "image/png" : null,
     });
 
-  } catch (error: any) {
-    console.error("[analyze-areas] Error:", error.message);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error: unknown) {
+    if (error instanceof ApiServiceDisabledError) {
+      return NextResponse.json(
+        { error: `API bloqueada en admin: ${error.label}` },
+        { status: 423 },
+      );
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[analyze-areas] Error:", message);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

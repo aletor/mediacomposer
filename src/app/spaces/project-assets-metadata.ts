@@ -8,8 +8,27 @@ export type KnowledgeDocumentEntry = {
   name: string;
   size: number;
   mime: string;
+  scope?: "core" | "context";
+  contextKind?: "competencia" | "mercado" | "referencia" | "general";
+  s3Path?: string;
+  type?: "document" | "image";
+  format?: "pdf" | "docx" | "txt" | "html" | "url" | "image";
+  status?: "Subido" | "Analizado" | "Error";
+  uploadedAt?: string;
+  extractedContext?: string;
+  originalSourceUrl?: string;
+  embedding?: number[];
+  errorMessage?: string;
   /** data URL (base64); solo si cabe bajo el límite */
   dataUrl?: string;
+  insights?: {
+    claims: string[];
+    metrics: string[];
+    potentialUse: string[];
+    freshness: string;
+    reliability: number;
+    usedInPieces: string[];
+  };
 };
 
 export type ProjectBrandKit = {
@@ -25,11 +44,257 @@ export type ProjectBrandKit = {
 export type ProjectKnowledgeSource = {
   urls: string[];
   documents: KnowledgeDocumentEntry[];
+  corporateContext?: string;
 };
+
+export type BrainVoiceExample = {
+  id: string;
+  kind: "approved_voice" | "forbidden_voice" | "good_piece" | "bad_piece";
+  label?: string;
+  text: string;
+};
+
+export type BrainPersona = {
+  id: string;
+  name: string;
+  pain: string;
+  channel: string;
+  sophistication: string;
+  tags: string[];
+  objections?: string[];
+  proofNeeded?: string[];
+  attentionTriggers?: string[];
+  marketSophistication?: string;
+};
+
+export type BrainFunnelMessage = {
+  id: string;
+  stage: "awareness" | "consideration" | "conversion" | "retention";
+  text: string;
+};
+
+export type BrainMessageBlueprint = {
+  id: string;
+  claim: string;
+  support: string;
+  audience: string;
+  channel: string;
+  stage: "awareness" | "consideration" | "conversion" | "retention";
+  cta: string;
+  evidence: string[];
+};
+
+export type BrainFactEvidence = {
+  id: string;
+  claim: string;
+  evidence: string[];
+  sourceDocIds: string[];
+  strength: "fuerte" | "media" | "debil";
+  verified: boolean;
+  interpreted: boolean;
+};
+
+export type BrainGeneratedPiece = {
+  id: string;
+  createdAt: string;
+  objective: string;
+  channel: string;
+  personaId: string;
+  funnelStage: string;
+  prompt: string;
+  draft: string;
+  critique: string;
+  revised: string;
+  status: "draft" | "approved" | "rejected";
+  notes?: string;
+};
+
+export type BrainStrategy = {
+  voiceExamples: BrainVoiceExample[];
+  tabooPhrases: string[];
+  approvedPhrases: string[];
+  languageTraits: string[];
+  syntaxPatterns: string[];
+  preferredTerms: string[];
+  forbiddenTerms: string[];
+  channelIntensity: Array<{ channel: string; intensity: number }>;
+  allowAbsoluteClaims: boolean;
+  personas: BrainPersona[];
+  funnelMessages: BrainFunnelMessage[];
+  messageBlueprints: BrainMessageBlueprint[];
+  factsAndEvidence: BrainFactEvidence[];
+  generatedPieces: BrainGeneratedPiece[];
+  approvedPatterns: string[];
+  rejectedPatterns: string[];
+};
+
+export const AUDIENCE_PERSONA_CATALOG: BrainPersona[] = [
+  {
+    id: "persona-creative-director-ad",
+    name: "Creative Director / AD",
+    pain: "Pierde contexto al cambiar de herramienta en mitad de un proyecto",
+    channel: "LinkedIn",
+    sophistication: "Alta",
+    tags: ["Agencias", "Decisor de compra", "B2B"],
+  },
+  {
+    id: "persona-filmmaker-indie",
+    name: "Filmmaker independiente",
+    pain: "Necesita coherencia visual entre piezas sin un equipo grande",
+    channel: "Instagram",
+    sophistication: "Media",
+    tags: ["B2C", "Autofinanciado", "Video"],
+  },
+  {
+    id: "persona-social-media-manager",
+    name: "Social Media Manager",
+    pain: "Calendario saturado y poco tiempo para adaptar piezas por canal",
+    channel: "Instagram",
+    sophistication: "Media",
+    tags: ["In-house", "Performance", "Contenido"],
+  },
+  {
+    id: "persona-brand-manager",
+    name: "Brand Manager",
+    pain: "Mantener consistencia de marca en equipos y proveedores externos",
+    channel: "LinkedIn",
+    sophistication: "Alta",
+    tags: ["Enterprise", "Marca", "Gobernanza"],
+  },
+  {
+    id: "persona-growth-lead",
+    name: "Growth Lead",
+    pain: "Necesita iterar rápido sin romper tono ni propuesta de valor",
+    channel: "LinkedIn",
+    sophistication: "Alta",
+    tags: ["B2B", "Métricas", "Experimentación"],
+  },
+  {
+    id: "persona-performance-marketer",
+    name: "Performance Marketer",
+    pain: "Multiplica creatividades pero sin narrativa clara por funnel",
+    channel: "Meta Ads",
+    sophistication: "Alta",
+    tags: ["CPA", "Conversión", "Paid Media"],
+  },
+  {
+    id: "persona-content-lead",
+    name: "Content Lead",
+    pain: "Coordinar estrategia editorial con diseño y ventas sin fricción",
+    channel: "Blog SEO",
+    sophistication: "Alta",
+    tags: ["B2B", "Editorial", "Pipeline"],
+  },
+  {
+    id: "persona-copywriter",
+    name: "Copywriter senior",
+    pain: "Falta de briefings precisos y criterios de validación consistentes",
+    channel: "Email",
+    sophistication: "Alta",
+    tags: ["Mensajería", "Conversión", "Tone of voice"],
+  },
+  {
+    id: "persona-marketing-manager-smb",
+    name: "Marketing Manager SMB",
+    pain: "Pocas manos para ejecutar campañas completas con calidad",
+    channel: "LinkedIn",
+    sophistication: "Media",
+    tags: ["SMB", "Generalista", "ROI"],
+  },
+  {
+    id: "persona-cmo-scaleup",
+    name: "CMO de scaleup",
+    pain: "Escalar output creativo sin añadir complejidad operativa",
+    channel: "LinkedIn",
+    sophistication: "Alta",
+    tags: ["C-Level", "Eficiencia", "Escalado"],
+  },
+  {
+    id: "persona-founder-gtm",
+    name: "Founder en fase GTM",
+    pain: "Define mensaje y producto al mismo tiempo con recursos limitados",
+    channel: "X / LinkedIn",
+    sophistication: "Media",
+    tags: ["Startup", "Decisor", "Velocidad"],
+  },
+  {
+    id: "persona-agency-account-director",
+    name: "Account Director (Agencia)",
+    pain: "Alinear entregables creativos con expectativas y timings del cliente",
+    channel: "Email",
+    sophistication: "Alta",
+    tags: ["Agencias", "Cliente final", "Retención"],
+  },
+  {
+    id: "persona-ecommerce-manager",
+    name: "Ecommerce Manager",
+    pain: "Necesita producir landings y creatividades con foco en conversión",
+    channel: "Meta Ads",
+    sophistication: "Media",
+    tags: ["D2C", "ROAS", "Conversión"],
+  },
+  {
+    id: "persona-product-marketing-manager",
+    name: "Product Marketing Manager",
+    pain: "Traducir funcionalidades en beneficios claros por segmento",
+    channel: "Web / Docs",
+    sophistication: "Alta",
+    tags: ["B2B SaaS", "Posicionamiento", "Lanzamientos"],
+  },
+  {
+    id: "persona-creator-solopreneur",
+    name: "Creator / Solopreneur",
+    pain: "Publica mucho pero le cuesta mantener consistencia de marca",
+    channel: "Instagram",
+    sophistication: "Media",
+    tags: ["B2C", "Autónomo", "Contenido"],
+  },
+  {
+    id: "persona-course-creator",
+    name: "Creador de cursos",
+    pain: "Necesita convertir conocimiento en piezas vendibles y coherentes",
+    channel: "YouTube",
+    sophistication: "Media",
+    tags: ["Infoproducto", "Embudo", "Conversión"],
+  },
+  {
+    id: "persona-sales-enable-manager",
+    name: "Sales Enablement Manager",
+    pain: "Ventas usa materiales desactualizados y poco adaptados al funnel",
+    channel: "Email",
+    sophistication: "Alta",
+    tags: ["B2B", "Revenue", "Alineación marketing-ventas"],
+  },
+  {
+    id: "persona-ops-marketing",
+    name: "Marketing Ops",
+    pain: "Demasiadas herramientas inconexas y poca trazabilidad",
+    channel: "LinkedIn",
+    sophistication: "Alta",
+    tags: ["Operaciones", "Automatización", "Datos"],
+  },
+  {
+    id: "persona-freelance-designer",
+    name: "Freelance Designer",
+    pain: "Iteraciones constantes sin briefing cerrado ni repositorio único",
+    channel: "Behance / Instagram",
+    sophistication: "Media",
+    tags: ["Freelance", "Diseño", "Producción"],
+  },
+  {
+    id: "persona-b2b-demand-gen-manager",
+    name: "Demand Gen Manager (B2B)",
+    pain: "Necesita piezas por etapa del funnel con narrativa consistente",
+    channel: "LinkedIn",
+    sophistication: "Alta",
+    tags: ["B2B", "Pipeline", "Funnel completo"],
+  },
+];
 
 export type ProjectAssetsMetadata = {
   brand: ProjectBrandKit;
   knowledge: ProjectKnowledgeSource;
+  strategy: BrainStrategy;
 };
 
 const DEFAULT_BRAND: ProjectBrandKit = {
@@ -45,8 +310,27 @@ const DEFAULT_KNOWLEDGE: ProjectKnowledgeSource = {
   documents: [],
 };
 
+const DEFAULT_STRATEGY: BrainStrategy = {
+  voiceExamples: [],
+  tabooPhrases: [],
+  approvedPhrases: [],
+  languageTraits: [],
+  syntaxPatterns: [],
+  preferredTerms: [],
+  forbiddenTerms: [],
+  channelIntensity: [],
+  allowAbsoluteClaims: false,
+  personas: [],
+  funnelMessages: [],
+  messageBlueprints: [],
+  factsAndEvidence: [],
+  generatedPieces: [],
+  approvedPatterns: [],
+  rejectedPatterns: [],
+};
+
 export const MAX_LOGO_BYTES = 2 * 1024 * 1024;
-export const MAX_KNOWLEDGE_DOC_BYTES = 4 * 1024 * 1024;
+export const MAX_KNOWLEDGE_DOC_BYTES = 10 * 1024 * 1024;
 
 export function defaultProjectAssets(): ProjectAssetsMetadata {
   return {
@@ -54,6 +338,25 @@ export function defaultProjectAssets(): ProjectAssetsMetadata {
     knowledge: {
       urls: [...DEFAULT_KNOWLEDGE.urls],
       documents: [],
+      corporateContext: "",
+    },
+    strategy: {
+      voiceExamples: [],
+      tabooPhrases: [],
+      approvedPhrases: [],
+      languageTraits: [],
+      syntaxPatterns: [],
+      preferredTerms: [],
+      forbiddenTerms: [],
+      channelIntensity: [],
+      allowAbsoluteClaims: false,
+      personas: [],
+      funnelMessages: [],
+      messageBlueprints: [],
+      factsAndEvidence: [],
+      generatedPieces: [],
+      approvedPatterns: [],
+      rejectedPatterns: [],
     },
   };
 }
@@ -64,6 +367,7 @@ export function normalizeProjectAssets(raw: unknown): ProjectAssetsMetadata {
   const o = raw as Record<string, unknown>;
   const brandIn = o.brand;
   const knowIn = o.knowledge;
+  const strategyIn = o.strategy;
 
   const brand = { ...base.brand };
   if (brandIn && typeof brandIn === "object") {
@@ -93,12 +397,246 @@ export function normalizeProjectAssets(raw: unknown): ProjectAssetsMetadata {
         .map((d) => ({
           ...d,
           mime: typeof d.mime === "string" ? d.mime : "application/octet-stream",
+          scope: d.scope === "context" ? "context" : "core",
+          contextKind:
+            d.contextKind === "competencia" ||
+            d.contextKind === "mercado" ||
+            d.contextKind === "referencia" ||
+            d.contextKind === "general"
+              ? d.contextKind
+              : undefined,
+          s3Path: typeof d.s3Path === "string" ? d.s3Path : undefined,
+          type: d.type === "image" ? "image" : "document",
+          format:
+            d.format === "pdf" ||
+            d.format === "docx" ||
+            d.format === "txt" ||
+            d.format === "html" ||
+            d.format === "url" ||
+            d.format === "image"
+              ? d.format
+              : undefined,
+          status: d.status === "Analizado" || d.status === "Error" ? d.status : "Subido",
+          uploadedAt: typeof d.uploadedAt === "string" ? d.uploadedAt : undefined,
+          extractedContext: typeof d.extractedContext === "string" ? d.extractedContext : undefined,
+          originalSourceUrl:
+            typeof d.originalSourceUrl === "string" ? d.originalSourceUrl : undefined,
+          embedding: Array.isArray(d.embedding)
+            ? d.embedding.filter((n): n is number => typeof n === "number")
+            : undefined,
+          errorMessage: typeof d.errorMessage === "string" ? d.errorMessage : undefined,
           dataUrl: typeof d.dataUrl === "string" ? d.dataUrl : undefined,
+          insights:
+            d.insights && typeof d.insights === "object"
+              ? {
+                  claims: Array.isArray(d.insights.claims)
+                    ? d.insights.claims.filter((x): x is string => typeof x === "string")
+                    : [],
+                  metrics: Array.isArray(d.insights.metrics)
+                    ? d.insights.metrics.filter((x): x is string => typeof x === "string")
+                    : [],
+                  potentialUse: Array.isArray(d.insights.potentialUse)
+                    ? d.insights.potentialUse.filter((x): x is string => typeof x === "string")
+                    : [],
+                  freshness: typeof d.insights.freshness === "string" ? d.insights.freshness : "",
+                  reliability:
+                    typeof d.insights.reliability === "number"
+                      ? Math.max(0, Math.min(100, d.insights.reliability))
+                      : 0,
+                  usedInPieces: Array.isArray(d.insights.usedInPieces)
+                    ? d.insights.usedInPieces.filter((x): x is string => typeof x === "string")
+                    : [],
+                }
+              : undefined,
         }));
+    }
+    if (typeof k.corporateContext === "string") {
+      knowledge.corporateContext = k.corporateContext;
     }
   }
 
-  return { brand, knowledge };
+  const strategy: BrainStrategy = {
+    ...DEFAULT_STRATEGY,
+    voiceExamples: [],
+    tabooPhrases: [],
+    approvedPhrases: [],
+    languageTraits: [],
+    syntaxPatterns: [],
+    preferredTerms: [],
+    forbiddenTerms: [],
+    channelIntensity: [],
+    allowAbsoluteClaims: false,
+    personas: [],
+    funnelMessages: [],
+    messageBlueprints: [],
+    factsAndEvidence: [],
+    generatedPieces: [],
+    approvedPatterns: [],
+    rejectedPatterns: [],
+  };
+
+  if (strategyIn && typeof strategyIn === "object") {
+    const s = strategyIn as Record<string, unknown>;
+    if (Array.isArray(s.voiceExamples)) {
+      strategy.voiceExamples = s.voiceExamples
+        .filter((x): x is Record<string, unknown> => Boolean(x && typeof x === "object"))
+        .map((x): BrainVoiceExample => ({
+          id: typeof x.id === "string" ? x.id : crypto.randomUUID(),
+          kind:
+            x.kind === "approved_voice" ||
+            x.kind === "forbidden_voice" ||
+            x.kind === "good_piece" ||
+            x.kind === "bad_piece"
+              ? x.kind
+              : "approved_voice",
+          label: typeof x.label === "string" ? x.label : undefined,
+          text: typeof x.text === "string" ? x.text : "",
+        }))
+        .filter((x) => x.text.trim().length > 0);
+    }
+    if (Array.isArray(s.tabooPhrases)) {
+      strategy.tabooPhrases = s.tabooPhrases.filter((x): x is string => typeof x === "string");
+    }
+    if (Array.isArray(s.approvedPhrases)) {
+      strategy.approvedPhrases = s.approvedPhrases.filter((x): x is string => typeof x === "string");
+    }
+    if (Array.isArray(s.languageTraits)) {
+      strategy.languageTraits = s.languageTraits.filter((x): x is string => typeof x === "string");
+    }
+    if (Array.isArray(s.syntaxPatterns)) {
+      strategy.syntaxPatterns = s.syntaxPatterns.filter((x): x is string => typeof x === "string");
+    }
+    if (Array.isArray(s.preferredTerms)) {
+      strategy.preferredTerms = s.preferredTerms.filter((x): x is string => typeof x === "string");
+    }
+    if (Array.isArray(s.forbiddenTerms)) {
+      strategy.forbiddenTerms = s.forbiddenTerms.filter((x): x is string => typeof x === "string");
+    }
+    if (Array.isArray(s.channelIntensity)) {
+      strategy.channelIntensity = s.channelIntensity
+        .filter((x): x is Record<string, unknown> => Boolean(x && typeof x === "object"))
+        .map((x) => ({
+          channel: typeof x.channel === "string" ? x.channel : "",
+          intensity: typeof x.intensity === "number" ? Math.max(0, Math.min(100, x.intensity)) : 0,
+        }))
+        .filter((x) => x.channel.trim().length > 0);
+    }
+    if (typeof s.allowAbsoluteClaims === "boolean") {
+      strategy.allowAbsoluteClaims = s.allowAbsoluteClaims;
+    }
+    if (Array.isArray(s.personas)) {
+      strategy.personas = s.personas
+        .filter((x): x is Record<string, unknown> => Boolean(x && typeof x === "object"))
+        .map((x) => ({
+          id: typeof x.id === "string" ? x.id : crypto.randomUUID(),
+          name: typeof x.name === "string" ? x.name : "Persona",
+          pain: typeof x.pain === "string" ? x.pain : "",
+          channel: typeof x.channel === "string" ? x.channel : "",
+          sophistication: typeof x.sophistication === "string" ? x.sophistication : "",
+          tags: Array.isArray(x.tags) ? x.tags.filter((t): t is string => typeof t === "string") : [],
+          objections: Array.isArray(x.objections)
+            ? x.objections.filter((t): t is string => typeof t === "string")
+            : [],
+          proofNeeded: Array.isArray(x.proofNeeded)
+            ? x.proofNeeded.filter((t): t is string => typeof t === "string")
+            : [],
+          attentionTriggers: Array.isArray(x.attentionTriggers)
+            ? x.attentionTriggers.filter((t): t is string => typeof t === "string")
+            : [],
+          marketSophistication:
+            typeof x.marketSophistication === "string" ? x.marketSophistication : undefined,
+        }));
+    }
+    if (Array.isArray(s.funnelMessages)) {
+      strategy.funnelMessages = s.funnelMessages
+        .filter((x): x is Record<string, unknown> => Boolean(x && typeof x === "object"))
+        .map((x): BrainFunnelMessage => ({
+          id: typeof x.id === "string" ? x.id : crypto.randomUUID(),
+          stage:
+            x.stage === "awareness" ||
+            x.stage === "consideration" ||
+            x.stage === "conversion" ||
+            x.stage === "retention"
+              ? (x.stage as BrainFunnelMessage["stage"])
+              : "awareness",
+          text: typeof x.text === "string" ? x.text : "",
+        }))
+        .filter((x) => x.text.trim().length > 0);
+    }
+    if (Array.isArray(s.messageBlueprints)) {
+      strategy.messageBlueprints = s.messageBlueprints
+        .filter((x): x is Record<string, unknown> => Boolean(x && typeof x === "object"))
+        .map((x): BrainMessageBlueprint => ({
+          id: typeof x.id === "string" ? x.id : crypto.randomUUID(),
+          claim: typeof x.claim === "string" ? x.claim : "",
+          support: typeof x.support === "string" ? x.support : "",
+          audience: typeof x.audience === "string" ? x.audience : "",
+          channel: typeof x.channel === "string" ? x.channel : "",
+          stage:
+            x.stage === "awareness" ||
+            x.stage === "consideration" ||
+            x.stage === "conversion" ||
+            x.stage === "retention"
+              ? (x.stage as BrainMessageBlueprint["stage"])
+              : "awareness",
+          cta: typeof x.cta === "string" ? x.cta : "",
+          evidence: Array.isArray(x.evidence)
+            ? x.evidence.filter((t): t is string => typeof t === "string")
+            : [],
+        }))
+        .filter((x) => x.claim.trim().length > 0);
+    }
+    if (Array.isArray(s.factsAndEvidence)) {
+      strategy.factsAndEvidence = s.factsAndEvidence
+        .filter((x): x is Record<string, unknown> => Boolean(x && typeof x === "object"))
+        .map((x): BrainFactEvidence => ({
+          id: typeof x.id === "string" ? x.id : crypto.randomUUID(),
+          claim: typeof x.claim === "string" ? x.claim : "",
+          evidence: Array.isArray(x.evidence)
+            ? x.evidence.filter((t): t is string => typeof t === "string")
+            : [],
+          sourceDocIds: Array.isArray(x.sourceDocIds)
+            ? x.sourceDocIds.filter((t): t is string => typeof t === "string")
+            : [],
+          strength:
+            x.strength === "fuerte" || x.strength === "media" || x.strength === "debil"
+              ? (x.strength as BrainFactEvidence["strength"])
+              : "debil",
+          verified: Boolean(x.verified),
+          interpreted: Boolean(x.interpreted),
+        }))
+        .filter((x) => x.claim.trim().length > 0);
+    }
+    if (Array.isArray(s.generatedPieces)) {
+      strategy.generatedPieces = s.generatedPieces
+        .filter((x): x is Record<string, unknown> => Boolean(x && typeof x === "object"))
+        .map((x) => ({
+          id: typeof x.id === "string" ? x.id : crypto.randomUUID(),
+          createdAt: typeof x.createdAt === "string" ? x.createdAt : new Date().toISOString(),
+          objective: typeof x.objective === "string" ? x.objective : "",
+          channel: typeof x.channel === "string" ? x.channel : "",
+          personaId: typeof x.personaId === "string" ? x.personaId : "",
+          funnelStage: typeof x.funnelStage === "string" ? x.funnelStage : "",
+          prompt: typeof x.prompt === "string" ? x.prompt : "",
+          draft: typeof x.draft === "string" ? x.draft : "",
+          critique: typeof x.critique === "string" ? x.critique : "",
+          revised: typeof x.revised === "string" ? x.revised : "",
+          status:
+            x.status === "approved" || x.status === "rejected" || x.status === "draft"
+              ? x.status
+              : "draft",
+          notes: typeof x.notes === "string" ? x.notes : undefined,
+        }));
+    }
+    if (Array.isArray(s.approvedPatterns)) {
+      strategy.approvedPatterns = s.approvedPatterns.filter((x): x is string => typeof x === "string");
+    }
+    if (Array.isArray(s.rejectedPatterns)) {
+      strategy.rejectedPatterns = s.rejectedPatterns.filter((x): x is string => typeof x === "string");
+    }
+  }
+
+  return { brand, knowledge, strategy };
 }
 
 /** Texto compacto para el asistente del lienzo (sin data URLs de logos). */
@@ -112,5 +650,9 @@ export function summarizeProjectAssetsForAssistant(raw: unknown): string {
     `Brand colors (hex): primary ${a.brand.colorPrimary}, secondary ${a.brand.colorSecondary}, accent ${a.brand.colorAccent}.`,
     `Logos in Brain: positive=${hasPos ? "yes" : "no"}, negative=${hasNeg ? "yes" : "no"}.`,
     `Knowledge: ${nUrl} link(s), ${nDoc} document(s).`,
+    `Analyzed docs: ${a.knowledge.documents.filter((d) => d.status === "Analizado").length}.`,
+    `Personas: ${a.strategy.personas.length}.`,
+    `Voice examples: ${a.strategy.voiceExamples.length}.`,
+    `Facts & evidence: ${a.strategy.factsAndEvidence.length}.`,
   ].join(" ");
 }

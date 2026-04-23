@@ -3,6 +3,7 @@ import path from "path";
 import { appendUsageLineToS3Queued, isUsageS3Enabled, readUsageLogFromS3 } from "@/lib/api-usage-s3";
 import { USAGE_PERIOD_START_ISO } from "@/lib/usage-constants";
 import { estimateGeminiUsd, estimateOpenAIUsd } from "@/lib/pricing-config";
+import { auth } from "@/lib/auth";
 
 export {
   estimateGeminiImageGenerationUsd,
@@ -41,6 +42,7 @@ export type UsageProvider =
 export type UsageRecordLine = {
   ts: string;
   provider: UsageProvider;
+  userEmail?: string;
   /** Clave estable para agregación por fila del panel */
   serviceId?: UsageServiceId;
   route: string;
@@ -155,6 +157,18 @@ export async function recordApiUsage(
   }
 }
 
+export async function resolveUsageUserEmailFromRequest(
+  req: Request,
+): Promise<string | undefined> {
+  const devCode = req.headers.get("x-foldder-dev-passcode");
+  if (process.env.NODE_ENV !== "production" && devCode === "6666") {
+    return "dev-bypass@local.foldder";
+  }
+  const session = await auth();
+  const email = session?.user?.email?.trim().toLowerCase();
+  return email || undefined;
+}
+
 export type ServiceAgg = {
   id: UsageServiceId;
   label: string;
@@ -239,6 +253,186 @@ export async function aggregateUsageSince(sinceIso: string): Promise<{
     services,
     totalCostUsd: Math.round(totalCostUsd * 1_000_000) / 1_000_000,
     totalTokens,
+  };
+}
+
+export type UsageByService = {
+  serviceId: UsageServiceId;
+  label: string;
+  calls: number;
+  costUsd: number;
+  totalTokens: number;
+};
+
+export type UsageByUser = {
+  userEmail: string;
+  calls: number;
+  costUsd: number;
+  totalTokens: number;
+};
+
+export type UsageByProviderModel = {
+  provider: UsageProvider;
+  model: string;
+  calls: number;
+  costUsd: number;
+  totalTokens: number;
+};
+
+export type UsageByDay = {
+  day: string;
+  calls: number;
+  costUsd: number;
+  totalTokens: number;
+  uniqueUsers: number;
+};
+
+export async function getUsageDeepReportSince(sinceIso: string): Promise<{
+  since: string;
+  totals: { calls: number; costUsd: number; totalTokens: number };
+  byService: UsageByService[];
+  byUser: UsageByUser[];
+  byProviderModel: UsageByProviderModel[];
+  byDay: UsageByDay[];
+}> {
+  const sinceMs = new Date(sinceIso).getTime();
+  const lineSet = new Set<string>();
+
+  if (isUsageS3Enabled()) {
+    try {
+      const s3 = await readUsageLogFromS3();
+      for (const line of s3.split("\n")) if (line.trim()) lineSet.add(line);
+    } catch (e) {
+      console.error("[api-usage] deep report lectura S3:", e);
+    }
+  }
+
+  for (const file of usageReadPaths()) {
+    try {
+      const raw = await fs.readFile(file, "utf8");
+      for (const line of raw.split("\n")) if (line.trim()) lineSet.add(line);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const byService = new Map<UsageServiceId, UsageByService>();
+  const byUser = new Map<string, UsageByUser>();
+  const byProviderModel = new Map<string, UsageByProviderModel>();
+  const byDay = new Map<
+    string,
+    { calls: number; costUsd: number; totalTokens: number; users: Set<string> }
+  >();
+
+  for (const s of USAGE_SERVICES) {
+    byService.set(s.id, {
+      serviceId: s.id,
+      label: s.label,
+      calls: 0,
+      costUsd: 0,
+      totalTokens: 0,
+    });
+  }
+
+  let totalCalls = 0;
+  let totalCost = 0;
+  let totalTokens = 0;
+
+  for (const line of lineSet) {
+    try {
+      const r = JSON.parse(line) as UsageRecordLine;
+      const ts = new Date(r.ts).getTime();
+      if (!Number.isFinite(ts) || ts < sinceMs) continue;
+      const sid = inferServiceIdFromRecord(r);
+      const cost = r.costUsd ?? 0;
+      const tokens =
+        r.totalTokens ??
+        (r.inputTokens != null || r.outputTokens != null
+          ? (r.inputTokens ?? 0) + (r.outputTokens ?? 0)
+          : 0);
+      const userEmail = (r.userEmail || "unknown@unattributed").trim().toLowerCase();
+      const provider = r.provider;
+      const model = (r.model || "unknown").trim();
+      const day = new Date(ts).toISOString().slice(0, 10);
+
+      const svc = byService.get(sid);
+      if (svc) {
+        svc.calls += 1;
+        svc.costUsd += cost;
+        svc.totalTokens += tokens;
+      }
+
+      const u = byUser.get(userEmail) ?? {
+        userEmail,
+        calls: 0,
+        costUsd: 0,
+        totalTokens: 0,
+      };
+      u.calls += 1;
+      u.costUsd += cost;
+      u.totalTokens += tokens;
+      byUser.set(userEmail, u);
+
+      const pmKey = `${provider}::${model}`;
+      const pm = byProviderModel.get(pmKey) ?? {
+        provider,
+        model,
+        calls: 0,
+        costUsd: 0,
+        totalTokens: 0,
+      };
+      pm.calls += 1;
+      pm.costUsd += cost;
+      pm.totalTokens += tokens;
+      byProviderModel.set(pmKey, pm);
+
+      const d = byDay.get(day) ?? {
+        calls: 0,
+        costUsd: 0,
+        totalTokens: 0,
+        users: new Set<string>(),
+      };
+      d.calls += 1;
+      d.costUsd += cost;
+      d.totalTokens += tokens;
+      d.users.add(userEmail);
+      byDay.set(day, d);
+
+      totalCalls += 1;
+      totalCost += cost;
+      totalTokens += tokens;
+    } catch {
+      /* corrupted line */
+    }
+  }
+
+  const normMoney = (n: number) => Math.round(n * 1_000_000) / 1_000_000;
+
+  return {
+    since: sinceIso,
+    totals: {
+      calls: totalCalls,
+      costUsd: normMoney(totalCost),
+      totalTokens,
+    },
+    byService: [...byService.values()]
+      .map((r) => ({ ...r, costUsd: normMoney(r.costUsd) }))
+      .sort((a, b) => b.costUsd - a.costUsd),
+    byUser: [...byUser.values()]
+      .map((r) => ({ ...r, costUsd: normMoney(r.costUsd) }))
+      .sort((a, b) => b.costUsd - a.costUsd),
+    byProviderModel: [...byProviderModel.values()]
+      .map((r) => ({ ...r, costUsd: normMoney(r.costUsd) }))
+      .sort((a, b) => b.costUsd - a.costUsd),
+    byDay: [...byDay.entries()]
+      .map(([day, v]) => ({
+        day,
+        calls: v.calls,
+        costUsd: normMoney(v.costUsd),
+        totalTokens: v.totalTokens,
+        uniqueUsers: v.users.size,
+      }))
+      .sort((a, b) => a.day.localeCompare(b.day)),
   };
 }
 

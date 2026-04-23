@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { recordApiUsage } from "@/lib/api-usage";
+import {
+  recordApiUsage,
+  resolveUsageUserEmailFromRequest,
+} from "@/lib/api-usage";
 import { estimateSeedanceVideoUsd } from "@/lib/pricing-config";
 import { uploadToS3, getPresignedUrl } from "@/lib/s3-utils";
+import {
+  ApiServiceDisabledError,
+  assertApiServiceEnabled,
+} from "@/lib/api-usage-controls";
 import {
   collectAllReferenceImageUrlsOrdered,
   parseVideoRefSlots,
@@ -74,6 +81,8 @@ function buildArkContent(payload: {
 
 export async function POST(req: NextRequest) {
   try {
+    await assertApiServiceEnabled("seedance-video");
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const body = await req.json();
     const {
       prompt,
@@ -251,6 +260,7 @@ export async function POST(req: NextRequest) {
 
     await recordApiUsage({
       provider: "volcengine",
+      userEmail: usageUserEmail,
       serviceId: "seedance-video",
       route: "/api/seedance/video",
       model,
@@ -267,6 +277,12 @@ export async function POST(req: NextRequest) {
       status: "success",
     });
   } catch (error: unknown) {
+    if (error instanceof ApiServiceDisabledError) {
+      return NextResponse.json(
+        { error: `API bloqueada en admin: ${error.label}` },
+        { status: 423 },
+      );
+    }
     const message = error instanceof Error ? error.message : String(error);
     console.error("[Seedance] Exception:", message);
     return NextResponse.json({ error: `Server Exception: ${message}` }, { status: 500 });

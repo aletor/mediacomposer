@@ -1,11 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { recordApiUsage } from '@/lib/api-usage';
+import {
+  recordApiUsage,
+  resolveUsageUserEmailFromRequest,
+} from '@/lib/api-usage';
 import sharp from 'sharp';
 import Replicate from 'replicate';
+import {
+  ApiServiceDisabledError,
+  assertApiServiceEnabled,
+} from "@/lib/api-usage-controls";
 
 export async function POST(req: NextRequest) {
   console.log(`[Background Remover] POST request received`);
   try {
+    await assertApiServiceEnabled("replicate-bg");
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const body = await req.json();
     const { 
       image, 
@@ -59,7 +68,7 @@ export async function POST(req: NextRequest) {
     for (let i = 0; i < maxRetries; i++) {
         try {
             console.log(`[Background Remover] ML Attempt ${i + 1}/${maxRetries}`);
-            const output: any = await replicate.run(
+            const output = await replicate.run(
                 "851-labs/background-remover:a029dff38972b5fda4ec5d75d7d1cd25aeff621d2cf4946a41055d7db66b80bc",
                 { 
                     input: { 
@@ -72,6 +81,7 @@ export async function POST(req: NextRequest) {
             maskUrl = Array.isArray(output) ? output[0] : output.toString();
             await recordApiUsage({
               provider: "replicate",
+              userEmail: usageUserEmail,
               serviceId: "replicate-bg",
               route: "/api/spaces/matte",
               model: "851-labs/background-remover",
@@ -82,8 +92,13 @@ export async function POST(req: NextRequest) {
               note: "Eliminar fondo (estimado)",
             });
             break; // Success!
-        } catch (mlErr: any) {
-            const is429 = mlErr.message?.includes("429") || mlErr.status === 429;
+        } catch (mlErr: unknown) {
+            const mlMessage = mlErr instanceof Error ? mlErr.message : String(mlErr);
+            const mlStatus =
+              typeof mlErr === "object" && mlErr !== null && "status" in mlErr
+                ? (mlErr as { status?: number }).status
+                : undefined;
+            const is429 = mlMessage.includes("429") || mlStatus === 429;
             if (is429 && i < maxRetries - 1) {
                 console.warn(`[Background Remover] Rate limit hit (429). Retrying in ${retryDelay}ms...`);
                 await new Promise(resolve => setTimeout(resolve, retryDelay));
@@ -92,8 +107,8 @@ export async function POST(req: NextRequest) {
             }
             console.error("[Background Remover] ML Error:", mlErr);
             return NextResponse.json({ 
-                error: is429 ? "Replicate Rate Limit: Too many requests or low balance (<$5). Please wait a moment." : `ML Engine failed: ${mlErr.message}`,
-                details: mlErr.message 
+                error: is429 ? "Replicate Rate Limit: Too many requests or low balance (<$5). Please wait a moment." : `ML Engine failed: ${mlMessage}`,
+                details: mlMessage 
             }, { status: is429 ? 429 : 500 });
         }
     }
@@ -165,8 +180,15 @@ export async function POST(req: NextRequest) {
       }
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
+    if (error instanceof ApiServiceDisabledError) {
+      return NextResponse.json(
+        { error: `API bloqueada en admin: ${error.label}` },
+        { status: 423 },
+      );
+    }
     console.error('[Background Remover] CRITICAL ERROR:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const message = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

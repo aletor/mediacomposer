@@ -1,9 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { recordApiUsage } from '@/lib/api-usage';
+import {
+  recordApiUsage,
+  resolveUsageUserEmailFromRequest,
+} from '@/lib/api-usage';
 import Replicate from 'replicate';
+import {
+  ApiServiceDisabledError,
+  assertApiServiceEnabled,
+} from "@/lib/api-usage-controls";
 
 export async function POST(req: NextRequest) {
   try {
+    await assertApiServiceEnabled("replicate-vmatte");
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const { video } = await req.json();
 
     if (!video) {
@@ -22,7 +31,7 @@ export async function POST(req: NextRequest) {
 
     // Inference: Robust Video Matting (arielreplicate/robust_video_matting)
     // Optimized for temporal consistency
-    const output: any = await replicate.run(
+    const output = await replicate.run(
       "arielreplicate/robust_video_matting:df03798935c106575239a9cba2e6467fac75586617a264a9fb120a1608674515",
       {
         input: {
@@ -39,6 +48,7 @@ export async function POST(req: NextRequest) {
 
     await recordApiUsage({
       provider: "replicate",
+      userEmail: usageUserEmail,
       serviceId: "replicate-vmatte",
       route: "/api/spaces/video-matte",
       model: "robust_video_matting",
@@ -55,8 +65,15 @@ export async function POST(req: NextRequest) {
       success: true
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
+    if (error instanceof ApiServiceDisabledError) {
+      return NextResponse.json(
+        { error: `API bloqueada en admin: ${error.label}` },
+        { status: 423 },
+      );
+    }
     console.error('[Video Matte] CRITICAL ERROR:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const message = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

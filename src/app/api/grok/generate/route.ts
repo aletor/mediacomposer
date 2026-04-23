@@ -1,10 +1,18 @@
 import { NextResponse } from 'next/server';
-import { recordApiUsage } from '@/lib/api-usage';
+import {
+  recordApiUsage,
+  resolveUsageUserEmailFromRequest,
+} from '@/lib/api-usage';
+import {
+  ApiServiceDisabledError,
+  assertApiServiceEnabled,
+} from "@/lib/api-usage-controls";
 import fs from 'fs';
-import path from 'path';
 
 export async function POST(req: Request) {
   try {
+    await assertApiServiceEnabled("grok-video");
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const { promptText, videoUrl, duration, resolution, aspect_ratio } = await req.json();
 
     if (!promptText) {
@@ -59,6 +67,7 @@ RESPONSE: ${JSON.stringify(data, null, 2)}
     const d = typeof duration === "number" && duration > 0 ? duration : 5;
     await recordApiUsage({
       provider: "grok",
+      userEmail: usageUserEmail,
       serviceId: "grok-video",
       route: "/api/grok/generate",
       model: "grok-imagine-video",
@@ -71,8 +80,15 @@ RESPONSE: ${JSON.stringify(data, null, 2)}
 
     // Official response returns a request_id
     return NextResponse.json({ taskId: data.id || data.request_id });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof ApiServiceDisabledError) {
+      return NextResponse.json(
+        { error: `API bloqueada en admin: ${error.label}` },
+        { status: 423 },
+      );
+    }
     console.error("[Grok API Error]:", error);
-    return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 500 });
+    return NextResponse.json({ error: message || "Internal Server Error" }, { status: 500 });
   }
 }

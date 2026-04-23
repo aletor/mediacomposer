@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
-import { recordApiUsage } from "@/lib/api-usage";
+import {
+  recordApiUsage,
+  resolveUsageUserEmailFromRequest,
+} from "@/lib/api-usage";
+import {
+  ApiServiceDisabledError,
+  assertApiServiceEnabled,
+} from "@/lib/api-usage-controls";
 import {
   mergeAssistantDeltaIntoWorkspace,
   remapCollidingAssistantDelta,
@@ -37,6 +44,8 @@ const ASSISTANT_MODEL = process.env.OPENAI_ASSISTANT_MODEL?.trim() || "gpt-4o-mi
 
 export async function POST(req: Request) {
   try {
+    await assertApiServiceEnabled("openai-assistant");
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const { prompt, currentNodes = [], currentEdges = [], projectAssets } = await req.json() as {
       prompt?: string;
       currentNodes?: unknown;
@@ -120,6 +129,7 @@ export async function POST(req: Request) {
     if (u) {
       await recordApiUsage({
         provider: "openai",
+        userEmail: usageUserEmail,
         serviceId: "openai-assistant",
         route: "/api/spaces/assistant",
         model: ASSISTANT_MODEL,
@@ -130,6 +140,7 @@ export async function POST(req: Request) {
     } else {
       await recordApiUsage({
         provider: "openai",
+        userEmail: usageUserEmail,
         serviceId: "openai-assistant",
         route: "/api/spaces/assistant",
         model: ASSISTANT_MODEL,
@@ -278,6 +289,12 @@ export async function POST(req: Request) {
 
     return NextResponse.json(result);
   } catch (error: any) {
+    if (error instanceof ApiServiceDisabledError) {
+      return NextResponse.json(
+        { error: `API bloqueada en admin: ${error.label}` },
+        { status: 423 },
+      );
+    }
     console.error("Assistant API Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

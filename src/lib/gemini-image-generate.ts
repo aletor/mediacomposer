@@ -39,6 +39,7 @@ export type GeminiImageGenerateResult = {
 export type GeminiImageGenerateOptions = {
   /** Defaults to `/api/gemini/generate` for `recordApiUsage`. */
   usageRoute?: string;
+  usageUserEmail?: string;
 };
 
 export class GeminiGenerateError extends Error {
@@ -68,6 +69,7 @@ export async function geminiImageGenerate(
   options?: GeminiImageGenerateOptions
 ): Promise<GeminiImageGenerateResult> {
   const usageRoute = options?.usageRoute ?? "/api/gemini/generate";
+  const usageUserEmail = options?.usageUserEmail;
   const report = (progress: number, stage: string) => {
     onProgress?.(Math.min(100, Math.max(0, Math.round(progress))), stage);
   };
@@ -237,6 +239,7 @@ export async function geminiImageGenerate(
   if (usage) {
     await recordApiUsage({
       provider: "gemini",
+      userEmail: usageUserEmail,
       serviceId: "gemini-nano",
       route: usageRoute,
       model: modelId,
@@ -247,6 +250,7 @@ export async function geminiImageGenerate(
   } else {
     await recordApiUsage({
       provider: "gemini",
+      userEmail: usageUserEmail,
       serviceId: "gemini-nano",
       route: usageRoute,
       model: modelId,

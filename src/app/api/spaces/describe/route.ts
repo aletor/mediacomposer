@@ -1,9 +1,18 @@
 import { NextResponse } from 'next/server';
-import { recordApiUsage } from '@/lib/api-usage';
+import {
+  recordApiUsage,
+  resolveUsageUserEmailFromRequest,
+} from '@/lib/api-usage';
+import {
+  ApiServiceDisabledError,
+  assertApiServiceEnabled,
+} from '@/lib/api-usage-controls';
 import OpenAI from 'openai';
 
 export async function POST(req: Request) {
   try {
+    await assertApiServiceEnabled("openai-describe");
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const { url, type, metadata } = await req.json();
 
     if (!url) {
@@ -55,6 +64,7 @@ export async function POST(req: Request) {
     if (u) {
       await recordApiUsage({
         provider: "openai",
+        userEmail: usageUserEmail,
         serviceId: "openai-describe",
         route: "/api/spaces/describe",
         model: "gpt-4o",
@@ -65,6 +75,7 @@ export async function POST(req: Request) {
     } else {
       await recordApiUsage({
         provider: "openai",
+        userEmail: usageUserEmail,
         serviceId: "openai-describe",
         route: "/api/spaces/describe",
         model: "gpt-4o",
@@ -79,6 +90,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ description });
 
   } catch (error: any) {
+    if (error instanceof ApiServiceDisabledError) {
+      return NextResponse.json(
+        { error: `API bloqueada en admin: ${error.label}` },
+        { status: 423 },
+      );
+    }
     console.error("[Media Describer] Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

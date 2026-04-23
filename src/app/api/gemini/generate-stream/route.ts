@@ -1,5 +1,7 @@
 import { NextRequest } from "next/server";
 import { geminiImageGenerate, GeminiGenerateError } from "@/lib/gemini-image-generate";
+import { resolveUsageUserEmailFromRequest } from "@/lib/api-usage";
+import { ApiServiceDisabledError, assertApiServiceEnabled } from "@/lib/api-usage-controls";
 
 /**
  * Misma carga útil que POST /api/gemini/generate, pero respuesta NDJSON:
@@ -8,6 +10,7 @@ import { geminiImageGenerate, GeminiGenerateError } from "@/lib/gemini-image-gen
  */
 export async function POST(req: NextRequest) {
   const encoder = new TextEncoder();
+  const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
   const body = await req.json();
 
   const stream = new ReadableStream({
@@ -17,12 +20,13 @@ export async function POST(req: NextRequest) {
       };
 
       try {
+        await assertApiServiceEnabled("gemini-nano");
         const result = await geminiImageGenerate(
           body,
           (progress, stage) => {
             send({ type: "phase", progress, stage });
           },
-          { usageRoute: "/api/gemini/generate-stream" },
+          { usageRoute: "/api/gemini/generate-stream", usageUserEmail },
         );
         const done: Record<string, unknown> = {
           type: "done",
@@ -33,6 +37,14 @@ export async function POST(req: NextRequest) {
         };
         send(done);
       } catch (err: unknown) {
+        if (err instanceof ApiServiceDisabledError) {
+          send({
+            type: "error",
+            error: `API bloqueada en admin: ${err.label}`,
+            status: 423,
+          });
+          return;
+        }
         if (err instanceof GeminiGenerateError) {
           send({
             type: "error",

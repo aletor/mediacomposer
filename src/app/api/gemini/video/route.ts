@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { recordApiUsage } from "@/lib/api-usage";
+import {
+  recordApiUsage,
+  resolveUsageUserEmailFromRequest,
+} from "@/lib/api-usage";
 import { estimateGeminiVeoVideoUsd, veoResolutionMultiplier } from "@/lib/pricing-config";
 import { uploadToS3, getPresignedUrl } from "@/lib/s3-utils";
+import {
+  ApiServiceDisabledError,
+  assertApiServiceEnabled,
+} from "@/lib/api-usage-controls";
 import {
   collectAllReferenceImageUrlsOrdered,
   parseVideoRefSlots,
@@ -27,6 +34,8 @@ function extractVeoVideoUri(pollData: Record<string, unknown>): string {
 export async function POST(req: NextRequest) {
   console.log("[Gemini Video] Request received");
   try {
+    await assertApiServiceEnabled("gemini-veo");
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const body = await req.json();
     const {
       prompt,
@@ -53,7 +62,7 @@ export async function POST(req: NextRequest) {
     const modelId = "veo-3.1-generate-preview";
     const endpoint = `${BASE_URL}/models/${modelId}:predictLongRunning?key=${apiKey}`;
 
-    const referenceImages: any[] = [];
+    const referenceImages: Array<Record<string, unknown>> = [];
 
     const processImage = async (image: string, type: string) => {
       if (!image) return;
@@ -222,6 +231,7 @@ export async function POST(req: NextRequest) {
     const costDur = effectiveDur > 0 ? effectiveDur : 8;
     await recordApiUsage({
       provider: "gemini",
+      userEmail: usageUserEmail,
       serviceId: "gemini-veo",
       route: "/api/gemini/video",
       model: "veo-3.1-generate-preview",
@@ -243,8 +253,15 @@ export async function POST(req: NextRequest) {
       status: "success"
     });
 
-  } catch (error: any) {
-    console.error("[Gemini Video] Global Exception:", error.message);
-    return NextResponse.json({ error: `Server Exception: ${error.message}` }, { status: 500 });
+  } catch (error: unknown) {
+    if (error instanceof ApiServiceDisabledError) {
+      return NextResponse.json(
+        { error: `API bloqueada en admin: ${error.label}` },
+        { status: 423 },
+      );
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[Gemini Video] Global Exception:", message);
+    return NextResponse.json({ error: `Server Exception: ${message}` }, { status: 500 });
   }
 }
