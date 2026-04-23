@@ -8,6 +8,7 @@ import { NODE_REGISTRY, type HandleType } from "./nodeRegistry";
 export const FOLDDER_LOGO_BLUE = "#6C5CE7";
 
 export const HANDLE_COLORS: Record<string, string> = {
+  brain: "#a855f7",
   prompt: "#3b82f6",
   video: FOLDDER_LOGO_BLUE,
   image: FOLDDER_LOGO_BLUE,
@@ -30,6 +31,7 @@ const ACCENT_SURFACE_NODE_TYPES = new Set<string>(["nanoBanana", "geminiVideo", 
 
 /** Salida “principal” para el anillo del nodo: prioriza imagen/vídeo/prompt frente a mask/json cuando hay varias. */
 const PRIMARY_OUTPUT_PRIORITY: HandleType[] = [
+  "brain",
   "image",
   "video",
   "prompt",
@@ -116,6 +118,7 @@ export function getFoldderNodeHeaderTintColor(node: {
 
 /** Entradas únicas para la leyenda (español). */
 export const HANDLE_TYPE_LEGEND: { id: string; label: string; color: string }[] = [
+  { id: "brain", label: "Brain", color: HANDLE_COLORS.brain },
   { id: "prompt", label: "Prompt", color: HANDLE_COLORS.prompt },
   { id: "image", label: "Imagen", color: HANDLE_COLORS.image },
   { id: "video", label: "Vídeo", color: HANDLE_COLORS.video },

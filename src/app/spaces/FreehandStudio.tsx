@@ -94,6 +94,36 @@ import { FreehandExportModal, type ProfessionalExportOptions } from "./freehand/
 const PROP_PANEL_SCRUB_CLASS =
   "cursor-ew-resize rounded-[5px] border border-white/[0.08] bg-white/[0.06] px-2 py-1 font-mono text-[12px] text-zinc-100 outline-none focus:border-violet-500/50";
 const PROP_PANEL_SCRUB_HINT = "Arrastra horizontalmente · Mayús = ×10";
+
+type BrainTextBlockKind = "Titular" | "Subtítulo" | "Párrafo" | "CTA" | "Quote";
+
+function inferBrainTextBlockKind(opts: {
+  text: string;
+  width: number;
+  height: number;
+  fontSize: number;
+}): BrainTextBlockKind {
+  const text = (opts.text || "").trim();
+  const lines = text.length === 0 ? 1 : text.split(/\r?\n+/).filter(Boolean).length;
+  const chars = text.length;
+  const ratio = opts.width > 0 ? opts.height / opts.width : 0;
+  const isShort = chars <= 44;
+  const isVeryShort = chars <= 24;
+  const isTall = opts.height >= Math.max(48, opts.fontSize * 2.4);
+  const hasQuoteTone = text.startsWith("“") || text.startsWith("\"") || / dijo | afirma | comentó /i.test(text);
+
+  if (hasQuoteTone && chars <= 170) return "Quote";
+  if (isVeryShort || lines === 1 && ratio < 0.18) return "Titular";
+  if (isShort && (ratio < 0.3 || lines <= 2)) return "Subtítulo";
+  if (chars <= 70 && /^(compra|descubre|solicita|empieza|prueba|reserva|únete|ver|leer)\b/i.test(text)) return "CTA";
+  if (isTall || lines >= 3 || chars > 140) return "Párrafo";
+  return "Subtítulo";
+}
+
+function toSvgPreviewDataUrl(svg: string): string {
+  const compact = svg.replace(/\s+/g, " ").trim();
+  return `data:image/svg+xml;utf8,${encodeURIComponent(compact)}`;
+}
 import {
   type Artboard,
   artboardToRect,
@@ -209,6 +239,8 @@ import {
   DesignerRulerVertical,
 } from "./designer/DesignerCanvasRulers";
 import { ImageFrameFittingGlyph } from "./freehand/ImageFrameFittingGlyph";
+import { normalizeProjectAssets } from "./project-assets-metadata";
+import { useProjectBrainCanvas } from "./project-brain-canvas-context";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  TYPES
@@ -8579,6 +8611,11 @@ export function FreehandStudioCanvas({
   designerCanvasZenMode,
   onDesignerCanvasZenModeChange,
 }: FreehandStudioProps) {
+  const projectBrainCtx = useProjectBrainCanvas();
+  const brainAssets = useMemo(
+    () => normalizeProjectAssets(projectBrainCtx?.assetsMetadata),
+    [projectBrainCtx?.assetsMetadata],
+  );
 
   // ── Core state ─────────────────────────────────────────────────────
   const [objects, setObjects] = useState<FreehandObject[]>(() => {
@@ -9169,6 +9206,11 @@ export function FreehandStudioCanvas({
   }, [layerStylesUi.open, layerStylesUi.targetId, layerStylesUi.draft]);
   /** Bloque Color (paleta + fill + stroke): plegado por defecto. */
   const [colorPanelExpanded, setColorPanelExpanded] = useState(false);
+  /** Sugerencias Brain: variantes para el objeto seleccionado (sin auto-aplicar). */
+  const [brainSuggestionsTick, setBrainSuggestionsTick] = useState(0);
+  const [brainManualTextKind, setBrainManualTextKind] = useState<BrainTextBlockKind | "">("");
+  const [brainTonePreset, setBrainTonePreset] = useState<"auto" | "directo" | "editorial">("auto");
+  const [brainLengthPreset, setBrainLengthPreset] = useState<"auto" | "corto" | "medio" | "largo">("auto");
   /** Quick fill/stroke popover: which channel is being edited from canvas. */
   const [quickEditMode, setQuickEditMode] = useState<"fill" | "stroke" | null>(null);
   /** Lienzo a pantalla completa (P). En Designer el estado vive en `DesignerStudio` para no perderse al cambiar de página. */
@@ -9946,6 +9988,246 @@ export function FreehandStudioCanvas({
 
   const selectedObjects = useMemo(() => objects.filter((o) => selectedIds.has(o.id)), [objects, selectedIds]);
   const firstSelected = selectedObjects[0] ?? null;
+  const singleSelected = selectedObjects.length === 1 ? selectedObjects[0] ?? null : null;
+
+  const selectedTextValue = useMemo(() => {
+    if (!singleSelected) return "";
+    if (singleSelected.type === "text") return (singleSelected as TextObject).text ?? "";
+    if (singleSelected.type === "textOnPath") return (singleSelected as TextOnPathObject).text ?? "";
+    return "";
+  }, [singleSelected]);
+
+  const autoDetectedTextKind = useMemo(() => {
+    if (!singleSelected) return null;
+    if (singleSelected.type !== "text" && singleSelected.type !== "textOnPath") return null;
+    const fontSize = Math.max(10, Number((singleSelected as TextObject).fontSize ?? 16));
+    return inferBrainTextBlockKind({
+      text: selectedTextValue,
+      width: Math.max(1, singleSelected.width),
+      height: Math.max(1, singleSelected.height),
+      fontSize,
+    });
+  }, [singleSelected, selectedTextValue]);
+
+  const effectiveTextKind: BrainTextBlockKind | null =
+    (brainManualTextKind || autoDetectedTextKind) as BrainTextBlockKind | null;
+
+  useEffect(() => {
+    setBrainManualTextKind("");
+    setBrainSuggestionsTick(0);
+  }, [singleSelected?.id]);
+
+  const supportsBrainTextSuggestions = !!singleSelected && (singleSelected.type === "text" || singleSelected.type === "textOnPath");
+  const supportsBrainImageSuggestions =
+    !!singleSelected && (singleSelected.type === "image" || (singleSelected.type === "rect" && !!singleSelected.isImageFrame));
+  const supportsBrainColorSuggestions = !!singleSelected;
+
+  const brainNearbyText = useMemo(() => {
+    if (!singleSelected) return [];
+    return objects
+      .filter((o) => o.id !== singleSelected.id && (o.type === "text" || o.type === "textOnPath"))
+      .map((o) => ((o as TextObject).text || "").trim())
+      .filter((t) => t.length > 0)
+      .slice(0, 5);
+  }, [objects, singleSelected]);
+
+  const brainClaims = useMemo(() => {
+    const strategyClaims = brainAssets.strategy.messageBlueprints.map((m) => m.claim).filter(Boolean);
+    const evidenceClaims = brainAssets.strategy.factsAndEvidence.map((f) => f.claim).filter(Boolean);
+    const docClaims = brainAssets.knowledge.documents
+      .flatMap((d) => d.insights?.claims ?? [])
+      .filter(Boolean);
+    const raw = [...strategyClaims, ...evidenceClaims, ...docClaims];
+    return Array.from(new Set(raw.map((x) => x.trim()).filter((x) => x.length > 0))).slice(0, 18);
+  }, [brainAssets]);
+
+  const brainMetrics = useMemo(() => {
+    const fromInsights = brainAssets.knowledge.documents.flatMap((d) => d.insights?.metrics ?? []);
+    const fromText = brainNearbyText.flatMap((t) => t.match(/\$?\d[\d.,]*(?:\s?(?:%|k|K|M|B|usuarios|DAU|USD|EUR|anos|años))?/g) ?? []);
+    const raw = [...fromInsights, ...fromText];
+    return Array.from(new Set(raw.map((x) => x.trim()).filter((x) => x.length > 0))).slice(0, 18);
+  }, [brainAssets, brainNearbyText]);
+
+  const brainSupport = useMemo(() => {
+    const fromBlueprint = brainAssets.strategy.messageBlueprints.map((m) => m.support).filter(Boolean);
+    const fromEvidence = brainAssets.strategy.factsAndEvidence.flatMap((f) => f.evidence ?? []);
+    const raw = [...fromBlueprint, ...fromEvidence, ...brainNearbyText];
+    return Array.from(new Set(raw.map((x) => x.trim()).filter((x) => x.length > 0))).slice(0, 20);
+  }, [brainAssets, brainNearbyText]);
+
+  const brainTextSuggestions = useMemo(() => {
+    if (!supportsBrainTextSuggestions || !effectiveTextKind) return [];
+    const claim = brainClaims[(brainSuggestionsTick + 0) % Math.max(1, brainClaims.length)] ?? "Alinea creatividad, producción y contexto en un solo flujo";
+    const claimB = brainClaims[(brainSuggestionsTick + 1) % Math.max(1, brainClaims.length)] ?? "Escala contenido sin perder coherencia de marca";
+    const metric = brainMetrics[(brainSuggestionsTick + 0) % Math.max(1, brainMetrics.length)] ?? "80 usuarios simultáneos";
+    const proof = brainSupport[(brainSuggestionsTick + 0) % Math.max(1, brainSupport.length)] ?? "Respaldado por documentación y pruebas internas";
+    const tonePrefix =
+      brainTonePreset === "directo" ? "Directo: " : brainTonePreset === "editorial" ? "Editorial: " : "";
+
+    const byKind: Record<BrainTextBlockKind, string[]> = {
+      Titular: [
+        `${tonePrefix}${claim}`,
+        `${tonePrefix}${claimB}`,
+        `${tonePrefix}${claim} · ${metric}`,
+        `${tonePrefix}De documento a campaña con contexto real`,
+      ],
+      "Subtítulo": [
+        `${tonePrefix}${claim}. ${proof}.`,
+        `${tonePrefix}${claimB}. ${metric}.`,
+        `${tonePrefix}Mensajes consistentes por canal, etapa y audiencia.`,
+        `${tonePrefix}Contenido útil, accionable y conectado a evidencia.`,
+      ],
+      Párrafo: [
+        `${tonePrefix}${claim}. ${proof}. Además, se detectan métricas clave como ${metric} para construir mensajes con base real en cada pieza.`,
+        `${tonePrefix}${claimB}. El sistema separa conocimiento de marca y contexto de mercado para que cada output mantenga foco y credibilidad.`,
+        `${tonePrefix}El contenido nace de hechos verificables y señales de audiencia, no de texto genérico. ${proof}.`,
+      ],
+      CTA: [
+        `${tonePrefix}Solicita una demo guiada`,
+        `${tonePrefix}Empieza con tu primer flujo en minutos`,
+        `${tonePrefix}Ver ejemplos listos para publicar`,
+        `${tonePrefix}Generar pieza con contexto`,
+      ],
+      Quote: [
+        `“${claim}.”`,
+        `“${claimB}.”`,
+        `“${proof}.”`,
+      ],
+    };
+
+    const all = byKind[effectiveTextKind];
+    if (brainLengthPreset === "corto") return all.map((x) => x.split(".")[0]!.trim()).slice(0, 4);
+    if (brainLengthPreset === "largo") return byKind.Párrafo.slice(0, 4);
+    if (brainLengthPreset === "medio") return byKind["Subtítulo"].slice(0, 4);
+    return all.slice(0, 4);
+  }, [
+    supportsBrainTextSuggestions,
+    effectiveTextKind,
+    brainClaims,
+    brainMetrics,
+    brainSupport,
+    brainSuggestionsTick,
+    brainTonePreset,
+    brainLengthPreset,
+  ]);
+
+  const brainImageSuggestions = useMemo(() => {
+    if (!supportsBrainImageSuggestions) return [];
+    const primary = brainAssets.brand.colorPrimary || "#111827";
+    const secondary = brainAssets.brand.colorSecondary || "#334155";
+    const accent = brainAssets.brand.colorAccent || "#f59e0b";
+    const claim = brainClaims[(brainSuggestionsTick + 0) % Math.max(1, brainClaims.length)] ?? "Narrativa con evidencia";
+    const claimB = brainClaims[(brainSuggestionsTick + 1) % Math.max(1, brainClaims.length)] ?? "Sistema creativo conectado";
+    const ratio = singleSelected && singleSelected.height > 0 ? singleSelected.width / singleSelected.height : 16 / 9;
+    const w = Math.max(640, Math.min(1400, Math.round(720 * Math.max(0.6, Math.min(2.2, ratio)))));
+    const h = Math.max(360, Math.round(w / Math.max(0.6, Math.min(2.2, ratio))));
+    const mk = (title: string, c1: string, c2: string) =>
+      toSvgPreviewDataUrl(`
+      <svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}' viewBox='0 0 ${w} ${h}'>
+        <defs>
+          <linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>
+            <stop offset='0%' stop-color='${c1}'/>
+            <stop offset='100%' stop-color='${c2}'/>
+          </linearGradient>
+        </defs>
+        <rect width='100%' height='100%' fill='url(#g)'/>
+        <rect x='24' y='24' width='${Math.max(180, w - 48)}' height='${Math.max(70, Math.round(h * 0.24))}' rx='18' fill='rgba(0,0,0,0.24)'/>
+        <text x='44' y='${Math.max(68, Math.round(h * 0.13))}' fill='white' font-size='${Math.max(24, Math.round(h * 0.06))}' font-family='Arial, sans-serif' font-weight='700'>${title.replace(/&/g, "&amp;")}</text>
+        <circle cx='${Math.round(w * 0.85)}' cy='${Math.round(h * 0.24)}' r='${Math.max(26, Math.round(h * 0.07))}' fill='${accent}' fill-opacity='0.82'/>
+      </svg>
+      `);
+    return [
+      { id: "brain-img-1", label: "Visual editorial", prompt: claim, src: mk(claim, primary, secondary) },
+      { id: "brain-img-2", label: "Visual performance", prompt: claimB, src: mk(claimB, secondary, accent) },
+    ];
+  }, [supportsBrainImageSuggestions, brainAssets, brainClaims, brainSuggestionsTick, singleSelected]);
+
+  const brainColorSuggestions = useMemo(() => {
+    const out: string[] = [];
+    const push = (c?: string | null) => {
+      const n = normalizeHexColor(c || "");
+      if (!n) return;
+      if (!out.includes(n)) out.push(n);
+    };
+    push(brainAssets.brand.colorPrimary);
+    push(brainAssets.brand.colorSecondary);
+    push(brainAssets.brand.colorAccent);
+    for (const stat of documentColorStats.slice(0, 6)) push(stat.hex);
+    return out.slice(0, 8);
+  }, [brainAssets, documentColorStats]);
+
+  const applyBrainTextSuggestion = useCallback(
+    (nextText: string) => {
+      if (!singleSelected) return;
+      if (singleSelected.type !== "text" && singleSelected.type !== "textOnPath") return;
+      const targetId = singleSelected.id;
+      setObjects((prev) => {
+        const next = prev.map((o) =>
+          o.id === targetId ? ({ ...o, text: nextText } as FreehandObject) : o,
+        );
+        pushHistory(next, new Set([targetId]));
+        return next;
+      });
+      setSelectedIds(new Set([targetId]));
+    },
+    [singleSelected, pushHistory],
+  );
+
+  const applyBrainImageSuggestion = useCallback(
+    (src: string) => {
+      if (!singleSelected) return;
+      const targetId = singleSelected.id;
+      setObjects((prev) => {
+        const next = prev.map((o) => {
+          if (o.id !== targetId) return o;
+          if (o.type === "image") {
+            return { ...(o as ImageObject), src, intrinsicRatio: (singleSelected.width || 16) / Math.max(1, singleSelected.height || 9) };
+          }
+          if (o.type === "rect" && o.isImageFrame) {
+            const fw = o.width;
+            const fh = o.height;
+            const layout = computeFittingLayout(fw, fh, 1600, 900, "fill-proportional");
+            return {
+              ...(o as RectObject),
+              imageFrameContent: {
+                src,
+                originalWidth: 1600,
+                originalHeight: 900,
+                ...layout,
+                fittingMode: "fill-proportional",
+              },
+              imageFrameAutoFit: true,
+            } as RectObject;
+          }
+          return o;
+        });
+        pushHistory(next, new Set([targetId]));
+        return next;
+      });
+      setSelectedIds(new Set([targetId]));
+    },
+    [singleSelected, pushHistory],
+  );
+
+  const applyBrainColorSuggestion = useCallback(
+    (hex: string) => {
+      if (!singleSelected) return;
+      const targetId = singleSelected.id;
+      setObjects((prev) => {
+        const next = prev.map((o) => {
+          if (o.id !== targetId) return o;
+          if (o.type === "textOnPath") {
+            return { ...(o as TextOnPathObject), fill: hex } as FreehandObject;
+          }
+          return { ...o, fill: solidFill(hex) } as FreehandObject;
+        });
+        pushHistory(next, new Set([targetId]));
+        return next;
+      });
+      setSelectedIds(new Set([targetId]));
+    },
+    [singleSelected, pushHistory],
+  );
 
   /** Capa a la que aplican fusión/opacidad del panel (primaria si existe; si no, la primera seleccionada). */
   const layerPanelTargetId = useMemo(() => {
@@ -20669,6 +20951,141 @@ export function FreehandStudioCanvas({
                 </div>
               </div>
             )}
+            <div className="border-b border-white/[0.08] px-[14px] py-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">SUGERENCIAS BRAIN</div>
+                <Sparkles size={12} className="text-violet-300/80" />
+              </div>
+
+              {selectedObjects.length !== 1 ? (
+                <p className="text-[11px] leading-snug text-zinc-500">
+                  Selecciona un texto, imagen o elemento compatible para ver sugerencias de Brain.
+                </p>
+              ) : !supportsBrainTextSuggestions && !supportsBrainImageSuggestions && !supportsBrainColorSuggestions ? (
+                <p className="text-[11px] leading-snug text-zinc-500">
+                  El elemento seleccionado no soporta sugerencias en esta versión.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {supportsBrainTextSuggestions && (
+                    <div className="space-y-2 rounded-[8px] border border-white/[0.08] bg-white/[0.03] p-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] uppercase tracking-wider text-zinc-500">Texto</span>
+                        <span className="rounded border border-violet-400/30 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-violet-200">
+                          {autoDetectedTextKind ?? "—"}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <select
+                          value={effectiveTextKind ?? ""}
+                          onChange={(e) => setBrainManualTextKind((e.target.value || "") as BrainTextBlockKind | "")}
+                          className="col-span-1 rounded-[5px] border border-white/[0.1] bg-[#1a1e26] px-2 py-1 text-[10px] text-zinc-100"
+                          title="Tipo detectado / manual"
+                        >
+                          <option value="">Auto</option>
+                          <option value="Titular">Titular</option>
+                          <option value="Subtítulo">Subtítulo</option>
+                          <option value="Párrafo">Párrafo</option>
+                          <option value="CTA">CTA</option>
+                          <option value="Quote">Quote</option>
+                        </select>
+                        <select
+                          value={brainTonePreset}
+                          onChange={(e) => setBrainTonePreset(e.target.value as "auto" | "directo" | "editorial")}
+                          className="col-span-1 rounded-[5px] border border-white/[0.1] bg-[#1a1e26] px-2 py-1 text-[10px] text-zinc-100"
+                          title="Tono"
+                        >
+                          <option value="auto">Tono auto</option>
+                          <option value="directo">Directo</option>
+                          <option value="editorial">Editorial</option>
+                        </select>
+                        <select
+                          value={brainLengthPreset}
+                          onChange={(e) => setBrainLengthPreset(e.target.value as "auto" | "corto" | "medio" | "largo")}
+                          className="col-span-1 rounded-[5px] border border-white/[0.1] bg-[#1a1e26] px-2 py-1 text-[10px] text-zinc-100"
+                          title="Longitud"
+                        >
+                          <option value="auto">Longitud auto</option>
+                          <option value="corto">Corto</option>
+                          <option value="medio">Medio</option>
+                          <option value="largo">Largo</option>
+                        </select>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        {brainTextSuggestions.slice(0, 4).map((suggestion, idx) => (
+                          <div key={`brain-t-${idx}`} className="rounded-[6px] border border-white/[0.08] bg-[#171a21] p-2">
+                            <p className="mb-2 line-clamp-3 text-[11px] leading-snug text-zinc-200">{suggestion}</p>
+                            <button
+                              type="button"
+                              onClick={() => applyBrainTextSuggestion(suggestion)}
+                              className="rounded-[5px] border border-violet-400/30 bg-violet-500/15 px-2 py-1 text-[10px] font-semibold text-violet-100 transition-colors hover:bg-violet-500/25"
+                            >
+                              Aplicar
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setBrainSuggestionsTick((v) => v + 1)}
+                        className="w-full rounded-[5px] border border-white/[0.12] bg-white/[0.04] px-2 py-1.5 text-[10px] font-semibold text-zinc-200 transition-colors hover:bg-white/[0.08]"
+                      >
+                        Regenerar sugerencias
+                      </button>
+                    </div>
+                  )}
+
+                  {supportsBrainImageSuggestions && (
+                    <div className="space-y-2 rounded-[8px] border border-white/[0.08] bg-white/[0.03] p-2.5">
+                      <div className="text-[10px] uppercase tracking-wider text-zinc-500">Imagen</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        {brainImageSuggestions.slice(0, 2).map((it) => (
+                          <div key={it.id} className="overflow-hidden rounded-[8px] border border-white/[0.1] bg-[#171a21]">
+                            <img src={it.src} alt={it.prompt} className="h-[68px] w-full object-cover" />
+                            <div className="space-y-1 p-1.5">
+                              <div className="line-clamp-2 text-[10px] text-zinc-300">{it.prompt}</div>
+                              <button
+                                type="button"
+                                onClick={() => applyBrainImageSuggestion(it.src)}
+                                className="w-full rounded-[5px] border border-violet-400/30 bg-violet-500/15 px-1.5 py-1 text-[9px] font-semibold text-violet-100 transition-colors hover:bg-violet-500/25"
+                              >
+                                Usar esta imagen
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setBrainSuggestionsTick((v) => v + 1)}
+                        className="w-full rounded-[5px] border border-white/[0.12] bg-white/[0.04] px-2 py-1.5 text-[10px] font-semibold text-zinc-200 transition-colors hover:bg-white/[0.08]"
+                      >
+                        Regenerar
+                      </button>
+                    </div>
+                  )}
+
+                  {supportsBrainColorSuggestions && (
+                    <div className="space-y-2 rounded-[8px] border border-white/[0.08] bg-white/[0.03] p-2.5">
+                      <div className="text-[10px] uppercase tracking-wider text-zinc-500">Colores de Brain</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {brainColorSuggestions.map((hex) => (
+                          <button
+                            key={`brain-c-${hex}`}
+                            type="button"
+                            title={hex}
+                            onClick={() => applyBrainColorSuggestion(hex)}
+                            className="h-6 w-6 rounded-[5px] border border-white/[0.18] shadow-inner transition hover:scale-[1.06]"
+                            style={{ backgroundColor: hex }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
             {/* Color: paleta + fill + stroke (plegable, plegado por defecto) */}
             <div className="border-b border-white/[0.08]">
               <button

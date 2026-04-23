@@ -6454,6 +6454,7 @@ export const SpaceNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   const getHandleClass = () => {
     switch (nodeData.outputType) {
+      case 'brain': return 'handle-brain';
       case 'image': return 'handle-image';
       case 'video': return 'handle-video';
       case 'prompt': return 'handle-prompt';
@@ -6466,6 +6467,7 @@ export const SpaceNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   const getInputHandleClass = () => {
     switch (nodeData.inputType) {
+      case 'brain': return 'handle-brain';
       case 'image': return 'handle-image';
       case 'video': return 'handle-video';
       case 'prompt': return 'handle-prompt';
@@ -6585,6 +6587,7 @@ export const SpaceInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
   
   const getHandleClass = () => {
     switch (nodeData.inputType) {
+      case 'brain': return 'handle-brain';
       case 'image': return 'handle-image';
       case 'video': return 'handle-video';
       case 'prompt': return 'handle-prompt';
@@ -6604,6 +6607,8 @@ export const SpaceInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   const getThemeColors = () => {
     switch (nodeData.inputType) {
+      case 'brain':
+        return { border: 'border-fuchsia-500/30', text: 'text-fuchsia-300', bg: 'bg-fuchsia-500/10 border-fuchsia-500/20', icon: 'text-fuchsia-400' };
       case 'prompt':
         return { border: 'border-blue-500/30', text: 'text-blue-400', bg: 'bg-blue-500/10 border-blue-500/20', icon: 'text-blue-500' };
       case 'image':
@@ -6655,6 +6660,7 @@ export const SpaceOutputNode = memo(({ id, data, selected }: NodeProps<any>) => 
   const isVisual = sourceType === 'image' || sourceType === 'video';
 
   const getHandleClass = () => {
+    if (sourceType === 'brain') return 'handle-brain';
     if (sourceType === 'image') return 'handle-image';
     if (sourceType === 'video') return 'handle-video';
     if (sourceType === 'prompt') return 'handle-prompt';
@@ -6669,6 +6675,7 @@ export const SpaceOutputNode = memo(({ id, data, selected }: NodeProps<any>) => 
   } as const;
 
   const getThemeColors = () => {
+    if (sourceType === 'brain') return { border: 'border-fuchsia-500/30', text: 'text-fuchsia-300', bg: 'bg-fuchsia-500/10 border-fuchsia-500/20', icon: 'text-fuchsia-400' };
     if (sourceType === 'image' || sourceType === 'video') return logoMediaTheme;
     if (sourceType === 'prompt') return { border: 'border-blue-500/30', text: 'text-blue-400', bg: 'bg-blue-500/10 border-blue-500/20', icon: 'text-blue-500' };
     return { border: 'border-rose-500/30', text: 'text-rose-400', bg: 'bg-rose-500/10 border-rose-500/20', icon: 'text-rose-500' };

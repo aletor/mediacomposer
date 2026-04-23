@@ -85,6 +85,11 @@ export function areNodesConnectable(
   if (connection.sourceHandle === 'rgba' && targetHandleType === 'image') return true;
   if (connection.sourceHandle === 'rgba' && targetHandleType === 'url') return true;
 
+  // Brain handle should only connect to brain-compatible inputs.
+  if (connection.sourceHandle === 'brain' || connection.targetHandle === 'brain') {
+    return sourceHandleType === 'brain' && targetHandleType === 'brain';
+  }
+
   if (sourceHandleType === 'url' || targetHandleType === 'url') return true;
   return sourceHandleType === targetHandleType;
 }

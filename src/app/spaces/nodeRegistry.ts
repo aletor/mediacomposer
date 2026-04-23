@@ -1,4 +1,4 @@
-export type HandleType = 'image' | 'video' | 'audio' | 'prompt' | 'mask' | 'pdf' | 'txt' | 'url' | 'json';
+export type HandleType = 'image' | 'video' | 'audio' | 'prompt' | 'mask' | 'pdf' | 'txt' | 'url' | 'json' | 'brain';
 
 export interface NodeMetadata {
   type: string;
@@ -54,7 +54,10 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
     label: 'PhotoRoom',
     description:
       'Retoque y composición de imagen: varias entradas de imagen (ranuras dinámicas); salida imagen. Studio en evolución.',
-    inputs: [{ id: 'in-n', label: 'Imágenes', type: 'image' }],
+    inputs: [
+      { id: 'in-n', label: 'Imágenes', type: 'image' },
+      { id: 'brain', label: 'Brain', type: 'brain' },
+    ],
     outputs: [{ id: 'image', label: 'Imagen', type: 'image' }],
     dataSchema: {
       studioObjects: 'FreehandObject[] (vector en studio)',
@@ -396,7 +399,10 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
     description:
       'Project identity and knowledge (brand kit + PDFs/links). Canvas card shows counts; full editing is in Brain studio mode (same as the Brain bottom-bar panel).',
     inputs: [],
-    outputs: [{ id: 'prompt', label: 'Prompt out', type: 'prompt' as HandleType }],
+    outputs: [
+      { id: 'prompt', label: 'Prompt out', type: 'prompt' as HandleType },
+      { id: 'brain', label: 'Brain out', type: 'brain' as HandleType },
+    ],
     dataSchema: {
       label: 'string (optional title on the card)',
     },
@@ -417,7 +423,7 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
     label: 'Designer',
     description:
       'Full design studio: vector tools (pen, shapes, text) + page-based layout + threaded text frames + image frames. Combines Freehand vector editing with InDesign-style page management.',
-    inputs: [],
+    inputs: [{ id: 'brain', label: 'Brain', type: 'brain' as HandleType }],
     outputs: [
       { id: 'image', label: 'Image Out', type: 'image' as HandleType },
       { id: 'document', label: 'Document', type: 'json' as HandleType },

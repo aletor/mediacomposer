@@ -592,6 +592,11 @@ export const PhotoRoomNode = memo(({ id, data, selected }: NodeProps<any>) => {
         );
       })}
 
+      <div className="handle-wrapper handle-left" style={{ top: "96%" }}>
+        <FoldderDataHandle type="target" position={Position.Left} id="brain" dataType="brain" />
+        <span className="handle-label">Brain</span>
+      </div>
+
       <div className="handle-wrapper handle-right" style={{ top: "50%" }}>
         <span className="handle-label">Salida imagen</span>
         <FoldderDataHandle type="source" position={Position.Right} id="image" dataType="image" />

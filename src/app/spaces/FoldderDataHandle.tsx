@@ -10,6 +10,7 @@ import {
 import { NodeIcon, type FoldderIconKey } from "./foldder-icons";
 
 export type FoldderHandleDataType =
+  | "brain"
   | "prompt"
   | "image"
   | "video"
@@ -23,6 +24,7 @@ export type FoldderHandleDataType =
   | "generic";
 
 const TYPE_CLASS: Record<FoldderHandleDataType, string> = {
+  brain: "handle-brain",
   prompt: "handle-prompt",
   image: "handle-image",
   video: "handle-video",
@@ -38,6 +40,7 @@ const TYPE_CLASS: Record<FoldderHandleDataType, string> = {
 
 /** Misma gramática de iconos que sidebar y barra de accesos (`NodeIcon` + `NODE_TYPE_TO_FOLDDER_ICON`). */
 const DATA_TYPE_TO_ICON: Record<FoldderHandleDataType, FoldderIconKey> = {
+  brain: "brain",
   prompt: "prompt",
   image: "asset",
   video: "video",
@@ -72,6 +75,7 @@ export function foldderMediaInputDataType(nodeType: string | undefined): Foldder
 }
 
 export function foldderDataTypeFromHandleClass(className: string): FoldderHandleDataType {
+  if (className.includes("handle-brain")) return "brain";
   if (className.includes("handle-prompt")) return "prompt";
   if (className.includes("handle-image")) return "image";
   if (className.includes("handle-video")) return "video";

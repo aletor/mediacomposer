@@ -702,6 +702,7 @@
 }
 
 .react-flow__handle:not(.foldder-data-handle).handle-prompt { border-color: #3b82f6 !important; }
+.react-flow__handle:not(.foldder-data-handle).handle-brain  { border-color: #a855f7 !important; }
 /* Imagen / vídeo: mismo acento que el logo (#6C5CE7) */
 .react-flow__handle:not(.foldder-data-handle).handle-video  { border-color: #6C5CE7 !important; }
 .react-flow__handle:not(.foldder-data-handle).handle-image  { border-color: #6C5CE7 !important; }
@@ -764,6 +765,7 @@
 }
 
 .foldder-data-handle--connected.handle-prompt { box-shadow: 0 0 0 2.8px rgba(59, 130, 246, 0.55) !important; }
+.foldder-data-handle--connected.handle-brain  { box-shadow: 0 0 0 2.8px rgba(168, 85, 247, 0.55) !important; }
 .foldder-data-handle--connected.handle-video  { box-shadow: 0 0 0 2.8px rgba(108, 92, 231, 0.55) !important; }
 .foldder-data-handle--connected.handle-image  { box-shadow: 0 0 0 2.8px rgba(108, 92, 231, 0.55) !important; }
 .foldder-data-handle--connected.handle-sound  { box-shadow: 0 0 0 2.8px rgba(168, 85, 247, 0.55) !important; }

@@ -184,6 +184,11 @@ export const DesignerNode = memo(({ id, data, selected }: NodeProps<any>) => {
         </button>
       </div>
 
+      <div className="handle-wrapper handle-left" style={{ top: "50%", transform: "translateY(-50%)" }}>
+        <FoldderDataHandle type="target" position={Position.Left} id="brain" dataType="brain" />
+        <span className="handle-label">Brain</span>
+      </div>
+
       <div className="handle-wrapper handle-right" style={{ top: "38%", transform: "translateY(-50%)" }}>
         <span className="handle-label">Image</span>
         <FoldderDataHandle type="source" position={Position.Right} id="image" dataType="image" />

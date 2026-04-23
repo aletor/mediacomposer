@@ -1635,7 +1635,11 @@ export function SpacesContent() {
     const propagatedType = (sourceNode.data?.outputType || sourceNode.data?.type || '').toLowerCase();
 
     // Final mapping to visual result types
-    if (sourceHandleType === 'image' || propagatedType === 'image') {
+    if (sourceHandleType === 'brain' || propagatedType === 'brain') {
+        result.type = 'brain';
+        result.label = 'Brain Space';
+    }
+    else if (sourceHandleType === 'image' || propagatedType === 'image') {
         result.type = 'image';
         result.label = 'Image Space';
     }

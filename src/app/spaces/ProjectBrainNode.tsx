@@ -100,9 +100,13 @@ export const ProjectBrainNode = memo(({ id, data, selected }: NodeProps<any>) =>
         </button>
       </div>
 
-      <div className="handle-wrapper handle-right" style={{ top: "50%" }}>
+      <div className="handle-wrapper handle-right" style={{ top: "40%" }}>
         <span className="handle-label">Prompt out</span>
         <FoldderDataHandle type="source" position={Position.Right} id="prompt" dataType="prompt" />
+      </div>
+      <div className="handle-wrapper handle-right" style={{ top: "64%" }}>
+        <span className="handle-label">Brain out</span>
+        <FoldderDataHandle type="source" position={Position.Right} id="brain" dataType="brain" />
       </div>
     </div>
   );

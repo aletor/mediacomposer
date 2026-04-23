@@ -562,6 +562,8 @@ export const FOLDDER_INTERNAL_CATEGORY_TO_ICON: Record<string, FoldderIconKey> =
 
 export function foldderIconKeyForSpaceOutputType(t?: string): FoldderIconKey {
   switch (t) {
+    case 'brain':
+      return 'brain';
     case 'image':
       return 'asset';
     case 'video':
