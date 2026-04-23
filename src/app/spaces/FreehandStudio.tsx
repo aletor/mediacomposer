@@ -21054,18 +21054,17 @@ export function FreehandStudioCanvas({
                         </select>
                       </div>
 
-                      <div className="space-y-1.5">
+                      <div className="space-y-1">
                         {brainTextSuggestions.slice(0, 4).map((suggestion, idx) => (
-                          <div key={`brain-t-${idx}`} className="rounded-[6px] border border-white/[0.08] bg-[#171a21] p-2">
-                            <p className="mb-2 line-clamp-3 text-[11px] leading-snug text-zinc-200">{suggestion}</p>
-                            <button
-                              type="button"
-                              onClick={() => applyBrainTextSuggestion(suggestion)}
-                              className="rounded-[5px] border border-violet-400/30 bg-violet-500/15 px-2 py-1 text-[10px] font-semibold text-violet-100 transition-colors hover:bg-violet-500/25"
-                            >
-                              Aplicar
-                            </button>
-                          </div>
+                          <button
+                            key={`brain-t-${idx}`}
+                            type="button"
+                            onClick={() => applyBrainTextSuggestion(suggestion)}
+                            title="Aplicar este texto"
+                            className="w-full rounded-[6px] border border-white/[0.08] bg-[#171a21] px-2.5 py-2 text-left text-[11px] leading-snug text-zinc-200 transition-colors hover:border-violet-400/35 hover:bg-violet-500/10"
+                          >
+                            <span className="line-clamp-3">{suggestion}</span>
+                          </button>
                         ))}
                       </div>
                       <button
