@@ -146,6 +146,7 @@ export const PhotoRoomNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const updateNodeInternals = useUpdateNodeInternals();
   const [showStudio, setShowStudio] = useState(false);
   const studioApiRef = useRef<DesignerStudioApi | null>(null);
+  const brainConnected = edges.some((e) => e.target === id && e.targetHandle === "brain");
 
   const studioArtboard = useMemo(() => {
     const ab = nodeData.studioArtboard;
@@ -652,6 +653,7 @@ export const PhotoRoomNode = memo(({ id, data, selected }: NodeProps<any>) => {
             objects={studioObjects}
             layoutGuides={studioLayoutGuides}
             artboard={studioArtboard}
+            brainConnected={brainConnected}
             docSetupDone={!!nodeData.photoRoomDocSetupDone}
             connectedImageInputs={photoRoomConnectedInputs}
             studioApiRef={studioApiRef}

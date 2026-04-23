@@ -113,6 +113,7 @@ export type PhotoRoomStudioProps = {
   open: boolean;
   onClose: () => void;
   nodeId: string;
+  brainConnected?: boolean;
   objects: FreehandObject[];
   layoutGuides: LayoutGuide[];
   artboard: PhotoRoomArtboardState;
@@ -154,6 +155,7 @@ export default function PhotoRoomStudio({
   open,
   onClose,
   nodeId,
+  brainConnected = false,
   objects,
   layoutGuides,
   artboard,
@@ -380,6 +382,7 @@ export default function PhotoRoomStudio({
           onExport={onExportPreview}
           onUpdateObjects={handleUpdateObjects}
           onUpdateLayoutGuides={handleUpdateLayoutGuides}
+          brainConnected={brainConnected}
           photoRoomConnectedInputs={connectedImageInputs}
           studioApiRef={studioApiRef}
           photoRoomOnModificarImagenIA={onPhotoRoomModificarImagenIA}

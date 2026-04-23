@@ -2,7 +2,7 @@
 
 import React, { memo, useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { NodeResizer, Position, useReactFlow, type NodeProps } from "@xyflow/react";
+import { NodeResizer, Position, useEdges, useReactFlow, type NodeProps } from "@xyflow/react";
 import { Pencil } from "lucide-react";
 import { FOLDDER_FIT_VIEW_EASE } from "@/lib/fit-view-ease";
 import { FoldderDataHandle } from "../FoldderDataHandle";
@@ -58,8 +58,10 @@ function DesignerNodeResizer(props: React.ComponentProps<typeof NodeResizer>) {
 
 export const DesignerNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const nodeData = data as DesignerNodeData;
+  const edges = useEdges();
   const { setNodes } = useReactFlow();
   const [isStudioOpen, setIsStudioOpen] = useState(false);
+  const brainConnected = edges.some((e) => e.target === id && e.targetHandle === "brain");
 
   const pages: DesignerPageState[] =
     Array.isArray(nodeData.pages) && nodeData.pages.length > 0
@@ -204,6 +206,7 @@ export const DesignerNode = memo(({ id, data, selected }: NodeProps<any>) => {
             initialPages={pages}
             activePageIndex={activeIdx}
             designerCanvasInstanceKey={id}
+            brainConnected={brainConnected}
             onClose={() => setIsStudioOpen(false)}
             onExport={onExport}
             onUpdatePages={onUpdatePages}
@@ -220,6 +223,7 @@ function DesignerStudioLazy(props: {
   initialPages: DesignerPageState[];
   activePageIndex: number;
   designerCanvasInstanceKey: string;
+  brainConnected?: boolean;
   onClose: () => void;
   onExport: (dataUrl: string) => void;
   onUpdatePages: (pages: DesignerPageState[], activeIdx?: number) => void;

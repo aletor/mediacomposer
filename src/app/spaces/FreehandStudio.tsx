@@ -782,6 +782,8 @@ export interface FreehandStudioProps extends DesignerEmbedProps {
    * Si se omite, se infiere de `designerMode` y del panel PhotoRoom (`studioPhotoRoomCanvasPanel`).
    */
   studioCapabilities?: Partial<FreehandStudioCapabilities>;
+  /** Activa sugerencias basadas en Brain cuando el nodo actual está conectado al handle `brain`. */
+  brainConnected?: boolean;
 }
 
 export type { FreehandStudioCapabilities };
@@ -8610,6 +8612,7 @@ export function FreehandStudioCanvas({
   designerSkipAutoNodeExportOnClose = false,
   designerCanvasZenMode,
   onDesignerCanvasZenModeChange,
+  brainConnected = false,
 }: FreehandStudioProps) {
   const projectBrainCtx = useProjectBrainCanvas();
   const brainAssets = useMemo(
@@ -10017,10 +10020,10 @@ export function FreehandStudioCanvas({
     setBrainSuggestionsTick(0);
   }, [singleSelected?.id]);
 
-  const supportsBrainTextSuggestions = !!singleSelected && (singleSelected.type === "text" || singleSelected.type === "textOnPath");
+  const supportsBrainTextSuggestions = brainConnected && !!singleSelected && (singleSelected.type === "text" || singleSelected.type === "textOnPath");
   const supportsBrainImageSuggestions =
-    !!singleSelected && (singleSelected.type === "image" || (singleSelected.type === "rect" && !!singleSelected.isImageFrame));
-  const supportsBrainColorSuggestions = !!singleSelected;
+    brainConnected && !!singleSelected && (singleSelected.type === "image" || (singleSelected.type === "rect" && !!singleSelected.isImageFrame));
+  const supportsBrainColorSuggestions = brainConnected && !!singleSelected;
 
   const brainNearbyText = useMemo(() => {
     if (!singleSelected) return [];
@@ -20960,6 +20963,10 @@ export function FreehandStudioCanvas({
               {selectedObjects.length !== 1 ? (
                 <p className="text-[11px] leading-snug text-zinc-500">
                   Selecciona un texto, imagen o elemento compatible para ver sugerencias de Brain.
+                </p>
+              ) : !brainConnected ? (
+                <p className="text-[11px] leading-snug text-zinc-500">
+                  Conecta un nodo Brain al handle de entrada para activar sugerencias inteligentes.
                 </p>
               ) : !supportsBrainTextSuggestions && !supportsBrainImageSuggestions && !supportsBrainColorSuggestions ? (
                 <p className="text-[11px] leading-snug text-zinc-500">

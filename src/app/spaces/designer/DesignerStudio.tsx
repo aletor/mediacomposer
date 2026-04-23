@@ -64,6 +64,7 @@ interface DesignerStudioProps {
   /** Persistido en el nodo Designer: auto-optimización de imágenes en background. */
   autoImageOptimization?: boolean;
   onAutoImageOptimizationChange?: (enabled: boolean) => void;
+  brainConnected?: boolean;
 }
 
 export default function DesignerStudio({
@@ -75,6 +76,7 @@ export default function DesignerStudio({
   designerCanvasInstanceKey,
   autoImageOptimization = true,
   onAutoImageOptimizationChange,
+  brainConnected = false,
 }: DesignerStudioProps) {
   const designerSpaceId = useDesignerSpaceId();
   const [pages, setPages] = useState<DesignerPageState[]>(() =>
@@ -1333,6 +1335,7 @@ export default function DesignerStudio({
         onExport={onExport}
         onUpdateObjects={handleUpdateObjects}
         onUpdateLayoutGuides={handleUpdateLayoutGuides}
+        brainConnected={brainConnected}
         {...designerFreehandProps}
       />
 
