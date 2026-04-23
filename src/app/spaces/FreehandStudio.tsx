@@ -10023,7 +10023,6 @@ export function FreehandStudioCanvas({
   const supportsBrainTextSuggestions = brainConnected && !!singleSelected && (singleSelected.type === "text" || singleSelected.type === "textOnPath");
   const supportsBrainImageSuggestions =
     brainConnected && !!singleSelected && (singleSelected.type === "image" || (singleSelected.type === "rect" && !!singleSelected.isImageFrame));
-  const supportsBrainColorSuggestions = brainConnected && !!singleSelected;
 
   const brainNearbyText = useMemo(() => {
     if (!singleSelected) return [];
@@ -10145,20 +10144,6 @@ export function FreehandStudioCanvas({
     ];
   }, [supportsBrainImageSuggestions, brainAssets, brainClaims, brainSuggestionsTick, singleSelected]);
 
-  const brainColorSuggestions = useMemo(() => {
-    const out: string[] = [];
-    const push = (c?: string | null) => {
-      const n = normalizeHexColor(c || "");
-      if (!n) return;
-      if (!out.includes(n)) out.push(n);
-    };
-    push(brainAssets.brand.colorPrimary);
-    push(brainAssets.brand.colorSecondary);
-    push(brainAssets.brand.colorAccent);
-    for (const stat of documentColorStats.slice(0, 6)) push(stat.hex);
-    return out.slice(0, 8);
-  }, [brainAssets, documentColorStats]);
-
   const brainPaletteColors = useMemo(() => {
     const out: string[] = [];
     const push = (c?: string | null) => {
@@ -10216,26 +10201,6 @@ export function FreehandStudioCanvas({
             } as RectObject;
           }
           return o;
-        });
-        pushHistory(next, new Set([targetId]));
-        return next;
-      });
-      setSelectedIds(new Set([targetId]));
-    },
-    [singleSelected, pushHistory],
-  );
-
-  const applyBrainColorSuggestion = useCallback(
-    (hex: string) => {
-      if (!singleSelected) return;
-      const targetId = singleSelected.id;
-      setObjects((prev) => {
-        const next = prev.map((o) => {
-          if (o.id !== targetId) return o;
-          if (o.type === "textOnPath") {
-            return { ...(o as TextOnPathObject), fill: hex } as FreehandObject;
-          }
-          return { ...o, fill: solidFill(hex) } as FreehandObject;
         });
         pushHistory(next, new Set([targetId]));
         return next;
@@ -21003,7 +20968,7 @@ export function FreehandStudioCanvas({
                 <p className="text-[11px] leading-snug text-zinc-500">
                   Conecta un nodo Brain al handle de entrada para activar sugerencias inteligentes.
                 </p>
-              ) : !supportsBrainTextSuggestions && !supportsBrainImageSuggestions && !supportsBrainColorSuggestions ? (
+              ) : !supportsBrainTextSuggestions && !supportsBrainImageSuggestions ? (
                 <p className="text-[11px] leading-snug text-zinc-500">
                   El elemento seleccionado no soporta sugerencias en esta versión.
                 </p>
@@ -21107,23 +21072,6 @@ export function FreehandStudioCanvas({
                     </div>
                   )}
 
-                  {supportsBrainColorSuggestions && (
-                    <div className="space-y-2 rounded-[8px] border border-white/[0.08] bg-white/[0.03] p-2.5">
-                      <div className="text-[10px] uppercase tracking-wider text-zinc-500">Colores de Brain</div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {brainColorSuggestions.map((hex) => (
-                          <button
-                            key={`brain-c-${hex}`}
-                            type="button"
-                            title={hex}
-                            onClick={() => applyBrainColorSuggestion(hex)}
-                            className="h-6 w-6 rounded-[5px] border border-white/[0.18] shadow-inner transition hover:scale-[1.06]"
-                            style={{ backgroundColor: hex }}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
             </div>
