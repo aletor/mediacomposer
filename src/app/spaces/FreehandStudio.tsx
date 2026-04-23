@@ -9235,6 +9235,16 @@ export function FreehandStudioCanvas({
   >([]);
   const [brainImageLoading, setBrainImageLoading] = useState(false);
   const [brainImageError, setBrainImageError] = useState<string | null>(null);
+  const brainImageSuggestionsCacheRef = useRef<
+    Record<
+      string,
+      {
+        tried: boolean;
+        suggestions: Array<{ id: string; label: string; prompt: string; src: string }>;
+        error: string | null;
+      }
+    >
+  >({});
   /** Quick fill/stroke popover: which channel is being edited from canvas. */
   const [quickEditMode, setQuickEditMode] = useState<"fill" | "stroke" | null>(null);
   /** Lienzo a pantalla completa (P). En Designer el estado vive en `DesignerStudio` para no perderse al cambiar de página. */
@@ -10139,38 +10149,72 @@ export function FreehandStudioCanvas({
     [singleSelected?.width, singleSelected?.height],
   );
 
+  const brainLogoReferences = useMemo(() => {
+    const refs: string[] = [];
+    const push = (v?: string | null) => {
+      if (typeof v !== "string") return;
+      const t = v.trim();
+      if (!t) return;
+      if (!refs.includes(t)) refs.push(t);
+    };
+    push(brainAssets.brand.logoPositive);
+    push(brainAssets.brand.logoNegative);
+    return refs.slice(0, 2);
+  }, [brainAssets]);
+
+  const brainBrandColorLine = useMemo(() => {
+    const c = [brainAssets.brand.colorPrimary, brainAssets.brand.colorSecondary, brainAssets.brand.colorAccent]
+      .map((v) => normalizeHexColor(v ?? ""))
+      .filter((v): v is string => !!v);
+    return c.length > 0 ? c.join(", ") : "sin paleta definida";
+  }, [brainAssets]);
+
   const brainImagePromptPlans = useMemo(() => {
     const claim = brainClaims[0] ?? "Narrativa con evidencia";
     const claimB = brainClaims[1] ?? "Sistema creativo conectado";
     const support = brainSupport[0] ?? "contexto de marca y mercado";
     const nearby = brainNearbyText[0] ?? selectedTextValue ?? "";
     const common =
-      "High-quality editorial marketing image, clean composition, no text, no logos, no watermark, suitable for professional creative deck.";
+      "High-quality editorial marketing image, clean composition, no text, no watermark, suitable for professional creative deck.";
+    const brandBlock = `Colores de marca: ${brainBrandColorLine}.`;
+    const logoBlock =
+      brainLogoReferences.length > 0
+        ? "Usar el logo de referencia adjunto con presencia sutil y coherente de marca."
+        : "No incluir logotipo explícito.";
     return [
       {
         id: "brain-img-1",
         label: "Visual editorial",
-        prompt: `Concepto: ${claim}. Soporte: ${support}. Contexto de página: ${nearby}. ${common}`,
+        prompt: `Concepto: ${claim}. Soporte: ${support}. Contexto de página: ${nearby}. ${brandBlock} ${logoBlock} ${common}`,
       },
       {
         id: "brain-img-2",
         label: "Visual performance",
-        prompt: `Concepto: ${claimB}. Soporte: ${support}. Contexto de página: ${nearby}. ${common}`,
+        prompt: `Concepto: ${claimB}. Soporte: ${support}. Contexto de página: ${nearby}. ${brandBlock} ${logoBlock} ${common}`,
       },
     ];
-  }, [brainClaims, brainSupport, brainNearbyText, selectedTextValue]);
-
-  const brainImageSeedKey = useMemo(() => {
-    const sid = singleSelected?.id ?? "none";
-    const p = brainImagePromptPlans.map((x) => x.prompt).join("|").slice(0, 240);
-    return `${sid}|${brainImageAspectRatio}|${p}`;
-  }, [singleSelected?.id, brainImageAspectRatio, brainImagePromptPlans]);
+  }, [brainClaims, brainSupport, brainNearbyText, selectedTextValue, brainBrandColorLine, brainLogoReferences]);
 
   useEffect(() => {
     if (!supportsBrainImageSuggestions) {
       setBrainImageSuggestions([]);
       setBrainImageLoading(false);
       setBrainImageError(null);
+      return;
+    }
+    const targetId = singleSelected?.id;
+    if (!targetId) {
+      setBrainImageSuggestions([]);
+      setBrainImageLoading(false);
+      setBrainImageError(null);
+      return;
+    }
+
+    const cached = brainImageSuggestionsCacheRef.current[targetId];
+    if (cached?.tried) {
+      setBrainImageSuggestions(cached.suggestions);
+      setBrainImageLoading(false);
+      setBrainImageError(cached.error);
       return;
     }
 
@@ -10187,6 +10231,7 @@ export function FreehandStudioCanvas({
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               prompt: plan.prompt,
+              images: brainLogoReferences,
               model: "flash31",
               resolution: "0.5k",
               aspect_ratio: brainImageAspectRatio,
@@ -10207,16 +10252,22 @@ export function FreehandStudioCanvas({
       }
 
       if (cancelled) return;
+      const error = created.length === 0 ? "No se pudo generar sugerencia visual con Brain." : null;
+      brainImageSuggestionsCacheRef.current[targetId] = {
+        tried: true,
+        suggestions: created,
+        error,
+      };
       setBrainImageSuggestions(created);
       setBrainImageLoading(false);
-      setBrainImageError(created.length === 0 ? "No se pudo generar sugerencia visual con Brain." : null);
+      setBrainImageError(error);
     };
 
     void run();
     return () => {
       cancelled = true;
     };
-  }, [supportsBrainImageSuggestions, brainImageSeedKey, brainImagePromptPlans, brainImageAspectRatio]);
+  }, [supportsBrainImageSuggestions, singleSelected?.id, brainImagePromptPlans, brainImageAspectRatio, brainLogoReferences]);
 
   const brainPaletteColors = useMemo(() => {
     const out: string[] = [];
