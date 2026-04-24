@@ -64,7 +64,9 @@ const searchWikipediaImage = async (query: string): Promise<string[]> => {
     // 4. Get the actual URLs
     const urls: string[] = [];
     for (const img of validImages) {
-      const infoUrl = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(img.title)}&prop=imageinfo&iiprop=url&format=json&origin=*`;
+      const imageTitle = img.title;
+      if (!imageTitle) continue;
+      const infoUrl = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(imageTitle)}&prop=imageinfo&iiprop=url&format=json&origin=*`;
       const infoRes = await fetch(infoUrl, { headers });
       const infoData = (await infoRes.json()) as {
         query?: { pages?: Record<string, { imageinfo?: Array<{ url?: string }> }> };

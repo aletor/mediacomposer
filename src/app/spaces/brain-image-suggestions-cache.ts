@@ -27,6 +27,7 @@ type EnsureArgs = {
 
 const STORAGE_KEY = "foldder_brain_image_suggestions_v1";
 const FORCE_LOCK_KEY = "foldder_brain_image_suggestions_force_lock_v1";
+const LEGACY_CLEANUP_MARK_KEY = "foldder_brain_image_suggestions_legacy_cleanup_v1";
 const FORCE_COOLDOWN_MS = 45_000;
 const PRESIGN_REFRESH_COOLDOWN_MS = 60_000;
 const cache = new Map<string, BrainImageSuggestionEntry>();
@@ -34,6 +35,87 @@ const inFlight = new Map<string, Promise<BrainImageSuggestionEntry>>();
 const forceLockUntil = new Map<string, number>();
 const presignRefreshUntil = new Map<string, number>();
 let hydrated = false;
+
+function isScopedBrainKey(key: string): boolean {
+  return /^scope:[^:]+::.+::.+$/.test((key || "").trim());
+}
+
+function pruneLegacyUnscopedEntries(raw: string | null): { value: Record<string, unknown>; changed: boolean } {
+  if (!raw) return { value: {}, changed: false };
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return { value: {}, changed: true };
+    const next: Record<string, unknown> = {};
+    let changed = false;
+    for (const [k, v] of Object.entries(parsed)) {
+      if (!isScopedBrainKey(k)) {
+        changed = true;
+        continue;
+      }
+      next[k] = v;
+    }
+    return { value: next, changed };
+  } catch {
+    return { value: {}, changed: true };
+  }
+}
+
+export function cleanupLegacyUnscopedBrainSuggestionStorageOnce(): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (window.localStorage.getItem(LEGACY_CLEANUP_MARK_KEY) === "done") return;
+  } catch {
+    return;
+  }
+
+  try {
+    const rawEntries = window.localStorage.getItem(STORAGE_KEY);
+    const prunedEntries = pruneLegacyUnscopedEntries(rawEntries);
+    if (prunedEntries.changed) {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(prunedEntries.value));
+    }
+  } catch {
+    // ignore legacy cleanup failures
+  }
+
+  try {
+    const rawLocks = window.localStorage.getItem(FORCE_LOCK_KEY);
+    const prunedLocks = pruneLegacyUnscopedEntries(rawLocks);
+    if (prunedLocks.changed) {
+      window.localStorage.setItem(FORCE_LOCK_KEY, JSON.stringify(prunedLocks.value));
+    }
+  } catch {
+    // ignore legacy cleanup failures
+  }
+
+  // Barrido de claves legacy antiguas sin scope en localStorage.
+  try {
+    const removeKeys: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (!k) continue;
+      const normalized = k.trim();
+      if (
+        normalized.startsWith("foldder_brain_image_suggestions::") ||
+        normalized.startsWith("foldder_brain_image_suggestion::") ||
+        normalized.startsWith("brain_image_suggestions::")
+      ) {
+        removeKeys.push(k);
+      }
+    }
+    for (const k of removeKeys) {
+      window.localStorage.removeItem(k);
+    }
+  } catch {
+    // ignore legacy cleanup failures
+  }
+
+  try {
+    window.localStorage.setItem(LEGACY_CLEANUP_MARK_KEY, "done");
+  } catch {
+    // ignore marker failures
+  }
+}
 
 function emitUpdate(key: string, entry: BrainImageSuggestionEntry) {
   if (typeof window === "undefined") return;
@@ -47,6 +129,7 @@ function emitUpdate(key: string, entry: BrainImageSuggestionEntry) {
 function hydrateFromStorage() {
   if (hydrated || typeof window === "undefined") return;
   hydrated = true;
+  cleanupLegacyUnscopedBrainSuggestionStorageOnce();
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return;

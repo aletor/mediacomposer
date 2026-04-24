@@ -345,6 +345,25 @@ export default function PhotoRoomStudio({
     setCanvasPresetModalOpen(false);
   }, []);
 
+  /**
+   * Cierre instantáneo en PhotoRoom:
+   * evita esperar el export síncrono del motor y captura miniatura en segundo plano.
+   */
+  const handleCloseInstant = useCallback(() => {
+    const api = studioApiRef?.current;
+    if (api?.getNodePreviewPngDataUrl) {
+      void api
+        .getNodePreviewPngDataUrl({ maxSide: 720 })
+        .then((url) => {
+          if (url) onExportPreview(url);
+        })
+        .catch(() => {
+          // noop
+        });
+    }
+    onClose();
+  }, [onClose, onExportPreview, studioApiRef]);
+
   if (!open) return null;
 
   const canvasKey = `photoroom-fh-${nodeId}-${studioBootNonce}`;
@@ -373,12 +392,13 @@ export default function PhotoRoomStudio({
           designerMode
           designerDeDocument={null}
           designerMultipageVectorPdfExport={undefined}
+          designerSkipAutoNodeExportOnClose
           designerAutoOptimizeSwitch={undefined}
           designerOptimizeProgress={undefined}
           designerPagesRail={undefined}
           designerActivePageId={null}
           designerFitToViewNonce={fitNonce}
-          onClose={onClose}
+          onClose={handleCloseInstant}
           onExport={onExportPreview}
           onUpdateObjects={handleUpdateObjects}
           onUpdateLayoutGuides={handleUpdateLayoutGuides}

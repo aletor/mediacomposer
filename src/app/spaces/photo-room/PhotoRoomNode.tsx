@@ -559,12 +559,19 @@ export const PhotoRoomNode = memo(({ id, data, selected }: NodeProps<any>) => {
   }, [anyInputEdge, id, previewUrl, setNodes]);
 
   /**
-   * Miniatura del nodo: con cables, la primera imagen del grafo (actualización inmediata);
-   * sin cables, última exportación del studio guardada en `value`.
+   * Miniatura del nodo:
+   * - si hay documento de Studio persistido, priorizar siempre el render exportado (`value`);
+   * - si no hay Studio persistido, usar la primera imagen conectada como preview rápida.
+   *
+   * Esto evita que, al salir de Studio con entradas conectadas, la miniatura externa vuelva
+   * a mostrar el input crudo en vez del resultado editado.
    */
+  const hasPersistedStudio = Array.isArray(studioObjects) && studioObjects.length > 0;
   const exportedThumb =
     typeof nodeData.value === "string" && nodeData.value.length > 0 ? nodeData.value : null;
-  const displayUrl = previewUrl ?? exportedThumb ?? null;
+  const displayUrl = hasPersistedStudio
+    ? exportedThumb ?? previewUrl ?? null
+    : previewUrl ?? exportedThumb ?? null;
 
   /** Studio abierto: actualizar miniatura del nodo al cambiar entradas (mismo PNG que al cerrar). */
   useEffect(() => {

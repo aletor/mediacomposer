@@ -8,8 +8,10 @@ import { deleteFromS3 } from "@/lib/s3-utils";
 import {
   deleteDdbProject as deleteDdbProjectStore,
   readAllDdbProjects as readAllDdbProjectsStore,
+  readAllDdbProjectsMeta as readAllDdbProjectsMetaStore,
   readDdbProjectById as readDdbProjectByIdStore,
   upsertDdbProject as upsertDdbProjectStore,
+  type ProjectListItem,
   type ProjectRecord,
 } from "@/lib/spaces-dynamo-store";
 import { runSpacesDbExclusive } from "@/lib/spaces-db-queue";
@@ -55,6 +57,10 @@ const SPACES_META_EDGE_STALE_SECONDS = 60;
 const SPACES_DETAIL_EDGE_S_MAXAGE_SECONDS = 5;
 const SPACES_DETAIL_EDGE_STALE_SECONDS = 30;
 let spacesGetCache: { expiresAt: number; rows: ProjectRecord[] } | null = null;
+let spacesMetaGetCache: {
+  expiresAt: number;
+  rows: Array<ReturnType<typeof projectToMeta>>;
+} | null = null;
 
 function isSpacesDdbEnabled(): boolean {
   return isDynamoEnabled(SPACES_DDB_TABLE_ENV);
@@ -66,6 +72,10 @@ function spacesTableName(): string {
 
 async function scanDdbProjects(): Promise<ProjectRecord[]> {
   return readAllDdbProjectsStore(spacesTableName());
+}
+
+async function scanDdbProjectsMeta() {
+  return readAllDdbProjectsMetaStore(spacesTableName());
 }
 
 async function readDdbProjectById(id: string): Promise<ProjectRecord | null> {
@@ -93,7 +103,24 @@ async function readProjects(): Promise<ProjectRecord[]> {
   return readJsonStore(spacesStore);
 }
 
-function projectToMeta(project: ProjectRecord) {
+async function readProjectsMeta(): Promise<Array<ReturnType<typeof projectToMeta>>> {
+  if (isSpacesDdbEnabled()) {
+    const now = Date.now();
+    if (spacesMetaGetCache && spacesMetaGetCache.expiresAt > now) {
+      return spacesMetaGetCache.rows;
+    }
+    const rows = (await scanDdbProjectsMeta()).map(projectToMeta);
+    spacesMetaGetCache = { rows, expiresAt: now + SPACES_GET_CACHE_TTL_MS };
+    return rows;
+  }
+  return (await readProjects()).map(projectToMeta);
+}
+
+function projectToMeta(project: ProjectRecord | ProjectListItem) {
+  const spacesCount =
+    "spaces" in project
+      ? Object.keys(project.spaces || {}).length
+      : Math.max(0, project.spacesCount ?? 0);
   return {
     id: project.id,
     name: project.name,
@@ -104,7 +131,7 @@ function projectToMeta(project: ProjectRecord) {
     ownerUserImage: project.ownerUserImage,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
-    spacesCount: Object.keys(project.spaces || {}).length,
+    spacesCount,
   };
 }
 
@@ -121,7 +148,10 @@ function normalizeOwnerEmail(email: string | null | undefined): string {
   return (email || "").trim().toLowerCase();
 }
 
-function projectBelongsToOwner(project: ProjectRecord, ownerEmail: string): boolean {
+function projectBelongsToOwner(
+  project: Pick<ProjectRecord, "ownerUserEmail">,
+  ownerEmail: string,
+): boolean {
   return normalizeOwnerEmail(project.ownerUserEmail) === ownerEmail;
 }
 
@@ -195,9 +225,8 @@ export async function GET(req: Request) {
       return NextResponse.json(rows);
     }
 
-    const meta = (await readProjects())
+    const meta = (await readProjectsMeta())
       .filter((p) => projectBelongsToOwner(p, ownerEmail))
-      .map(projectToMeta)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     if (Number.isFinite(limitRaw) && limitRaw > 0) {
       const cursorIdx = cursor ? meta.findIndex((row) => row.id === cursor) : -1;
@@ -255,6 +284,7 @@ export async function POST(req: Request) {
         };
         await writeDdbProject(savedProject);
         spacesGetCache = null;
+        spacesMetaGetCache = null;
         return NextResponse.json(savedProject);
       }
 
@@ -296,6 +326,7 @@ export async function POST(req: Request) {
 
       await writeDdbProject(newProject);
       spacesGetCache = null;
+      spacesMetaGetCache = null;
       return NextResponse.json(newProject);
     }
 
@@ -373,7 +404,8 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Project not found" }, { status: 404 });
       }
 
-      spacesGetCache = null;
+    spacesGetCache = null;
+    spacesMetaGetCache = null;
       const fallback = projects[projects.length - 1] ?? null;
       return NextResponse.json(savedProject ?? fallback);
     });
@@ -413,6 +445,7 @@ export async function DELETE(req: Request) {
 
       await deleteDdbProject(id);
       spacesGetCache = null;
+      spacesMetaGetCache = null;
       return NextResponse.json({ ok: true, id });
     }
 

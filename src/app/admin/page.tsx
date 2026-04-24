@@ -15,6 +15,7 @@ import {
   Users,
   Waypoints,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 type AdminUser = {
   email: string;
@@ -231,9 +232,29 @@ export default function AdminPage() {
   const [deletePlan, setDeletePlan] = useState<DeletePlan | null>(null);
   const [devPasscode, setDevPasscode] = useState("");
 
-  const apiHeaders = useMemo<Record<string, string>>(
-    () => (devPasscode === "6666" ? { "x-foldder-dev-passcode": "6666" } : {}),
-    [devPasscode],
+  const apiHeaders = useMemo<Record<string, string>>(() => {
+    const headers: Record<string, string> = {};
+    if (devPasscode === "6666") {
+      headers["x-foldder-dev-passcode"] = "6666";
+    }
+    return headers;
+  }, [devPasscode]);
+
+  const summaryTiles = useMemo<Array<[string, string | number, LucideIcon]>>(
+    () =>
+      data
+        ? [
+            ["Usuarios", data.summary.users, Users],
+            ["Online ahora", data.summary.usersOnlineNow, UserRound],
+            ["Proyectos", data.summary.projects, FolderKanban],
+            ["Nodos", data.summary.nodeInstances, Waypoints],
+            ["Archivos", data.summary.files, HardDrive],
+            ["S3 total", formatBytes(data.summary.totalBytes), HardDrive],
+            ["Llamadas API", data.summary.apiCalls, Database],
+            ["Coste API", formatMoney(data.summary.apiCostUsd), Clock3],
+          ]
+        : [],
+    [data],
   );
 
   const load = useCallback(async () => {
@@ -423,16 +444,7 @@ export default function AdminPage() {
 
         {data && (
           <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-8">
-            {[
-              ["Usuarios", data.summary.users, Users],
-              ["Online ahora", data.summary.usersOnlineNow, UserRound],
-              ["Proyectos", data.summary.projects, FolderKanban],
-              ["Nodos", data.summary.nodeInstances, Waypoints],
-              ["Archivos", data.summary.files, HardDrive],
-              ["S3 total", formatBytes(data.summary.totalBytes), HardDrive],
-              ["Llamadas API", data.summary.apiCalls, Database],
-              ["Coste API", formatMoney(data.summary.apiCostUsd), Clock3],
-            ].map(([label, value, Icon]) => (
+            {summaryTiles.map(([label, value, Icon]) => (
               <div key={String(label)} className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
                 <p className="text-xs text-white/55">{label}</p>
                 <p className="mt-1 flex items-center gap-2 text-xl font-semibold">
