@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { recordApiUsage, resolveUsageUserEmailFromRequest } from "@/lib/api-usage";
 import { getPresignedUrl, uploadBufferToS3Key } from "@/lib/s3-utils";
 import { buildDesignerAssetObjectKey } from "@/lib/designer-asset-keys";
 
@@ -11,6 +12,7 @@ const ALLOWED_EXT = new Set(["jpg", "jpeg", "png", "webp", "gif", "bin"]);
  */
 export async function POST(req: Request) {
   try {
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const formData = await req.formData();
     const file = formData.get("file");
     if (!(file instanceof File)) {
@@ -45,6 +47,17 @@ export async function POST(req: Request) {
       typeof spaceId === "string" && spaceId.length > 0 ? spaceId : null;
     const key = buildDesignerAssetObjectKey(space, assetId, variant, ext);
     await uploadBufferToS3Key(key, buffer, contentType);
+    await recordApiUsage({
+      provider: "aws",
+      userEmail: usageUserEmail,
+      serviceId: "s3-assets",
+      route: "/api/spaces/designer-asset-upload",
+      operation: "put_object",
+      costIsKnown: false,
+      costUsd: 0,
+      bytes: buffer.length,
+      metadata: { key, variant },
+    });
     const url = await getPresignedUrl(key);
 
     return NextResponse.json({ url, s3Key: key, assetId, variant });

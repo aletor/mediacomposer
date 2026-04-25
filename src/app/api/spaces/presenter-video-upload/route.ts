@@ -5,6 +5,7 @@ import { readFile, unlink, writeFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import { NextResponse } from "next/server";
+import { recordApiUsage, resolveUsageUserEmailFromRequest } from "@/lib/api-usage";
 import { getPresignedUrl, uploadBufferToS3Key } from "@/lib/s3-utils";
 
 export const runtime = "nodejs";
@@ -59,6 +60,7 @@ export async function POST(req: Request) {
   let tmpIn: string | null = null;
   let tmpOut: string | null = null;
   try {
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const form = await req.formData();
     const file = form.get("file");
     if (!(file instanceof File)) {
@@ -96,6 +98,17 @@ export async function POST(req: Request) {
 
     const key = `spaces/presenter-videos/${id}.${ext}`;
     await uploadBufferToS3Key(key, outBuf, contentType);
+    await recordApiUsage({
+      provider: "aws",
+      userEmail: usageUserEmail,
+      serviceId: "s3-assets",
+      route: "/api/spaces/presenter-video-upload",
+      operation: "put_object",
+      costIsKnown: false,
+      costUsd: 0,
+      bytes: outBuf.length,
+      metadata: { key, contentType },
+    });
     const url = await getPresignedUrl(key);
 
     return NextResponse.json({ url, s3Key: key });

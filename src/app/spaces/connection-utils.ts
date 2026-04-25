@@ -289,7 +289,7 @@ const DEFAULT_W: Record<string, number> = {
   geminiVideo: 340,
   vfxGenerator: 340,
   space: 320,
-  projectBrain: 260,
+  projectBrain: 340,
   projectAssets: 260,
 };
 
@@ -304,6 +304,7 @@ export function estimateNodeHeight(node: Node): number {
   const h = (node as { height?: number; measured?: { height?: number } }).height
     ?? (node as { measured?: { height?: number } }).measured?.height;
   if (h && h > 0) return h;
+  if (node.type === "projectBrain") return 248;
   return 240;
 }
 

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { recordApiUsage, resolveUsageUserEmailFromRequest } from "@/lib/api-usage";
 import { uploadToS3 } from "@/lib/s3-utils";
 import { v4 as uuidv4 } from "uuid";
 
@@ -27,6 +28,7 @@ function getExt(name: string): string {
 
 export async function POST(req: NextRequest) {
   try {
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const formData = await req.formData();
     const files = formData.getAll("file") as File[];
     const scopeRaw = String(formData.get("scope") || "core");
@@ -71,6 +73,17 @@ export async function POST(req: NextRequest) {
 
       const buffer = Buffer.from(await file.arrayBuffer());
       const s3Key = await uploadToS3(file.name, buffer, mime);
+      await recordApiUsage({
+        provider: "aws",
+        userEmail: usageUserEmail,
+        serviceId: "s3-knowledge",
+        route: "/api/spaces/brain/knowledge/upload",
+        operation: "put_object",
+        costIsKnown: false,
+        costUsd: 0,
+        bytes: buffer.length,
+        metadata: { key: s3Key, mime },
+      });
       const format = isImage ? "image" : ext === "pdf" ? "pdf" : ext === "docx" ? "docx" : isHtml ? "html" : "txt";
 
       uploadedDocs.push({

@@ -12,6 +12,8 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "migrate:dynamo": "tsx scripts/migrate-json-to-dynamo.ts",
     "provision:dynamo": "tsx scripts/provision-dynamo.ts",
     "backfill:spaces-list-index": "tsx scripts/backfill-spaces-list-index.ts",
@@ -55,6 +57,9 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@testing-library/jest-dom": "^6.8.0",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
     "@types/d3-ease": "^3.0.2",
     "@types/formidable": "^3.5.0",
     "@types/node": "^20",
@@ -63,10 +68,13 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/uuid": "^10.0.0",
+    "@vitejs/plugin-react": "^4.7.0",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
+    "jsdom": "^26.1.0",
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.4"
   }
 }

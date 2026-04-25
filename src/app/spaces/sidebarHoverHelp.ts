@@ -6,7 +6,7 @@ export const SIDEBAR_HOVER_HELP: Record<string, { title: string; line: string }>
   },
   projectBrain: {
     title: 'Brain',
-    line: 'Resumen de marca y conocimiento (PDFs, enlaces); abre el studio para editar',
+    line: 'Dashboard compacto: ADN, fuentes, nodos conectados y pendientes; abre Brain para editar',
   },
   projectAssets: {
     title: 'Assets',

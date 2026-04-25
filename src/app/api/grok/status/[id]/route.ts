@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { recordApiUsage, resolveUsageUserEmailFromRequest } from "@/lib/api-usage";
 
 export async function GET(req: Request, props: { params: Promise<{ id: string }> }) {
   try {
@@ -14,6 +15,18 @@ export async function GET(req: Request, props: { params: Promise<{ id: string }>
       headers: {
         'Authorization': `Bearer ${process.env.GROK_API_KEY}`,
       }
+    });
+
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
+    await recordApiUsage({
+      provider: "grok",
+      userEmail: usageUserEmail,
+      serviceId: "grok-status",
+      route: "/api/grok/status/[id]",
+      operation: "poll_video_task",
+      costIsKnown: false,
+      costUsd: 0,
+      metadata: { taskId, httpStatus: response.status },
     });
 
     const data = await response.json();

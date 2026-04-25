@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { recordApiUsage, resolveUsageUserEmailFromRequest } from "@/lib/api-usage";
 import { uploadToS3 } from "@/lib/s3-utils";
 import { v4 as uuidv4 } from "uuid";
 import axios from "axios";
@@ -6,6 +7,7 @@ import * as cheerio from "cheerio";
 
 export async function POST(req: NextRequest) {
   try {
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const { url, scope: scopeRaw, contextKind: contextKindRaw } = (await req.json()) as {
       url?: string;
       scope?: "core" | "context";
@@ -42,11 +44,23 @@ export async function POST(req: NextRequest) {
     }
 
     const filename = `URL-${Date.now()}.txt`;
-    const s3Key = await uploadToS3(filename, Buffer.from(bodyText), "text/plain");
+    const textBuf = Buffer.from(bodyText, "utf-8");
+    const s3Key = await uploadToS3(filename, textBuf, "text/plain");
+    await recordApiUsage({
+      provider: "aws",
+      userEmail: usageUserEmail,
+      serviceId: "s3-knowledge",
+      route: "/api/spaces/brain/knowledge/url",
+      operation: "put_object",
+      costIsKnown: false,
+      costUsd: 0,
+      bytes: textBuf.length,
+      metadata: { key: s3Key, source: "url_extract" },
+    });
     const docRecord = {
       id: uuidv4(),
       name: `[URL] ${title}`,
-      size: Buffer.byteLength(bodyText, "utf-8"),
+      size: textBuf.length,
       mime: "text/plain",
       scope,
       contextKind,

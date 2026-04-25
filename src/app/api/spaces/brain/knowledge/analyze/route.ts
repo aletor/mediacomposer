@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import {
+  ApiServiceDisabledError,
+  assertApiServiceEnabled,
+} from "@/lib/api-usage-controls";
+import { recordApiUsage, resolveUsageUserEmailFromRequest } from "@/lib/api-usage";
 import { getFromS3 } from "@/lib/s3-utils";
 import { parseBrainDocument } from "@/lib/brain-parser-utils";
 import {
   buildReadableCorporateContext,
   extractDnaFromImageRobust,
   extractDnaFromTextRobust,
+  type BrainOpenAiChatUsageHook,
 } from "@/lib/brain-knowledge-utils";
 import {
   AUDIENCE_PERSONA_CATALOG,
@@ -46,6 +52,15 @@ type BrainDoc = {
 };
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+type AnalyzeUsageQueue = Promise<void>[];
+
+function enqueueOpenAiUsage(
+  queue: AnalyzeUsageQueue,
+  partial: Parameters<typeof recordApiUsage>[0],
+): void {
+  queue.push(recordApiUsage(partial));
+}
 
 type StrategyAutofill = {
   voiceExamples: BrainVoiceExample[];
@@ -613,6 +628,8 @@ function sanitizeVisualStyle(raw: unknown, docs: BrainDoc[]): BrainVisualStyle {
 async function inferVisualStyleWithLlm(
   docs: BrainDoc[],
   fallback: BrainVisualStyle,
+  usageQueue: AnalyzeUsageQueue | null,
+  ctx: { userEmail?: string; projectId?: string; workspaceId?: string },
 ): Promise<BrainVisualStyle> {
   const analyzed = docs.filter((d) => d.status === "Analizado" && typeof d.extractedContext === "string");
   if (analyzed.length === 0) return fallback;
@@ -656,13 +673,33 @@ async function inferVisualStyleWithLlm(
     });
     const raw = completion.choices[0]?.message?.content || "{}";
     const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const u = completion.usage;
+    if (usageQueue && u) {
+      enqueueOpenAiUsage(usageQueue, {
+        provider: "openai",
+        userEmail: ctx.userEmail,
+        serviceId: "openai-brain-analyze",
+        route: "/api/spaces/brain/knowledge/analyze",
+        model: "gpt-4o",
+        operation: "infer_visual_style",
+        inputTokens: u.prompt_tokens,
+        outputTokens: u.completion_tokens,
+        totalTokens: u.total_tokens,
+        projectId: ctx.projectId,
+        workspaceId: ctx.workspaceId,
+      });
+    }
     return sanitizeVisualStyle(parsed.visualStyle, docs);
   } catch {
     return fallback;
   }
 }
 
-async function buildAutofillStrategy(docs: BrainDoc[]): Promise<StrategyAutofill> {
+async function buildAutofillStrategy(
+  docs: BrainDoc[],
+  usageQueue: AnalyzeUsageQueue | null,
+  ctx: { userEmail?: string; projectId?: string; workspaceId?: string },
+): Promise<StrategyAutofill> {
   const analyzed = docs.filter((d) => d.status === "Analizado" && typeof d.extractedContext === "string");
   if (analyzed.length === 0) {
     return {
@@ -724,7 +761,23 @@ async function buildAutofillStrategy(docs: BrainDoc[]): Promise<StrategyAutofill
     const raw = completion.choices[0]?.message?.content || "{}";
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const visualFallback = sanitizeVisualStyle(parsed.visualStyle, docs);
-    const visualEnhanced = await inferVisualStyleWithLlm(docs, visualFallback);
+    const u0 = completion.usage;
+    if (usageQueue && u0) {
+      enqueueOpenAiUsage(usageQueue, {
+        provider: "openai",
+        userEmail: ctx.userEmail,
+        serviceId: "openai-brain-analyze",
+        route: "/api/spaces/brain/knowledge/analyze",
+        model: "gpt-4o",
+        operation: "strategy_autofill",
+        inputTokens: u0.prompt_tokens,
+        outputTokens: u0.completion_tokens,
+        totalTokens: u0.total_tokens,
+        projectId: ctx.projectId,
+        workspaceId: ctx.workspaceId,
+      });
+    }
+    const visualEnhanced = await inferVisualStyleWithLlm(docs, visualFallback, usageQueue, ctx);
     return {
       voiceExamples: sanitizeVoiceExamples(parsed.voiceExamples),
       tabooPhrases: uniqueStrings(Array.isArray(parsed.tabooPhrases) ? (parsed.tabooPhrases as string[]) : [], 24),
@@ -767,7 +820,7 @@ async function buildAutofillStrategy(docs: BrainDoc[]): Promise<StrategyAutofill
   } catch (error) {
     console.error("[brain/knowledge/analyze] strategy autofill failed, using fallback:", error);
     const visualFallback = buildFallbackVisualStyle(docs);
-    const visualEnhanced = await inferVisualStyleWithLlm(docs, visualFallback);
+    const visualEnhanced = await inferVisualStyleWithLlm(docs, visualFallback, usageQueue, ctx);
     return {
       voiceExamples: [],
       tabooPhrases: [],
@@ -923,10 +976,24 @@ function requiresVisualSignalsUpgrade(doc: BrainDoc): boolean {
 }
 
 export async function POST(req: NextRequest) {
+  const usageTasks: AnalyzeUsageQueue = [];
   try {
-    const body = (await req.json()) as { documents?: BrainDoc[]; strategy?: BrainStrategy };
+    await assertApiServiceEnabled("openai-brain-analyze");
+    await assertApiServiceEnabled("openai-embeddings");
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
+    const body = (await req.json()) as {
+      documents?: BrainDoc[];
+      strategy?: BrainStrategy;
+      projectId?: string;
+      workspaceId?: string;
+    };
     const docs = Array.isArray(body.documents) ? body.documents : [];
     const nextDocs = [...docs];
+    const ctx = {
+      userEmail: usageUserEmail,
+      projectId: typeof body.projectId === "string" ? body.projectId.trim() || undefined : undefined,
+      workspaceId: typeof body.workspaceId === "string" ? body.workspaceId.trim() || undefined : undefined,
+    };
 
     const pendingIdx = nextDocs
       .map((doc, idx) => ({ doc, idx }))
@@ -935,9 +1002,27 @@ export async function POST(req: NextRequest) {
           doc.status === "Subido" || doc.status === "Error" || requiresVisualSignalsUpgrade(doc),
       );
 
+    const onExtractUsage: BrainOpenAiChatUsageHook = (model, u) => {
+      if (!u) return;
+      enqueueOpenAiUsage(usageTasks, {
+        provider: "openai",
+        userEmail: ctx.userEmail,
+        serviceId: "openai-brain-analyze",
+        route: "/api/spaces/brain/knowledge/analyze",
+        model,
+        operation: "extract_dna",
+        inputTokens: u.prompt_tokens,
+        outputTokens: u.completion_tokens,
+        totalTokens: u.total_tokens,
+        projectId: ctx.projectId,
+        workspaceId: ctx.workspaceId,
+      });
+    };
+
     if (pendingIdx.length === 0) {
-      const autofill = await buildAutofillStrategy(nextDocs);
+      const autofill = await buildAutofillStrategy(nextDocs, usageTasks, ctx);
       const strategy = mergeStrategy(body.strategy, autofill);
+      await Promise.all(usageTasks);
       return NextResponse.json({
         message: "No pending documents to analyze.",
         documents: nextDocs,
@@ -960,10 +1045,14 @@ export async function POST(req: NextRequest) {
             openai,
             b64,
             doc.mime || "image/png",
+            onExtractUsage,
           )) as Record<string, unknown>;
         } else {
           const textContent = await parseBrainDocument(fileBuffer, doc.s3Path, doc.mime || "");
-          extractedData = (await extractDnaFromTextRobust(openai, textContent)) as Record<string, unknown>;
+          extractedData = (await extractDnaFromTextRobust(openai, textContent, onExtractUsage)) as Record<
+            string,
+            unknown
+          >;
         }
 
         const extractedJsonString = JSON.stringify(extractedData, null, 2);
@@ -974,6 +1063,23 @@ export async function POST(req: NextRequest) {
             input: extractedJsonString,
           });
           embedding = embResponse.data[0]?.embedding;
+          const eu = embResponse.usage;
+          if (eu) {
+            enqueueOpenAiUsage(usageTasks, {
+              provider: "openai",
+              userEmail: ctx.userEmail,
+              serviceId: "openai-embeddings",
+              route: "/api/spaces/brain/knowledge/analyze",
+              model: "text-embedding-3-small",
+              operation: "embedding",
+              inputTokens: eu.prompt_tokens ?? eu.total_tokens,
+              outputTokens: 0,
+              totalTokens: eu.total_tokens,
+              projectId: ctx.projectId,
+              workspaceId: ctx.workspaceId,
+              metadata: { documentId: doc.id },
+            });
+          }
         } catch (embErr) {
           console.error(`[brain/knowledge/analyze] embedding failed for ${doc.id}:`, embErr);
         }
@@ -997,8 +1103,9 @@ export async function POST(req: NextRequest) {
     }
 
     const corporateContext = buildReadableCorporateContext(nextDocs);
-    const autofill = await buildAutofillStrategy(nextDocs);
+    const autofill = await buildAutofillStrategy(nextDocs, usageTasks, ctx);
     const strategy = mergeStrategy(body.strategy, autofill);
+    await Promise.all(usageTasks);
     return NextResponse.json({
       message: `Analyzed ${analyzedDocIds.length} documents.`,
       analyzedDocIds,
@@ -1007,6 +1114,12 @@ export async function POST(req: NextRequest) {
       strategy,
     });
   } catch (error) {
+    if (error instanceof ApiServiceDisabledError) {
+      return NextResponse.json(
+        { error: `API bloqueada en admin: ${error.label}` },
+        { status: 423 },
+      );
+    }
     console.error("[brain/knowledge/analyze]", error);
     return NextResponse.json({ error: "Failed to run analysis." }, { status: 500 });
   }

@@ -94,9 +94,12 @@ function lexicalScore(query: string, context: string): number {
 
 export async function POST(req: NextRequest) {
   try {
-    await assertApiServiceEnabled("openai-assistant");
+    await assertApiServiceEnabled("openai-brain-content");
+    await assertApiServiceEnabled("openai-embeddings");
     const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const body = (await req.json()) as {
+      projectId?: string;
+      workspaceId?: string;
       briefing?: {
         objective?: string;
         channel?: string;
@@ -152,6 +155,22 @@ export async function POST(req: NextRequest) {
       input: retrievalQuery,
     });
     const qv = queryEmb.data[0]?.embedding || [];
+    const embUsage = queryEmb.usage;
+    if (embUsage) {
+      await recordApiUsage({
+        provider: "openai",
+        userEmail: usageUserEmail,
+        serviceId: "openai-embeddings",
+        route: "/api/spaces/brain/content/generate",
+        model: "text-embedding-3-small",
+        operation: "embedding",
+        inputTokens: embUsage.prompt_tokens ?? embUsage.total_tokens,
+        outputTokens: 0,
+        totalTokens: embUsage.total_tokens,
+        projectId: typeof body.projectId === "string" ? body.projectId.trim() || undefined : undefined,
+        workspaceId: typeof body.workspaceId === "string" ? body.workspaceId.trim() || undefined : undefined,
+      });
+    }
 
     const scoreDocs = (arr: BrainDoc[]) =>
       arr
@@ -322,13 +341,16 @@ ${marketContext || "(sin contexto externo disponible)"}`
     await recordApiUsage({
       provider: "openai",
       userEmail: usageUserEmail,
-      serviceId: "openai-assistant",
+      serviceId: "openai-brain-content",
       route: "/api/spaces/brain/content/generate",
       model: "gpt-4o",
+      operation: "briefing_critic_chain",
       inputTokens: totalPrompt,
       outputTokens: totalCompletion,
       totalTokens: totalAll,
       note: "briefing+critic chain",
+      projectId: typeof body.projectId === "string" ? body.projectId.trim() || undefined : undefined,
+      workspaceId: typeof body.workspaceId === "string" ? body.workspaceId.trim() || undefined : undefined,
     });
 
     return NextResponse.json({

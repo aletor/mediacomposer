@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { recordApiUsage, resolveUsageUserEmailFromRequest } from "@/lib/api-usage";
 
 const BEE_BASE = "https://api.beeble.ai/v1";
 
@@ -45,6 +46,20 @@ async function proxyRequest(req: NextRequest, pathSegments: string[]) {
 
   const outCt = res.headers.get("content-type") || "application/json";
   const text = await res.text();
+  const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
+  const reqBytes = body?.byteLength ?? 0;
+  const respBytes = Buffer.byteLength(text, "utf8");
+  await recordApiUsage({
+    provider: "beeble",
+    userEmail: usageUserEmail,
+    serviceId: "beeble-api",
+    route: "/api/beeble/[...path]",
+    operation: req.method.toLowerCase(),
+    costIsKnown: false,
+    costUsd: 0,
+    bytes: reqBytes + respBytes,
+    metadata: { subpath, upstreamStatus: res.status },
+  });
   return new NextResponse(text, {
     status: res.status,
     headers: {

@@ -2,34 +2,93 @@ import fs from "fs/promises";
 import path from "path";
 import { appendUsageLineToS3Queued, isUsageS3Enabled, readUsageLogFromS3 } from "@/lib/api-usage-s3";
 import { USAGE_PERIOD_START_ISO } from "@/lib/usage-constants";
-import { estimateGeminiUsd, estimateOpenAIUsd } from "@/lib/pricing-config";
+import {
+  estimateGeminiUsd,
+  estimateOpenAIUsd,
+  estimateOpenAIEmbeddingUsd,
+} from "@/lib/pricing-config";
 import { auth } from "@/lib/auth";
 
 export {
   estimateGeminiImageGenerationUsd,
   estimateGeminiUsd,
   estimateOpenAIUsd,
+  estimateOpenAIEmbeddingUsd,
 } from "@/lib/pricing-config";
 
 export const DEFAULT_USAGE_SINCE_ISO = USAGE_PERIOD_START_ISO;
 
-/** Filas fijas del panel: todas las APIs integradas en Foldder. */
+export const USAGE_SERVICE_CATEGORIES = [
+  "ia-text",
+  "ia-image",
+  "ia-video",
+  "visual-analysis",
+  "brain",
+  "embeddings",
+  "external-api",
+  "infrastructure",
+  "unknown",
+] as const;
+
+export type UsageServiceCategory = (typeof USAGE_SERVICE_CATEGORIES)[number];
+
+export const USAGE_SERVICE_CATEGORY_LABEL_ES: Record<UsageServiceCategory, string> = {
+  "ia-text": "IA texto",
+  "ia-image": "IA imagen",
+  "ia-video": "IA vídeo",
+  "visual-analysis": "Análisis visual",
+  brain: "Brain",
+  embeddings: "Embeddings",
+  "external-api": "APIs externas",
+  infrastructure: "Infraestructura",
+  unknown: "Sin clasificar",
+};
+
+const AI_COST_CATEGORIES = new Set<UsageServiceCategory>([
+  "ia-text",
+  "ia-image",
+  "ia-video",
+  "visual-analysis",
+  "brain",
+  "embeddings",
+]);
+
+/** Filas del panel: consumo externo relevante (IA, Brain, embeddings, APIs, infra, legado). */
 export const USAGE_SERVICES = [
-  { id: "gemini-nano", label: "Gemini · Nano Banana (imagen 3 Flash / Pro)" },
-  { id: "gemini-veo", label: "Gemini · Veo 3.1 (vídeo)" },
-  { id: "seedance-video", label: "Volcengine Ark · Seedance (vídeo)" },
-  { id: "gemini-analyze", label: "Gemini · Análisis de áreas (2.5 Flash)" },
-  { id: "gemini-search-verify", label: "Gemini · Verificación imágenes (búsqueda web)" },
-  { id: "openai-assistant", label: "OpenAI · Asistente del lienzo (GPT-4o mini)" },
-  { id: "openai-enhance", label: "OpenAI · Mejorar prompt (GPT-4o)" },
-  { id: "openai-describe", label: "OpenAI · Describir imagen/vídeo (GPT-4o)" },
-  { id: "grok-video", label: "xAI Grok · Vídeo (Imagine)" },
-  { id: "runway-gen3", label: "Runway · Gen-3 Alpha Turbo" },
-  { id: "replicate-bg", label: "Replicate · Quitar fondo" },
-  { id: "replicate-vmatte", label: "Replicate · Video matte (RVM)" },
+  { id: "gemini-nano", label: "Gemini · Nano Banana (imagen 3 Flash / Pro)", category: "ia-image" as const },
+  { id: "gemini-veo", label: "Gemini · Veo 3.1 (vídeo)", category: "ia-video" as const },
+  { id: "seedance-video", label: "Volcengine Ark · Seedance (vídeo)", category: "ia-video" as const },
+  { id: "gemini-analyze", label: "Gemini · Análisis de áreas (2.5 Flash)", category: "visual-analysis" as const },
+  { id: "gemini-search-verify", label: "Gemini · Verificación imágenes (búsqueda web)", category: "visual-analysis" as const },
+  { id: "gemini-vision-analysis", label: "Gemini · Análisis visual Brain (referencias / Designer)", category: "visual-analysis" as const },
+  { id: "openai-vision-analysis", label: "OpenAI · Análisis visual Brain (referencias / Designer)", category: "visual-analysis" as const },
+  { id: "openai-assistant", label: "OpenAI · Asistente del lienzo (GPT-4o mini)", category: "ia-text" as const },
+  { id: "openai-enhance", label: "OpenAI · Mejorar prompt (GPT-4o)", category: "ia-text" as const },
+  { id: "openai-describe", label: "OpenAI · Describir imagen/vídeo (GPT-4o)", category: "visual-analysis" as const },
+  { id: "grok-video", label: "xAI Grok · Vídeo (Imagine)", category: "ia-video" as const },
+  { id: "runway-gen3", label: "Runway · Gen-3 Alpha Turbo", category: "ia-video" as const },
+  { id: "replicate-bg", label: "Replicate · Quitar fondo", category: "ia-image" as const },
+  { id: "replicate-vmatte", label: "Replicate · Video matte (RVM)", category: "ia-video" as const },
+  { id: "openai-brain-analyze", label: "OpenAI · Brain análisis documental", category: "brain" as const },
+  { id: "openai-brain-chat", label: "OpenAI · Brain chat conocimiento", category: "brain" as const },
+  { id: "openai-brain-content", label: "OpenAI · Brain generación contenido", category: "brain" as const },
+  { id: "openai-embeddings", label: "OpenAI · Embeddings", category: "embeddings" as const },
+  { id: "pinterest-search", label: "Pinterest · Search API", category: "external-api" as const },
+  { id: "beeble-api", label: "Beeble · API proxy", category: "external-api" as const },
+  { id: "runway-status", label: "Runway · Status polling", category: "ia-video" as const },
+  { id: "grok-status", label: "xAI Grok · Status polling", category: "ia-video" as const },
+  { id: "s3-assets", label: "AWS S3 · Assets / uploads", category: "infrastructure" as const },
+  { id: "s3-knowledge", label: "AWS S3 · Brain knowledge files", category: "infrastructure" as const },
+  { id: "unknown-ai", label: "Sin clasificar · IA (legado)", category: "unknown" as const },
+  { id: "unknown-external", label: "Sin clasificar · externo (legado)", category: "unknown" as const },
 ] as const;
 
 export type UsageServiceId = (typeof USAGE_SERVICES)[number]["id"];
+
+export function usageServiceCategory(id: UsageServiceId): UsageServiceCategory {
+  const row = USAGE_SERVICES.find((s) => s.id === id);
+  return row?.category ?? "unknown";
+}
 
 export type UsageProvider =
   | "gemini"
@@ -37,7 +96,10 @@ export type UsageProvider =
   | "grok"
   | "runway"
   | "replicate"
-  | "volcengine";
+  | "volcengine"
+  | "pinterest"
+  | "beeble"
+  | "aws";
 
 export type UsageRecordLine = {
   ts: string;
@@ -47,10 +109,23 @@ export type UsageRecordLine = {
   serviceId?: UsageServiceId;
   route: string;
   model?: string;
+  /** p. ej. chat | embedding | proxy_fetch */
+  operation?: string;
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  /** Coste persistido (compatible con líneas antiguas). */
   costUsd: number;
+  /**
+   * Si false, la llamada no aporta a totales USD (polling, APIs sin pricing, infra sin coste).
+   * Omisión = true (legado).
+   */
+  costIsKnown?: boolean;
+  projectId?: string;
+  workspaceId?: string;
+  metadata?: Record<string, unknown>;
+  /** Bytes transferidos o almacenados (p. ej. proxy, upload). */
+  bytes?: number;
   note?: string;
 };
 
@@ -76,51 +151,128 @@ function isUsageServiceId(id: string): id is UsageServiceId {
   return SERVICE_IDS.has(id);
 }
 
-/** Líneas antiguas sin `serviceId`: inferir desde ruta / proveedor. */
+function warnAmbiguousLegacy(reason: string, r: Pick<UsageRecordLine, "route" | "provider" | "model" | "note">) {
+  if (process.env.NODE_ENV === "production") return;
+  console.warn("[api-usage] inferServiceIdFromRecord: línea legada ambigua → bucket de reserva.", reason, {
+    route: r.route,
+    provider: r.provider,
+    model: r.model,
+    note: r.note?.slice?.(0, 120),
+  });
+}
+
+/** Líneas antiguas sin `serviceId`: inferir desde ruta / proveedor (sin asumir gemini-nano por defecto). */
 export function inferServiceIdFromRecord(r: UsageRecordLine): UsageServiceId {
   if (r.serviceId && isUsageServiceId(r.serviceId)) return r.serviceId;
   const routePath = r.route || "";
+
   if (routePath.includes("/gemini/generate")) return "gemini-nano";
+  if (routePath.includes("/gemini/generate-stream")) return "gemini-nano";
   if (routePath.includes("/gemini/video")) return "gemini-veo";
   if (routePath.includes("/seedance/video")) return "seedance-video";
   if (routePath.includes("/analyze-areas")) return "gemini-analyze";
+  if (routePath.includes("/spaces/search")) {
+    if (
+      r.provider === "gemini" &&
+      (r.operation === "image_intent_verify" || String(r.note || "").toLowerCase().includes("verify"))
+    ) {
+      return "gemini-search-verify";
+    }
+    warnAmbiguousLegacy("/spaces/search sin evidencia clara de verificación Gemini", r);
+    return "unknown-ai";
+  }
   if (routePath.includes("/assistant")) return "openai-assistant";
   if (routePath.includes("/enhance")) return "openai-enhance";
   if (routePath.includes("/describe")) return "openai-describe";
   if (routePath.includes("/grok/generate")) return "grok-video";
+  if (routePath.includes("/grok/status")) return "grok-status";
   if (routePath.includes("/runway/generate")) return "runway-gen3";
+  if (routePath.includes("/runway/status")) return "runway-status";
   if (routePath.includes("/video-matte")) return "replicate-vmatte";
   if (routePath.includes("/matte")) return "replicate-bg";
-  if (r.provider === "gemini") return "gemini-nano";
-  if (r.provider === "openai") return "openai-assistant";
-  if (r.provider === "grok") return "grok-video";
-  if (r.provider === "runway") return "runway-gen3";
-  return "replicate-bg";
+  if (routePath.includes("/brain/knowledge/analyze")) return "openai-brain-analyze";
+  if (routePath.includes("/brain/knowledge/chat")) return "openai-brain-chat";
+  if (routePath.includes("/brain/content/generate")) return "openai-brain-content";
+  if (routePath.includes("/brain/knowledge/update")) return "openai-embeddings";
+  if (routePath.includes("/pinterest/search")) return "pinterest-search";
+  if (routePath.includes("/beeble/")) return "beeble-api";
+
+  if (r.provider === "gemini") {
+    warnAmbiguousLegacy("provider gemini sin ruta reconocida", r);
+    return "unknown-ai";
+  }
+  if (r.provider === "openai") {
+    warnAmbiguousLegacy("provider openai sin ruta reconocida", r);
+    return "unknown-ai";
+  }
+  if (r.provider === "grok" || r.provider === "runway" || r.provider === "replicate" || r.provider === "volcengine") {
+    warnAmbiguousLegacy(`provider ${r.provider} sin ruta reconocida`, r);
+    return "unknown-external";
+  }
+  if (r.provider === "pinterest" || r.provider === "beeble" || r.provider === "aws") {
+    return "unknown-external";
+  }
+  warnAmbiguousLegacy("proveedor desconocido", r);
+  return "unknown-external";
+}
+
+function pricedCostUsd(r: UsageRecordLine): number {
+  if (r.costIsKnown === false) return 0;
+  return r.costUsd ?? 0;
+}
+
+function resolveCostUsd(partial: Omit<UsageRecordLine, "ts" | "costUsd"> & { costUsd?: number }): {
+  costUsd: number;
+  costIsKnown: boolean;
+} {
+  const userMarkedUnknown = partial.costIsKnown === false;
+  if (userMarkedUnknown) {
+    return { costUsd: partial.costUsd ?? 0, costIsKnown: false };
+  }
+  if (partial.costUsd != null) {
+    return { costUsd: partial.costUsd, costIsKnown: true };
+  }
+  const it = partial.inputTokens ?? 0;
+  const ot = partial.outputTokens ?? 0;
+  const tt = partial.totalTokens ?? it + ot;
+  if (partial.provider === "openai") {
+    const isEmb =
+      partial.serviceId === "openai-embeddings" ||
+      partial.operation === "embedding" ||
+      (partial.model || "").toLowerCase().includes("embedding");
+    if (isEmb) {
+      return {
+        costUsd: Math.round(estimateOpenAIEmbeddingUsd(partial.model, tt) * 1_000_000) / 1_000_000,
+        costIsKnown: true,
+      };
+    }
+    return {
+      costUsd: Math.round(estimateOpenAIUsd(partial.model, it, ot) * 1_000_000) / 1_000_000,
+      costIsKnown: true,
+    };
+  }
+  if (partial.provider === "gemini") {
+    return {
+      costUsd: Math.round(estimateGeminiUsd(partial.model, it, ot) * 1_000_000) / 1_000_000,
+      costIsKnown: true,
+    };
+  }
+  return { costUsd: 0, costIsKnown: true };
 }
 
 /**
- * Persiste un evento de uso (obligatorio para costes). Orden: S3 (cola + ETag) si hay credenciales,
- * más copia local en `data/` o `/tmp` como respaldo.
+ * Persiste un evento de uso. `serviceId` obligatorio en código nuevo.
+ * Orden: S3 (cola + ETag) si hay credenciales, más copia local en `data/` o `/tmp` como respaldo.
  */
 export async function recordApiUsage(
-  partial: Omit<UsageRecordLine, "ts" | "costUsd"> & { costUsd?: number } & { serviceId: UsageServiceId }
+  partial: Omit<UsageRecordLine, "ts" | "costUsd"> & { costUsd?: number } & { serviceId: UsageServiceId },
 ): Promise<void> {
-  let costUsd = partial.costUsd;
-  if (costUsd == null) {
-    const it = partial.inputTokens ?? 0;
-    const ot = partial.outputTokens ?? 0;
-    if (partial.provider === "openai") {
-      costUsd = estimateOpenAIUsd(partial.model, it, ot);
-    } else if (partial.provider === "gemini") {
-      costUsd = estimateGeminiUsd(partial.model, it, ot);
-    } else {
-      costUsd = 0;
-    }
-  }
+  const { costUsd, costIsKnown } = resolveCostUsd(partial);
   const line: UsageRecordLine = {
-    ts: new Date().toISOString(),
     ...partial,
+    ts: new Date().toISOString(),
     costUsd: Math.round(costUsd * 1_000_000) / 1_000_000,
+    costIsKnown,
   };
   const payload = JSON.stringify(line) + "\n";
 
@@ -152,14 +304,12 @@ export async function recordApiUsage(
       "[api-usage] CRITICAL: no se guardó el uso en S3 ni en disco. Revisa credenciales / permisos.",
       line,
       "último error local:",
-      lastLocalErr
+      lastLocalErr,
     );
   }
 }
 
-export async function resolveUsageUserEmailFromRequest(
-  req: Request,
-): Promise<string | undefined> {
+export async function resolveUsageUserEmailFromRequest(req: Request): Promise<string | undefined> {
   const devCode = req.headers.get("x-foldder-dev-passcode");
   if (process.env.NODE_ENV !== "production" && devCode === "6666") {
     return "dev-bypass@local.foldder";
@@ -172,14 +322,38 @@ export async function resolveUsageUserEmailFromRequest(
 export type ServiceAgg = {
   id: UsageServiceId;
   label: string;
+  category: UsageServiceCategory;
   calls: number;
   totalTokens: number;
   costUsd: number;
+  bytes: number;
+  /** Llamadas con costIsKnown !== false y coste > 0 */
+  pricedCalls: number;
+  /** Llamadas con costIsKnown === false o coste 0 explícito de API sin pricing */
+  unpricedCalls: number;
+};
+
+export type UsageCategorySection = {
+  category: UsageServiceCategory;
+  label: string;
+  services: ServiceAgg[];
+  subtotalCostUsd: number;
+  subtotalTokens: number;
+  subtotalBytes: number;
 };
 
 export async function aggregateUsageSince(sinceIso: string): Promise<{
   since: string;
   services: ServiceAgg[];
+  categories: UsageCategorySection[];
+  totals: {
+    estimatedAiUsd: number;
+    estimatedCompleteUsd: number;
+    totalTokens: number;
+    totalBytes: number;
+    unpricedCalls: number;
+  };
+  /** @deprecated usar totals.estimatedCompleteUsd */
   totalCostUsd: number;
   totalTokens: number;
 }> {
@@ -187,7 +361,17 @@ export async function aggregateUsageSince(sinceIso: string): Promise<{
 
   const byId: Record<UsageServiceId, ServiceAgg> = {} as Record<UsageServiceId, ServiceAgg>;
   for (const s of USAGE_SERVICES) {
-    byId[s.id] = { id: s.id, label: s.label, calls: 0, totalTokens: 0, costUsd: 0 };
+    byId[s.id] = {
+      id: s.id,
+      label: s.label,
+      category: s.category,
+      calls: 0,
+      totalTokens: 0,
+      costUsd: 0,
+      bytes: 0,
+      pricedCalls: 0,
+      unpricedCalls: 0,
+    };
   }
 
   const lineSet = new Set<string>();
@@ -214,20 +398,30 @@ export async function aggregateUsageSince(sinceIso: string): Promise<{
     }
   }
 
+  let unpricedCallsAll = 0;
+
   for (const line of lineSet) {
     try {
       const r = JSON.parse(line) as UsageRecordLine;
       if (new Date(r.ts).getTime() < sinceMs) continue;
       const sid = inferServiceIdFromRecord(r);
       if (!byId[sid]) continue;
-      byId[sid].calls += 1;
+      const row = byId[sid];
+      row.calls += 1;
       const tt =
         r.totalTokens ??
-        (r.inputTokens != null || r.outputTokens != null
-          ? (r.inputTokens ?? 0) + (r.outputTokens ?? 0)
-          : 0);
-      byId[sid].totalTokens += tt;
-      byId[sid].costUsd += r.costUsd ?? 0;
+        (r.inputTokens != null || r.outputTokens != null ? (r.inputTokens ?? 0) + (r.outputTokens ?? 0) : 0);
+      row.totalTokens += tt;
+      row.bytes += typeof r.bytes === "number" && Number.isFinite(r.bytes) ? r.bytes : 0;
+      const cUsd = r.costUsd ?? 0;
+      const costKnown = r.costIsKnown !== false;
+      if (!costKnown) {
+        row.unpricedCalls += 1;
+        unpricedCallsAll += 1;
+      } else {
+        row.costUsd += cUsd;
+        if (cUsd > 0) row.pricedCalls += 1;
+      }
     } catch {
       /* línea corrupta */
     }
@@ -241,17 +435,57 @@ export async function aggregateUsageSince(sinceIso: string): Promise<{
     };
   });
 
-  let totalCostUsd = 0;
-  let totalTokens = 0;
-  for (const s of services) {
-    totalCostUsd += s.costUsd;
-    totalTokens += s.totalTokens;
+  const byCat = new Map<UsageServiceCategory, UsageCategorySection>();
+  for (const c of USAGE_SERVICE_CATEGORIES) {
+    byCat.set(c, {
+      category: c,
+      label: USAGE_SERVICE_CATEGORY_LABEL_ES[c],
+      services: [],
+      subtotalCostUsd: 0,
+      subtotalTokens: 0,
+      subtotalBytes: 0,
+    });
   }
+  for (const s of services) {
+    const sec = byCat.get(s.category)!;
+    sec.services.push(s);
+    sec.subtotalCostUsd += s.costUsd;
+    sec.subtotalTokens += s.totalTokens;
+    sec.subtotalBytes += s.bytes;
+  }
+  const categories = USAGE_SERVICE_CATEGORIES.map((c) => {
+    const sec = byCat.get(c)!;
+    return {
+      ...sec,
+      subtotalCostUsd: Math.round(sec.subtotalCostUsd * 1_000_000) / 1_000_000,
+    };
+  }).filter((sec) => sec.services.some((x) => x.calls > 0 || x.bytes > 0));
+
+  let estimatedAiUsd = 0;
+  let estimatedCompleteUsd = 0;
+  let totalTokens = 0;
+  let totalBytes = 0;
+  for (const s of services) {
+    totalTokens += s.totalTokens;
+    totalBytes += s.bytes;
+    estimatedCompleteUsd += s.costUsd;
+    if (AI_COST_CATEGORIES.has(s.category)) estimatedAiUsd += s.costUsd;
+  }
+  estimatedAiUsd = Math.round(estimatedAiUsd * 1_000_000) / 1_000_000;
+  estimatedCompleteUsd = Math.round(estimatedCompleteUsd * 1_000_000) / 1_000_000;
 
   return {
     since: sinceIso,
     services,
-    totalCostUsd: Math.round(totalCostUsd * 1_000_000) / 1_000_000,
+    categories,
+    totals: {
+      estimatedAiUsd,
+      estimatedCompleteUsd,
+      totalTokens,
+      totalBytes,
+      unpricedCalls: unpricedCallsAll,
+    },
+    totalCostUsd: estimatedCompleteUsd,
     totalTokens,
   };
 }
@@ -319,10 +553,7 @@ export async function getUsageDeepReportSince(sinceIso: string): Promise<{
   const byService = new Map<UsageServiceId, UsageByService>();
   const byUser = new Map<string, UsageByUser>();
   const byProviderModel = new Map<string, UsageByProviderModel>();
-  const byDay = new Map<
-    string,
-    { calls: number; costUsd: number; totalTokens: number; users: Set<string> }
-  >();
+  const byDay = new Map<string, { calls: number; costUsd: number; totalTokens: number; users: Set<string> }>();
 
   for (const s of USAGE_SERVICES) {
     byService.set(s.id, {
@@ -344,12 +575,10 @@ export async function getUsageDeepReportSince(sinceIso: string): Promise<{
       const ts = new Date(r.ts).getTime();
       if (!Number.isFinite(ts) || ts < sinceMs) continue;
       const sid = inferServiceIdFromRecord(r);
-      const cost = r.costUsd ?? 0;
+      const cost = pricedCostUsd(r);
       const tokens =
         r.totalTokens ??
-        (r.inputTokens != null || r.outputTokens != null
-          ? (r.inputTokens ?? 0) + (r.outputTokens ?? 0)
-          : 0);
+        (r.inputTokens != null || r.outputTokens != null ? (r.inputTokens ?? 0) + (r.outputTokens ?? 0) : 0);
       const userEmail = (r.userEmail || "unknown@unattributed").trim().toLowerCase();
       const provider = r.provider;
       const model = (r.model || "unknown").trim();

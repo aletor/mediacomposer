@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { extractBestPinterestImageUrl } from "@/lib/pinterest-pin-media";
+import { recordApiUsage, resolveUsageUserEmailFromRequest } from "@/lib/api-usage";
 
 const PINTEREST_API = "https://api.pinterest.com/v5";
 
@@ -31,6 +32,7 @@ function normalizePins(items: unknown[]): PinterestPinResult[] {
  */
 export async function POST(req: Request) {
   try {
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const token = process.env.PINTEREST_ACCESS_TOKEN?.trim();
     if (!token) {
       return NextResponse.json(
@@ -75,6 +77,16 @@ export async function POST(req: Request) {
     let source: "partner" | "user_pins" = "partner";
 
     const partnerRes = await fetchPartner();
+    await recordApiUsage({
+      provider: "pinterest",
+      userEmail: usageUserEmail,
+      serviceId: "pinterest-search",
+      route: "/api/pinterest/search",
+      operation: "search_partner_pins",
+      costIsKnown: false,
+      costUsd: 0,
+      metadata: { httpStatus: partnerRes.status },
+    });
     if (partnerRes.ok) {
       const j = (await partnerRes.json()) as { items?: unknown[] };
       items = Array.isArray(j.items) ? j.items : [];
@@ -85,6 +97,16 @@ export async function POST(req: Request) {
 
     if (items.length === 0) {
       const userRes = await fetchUserPins();
+      await recordApiUsage({
+        provider: "pinterest",
+        userEmail: usageUserEmail,
+        serviceId: "pinterest-search",
+        route: "/api/pinterest/search",
+        operation: "search_user_pins",
+        costIsKnown: false,
+        costUsd: 0,
+        metadata: { httpStatus: userRes.status },
+      });
       if (!userRes.ok) {
         const errText = await userRes.text().catch(() => "");
         let msg = `Pinterest API ${userRes.status}`;

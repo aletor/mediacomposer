@@ -51,7 +51,14 @@ import { DesignerPagesRail } from "./DesignerPagesRail";
 import { DesignerStudioPageBar } from "./DesignerStudioPageBar";
 import { useDesignerImagePipeline } from "./useDesignerImagePipeline";
 import { useDesignerTextFrameLayoutSync } from "./useDesignerTextFrameLayoutSync";
+import { useBrainNodeTelemetry } from "@/lib/brain/use-brain-node-telemetry";
 import type { DesignerEmbedProps } from "../freehand/designer-embed-props";
+import { countDesignerImagesInPages } from "./designer-export-image-summary";
+import {
+  logDesignerExportImagesSummary,
+  trackDesignerImageImported,
+  trackDesignerImageUsed,
+} from "./designer-image-telemetry";
 
 interface DesignerStudioProps {
   initialPages: DesignerPageState[];
@@ -79,6 +86,12 @@ export default function DesignerStudio({
   brainConnected = false,
 }: DesignerStudioProps) {
   const designerSpaceId = useDesignerSpaceId();
+  const brainTelemetry = useBrainNodeTelemetry({
+    canvasNodeId: designerCanvasInstanceKey,
+    nodeType: "DESIGNER",
+  });
+  const brainTelemetryRef = useRef(brainTelemetry);
+  brainTelemetryRef.current = brainTelemetry;
   const [pages, setPages] = useState<DesignerPageState[]>(() =>
     initialPages.length > 0
       ? initialPages
@@ -646,6 +659,31 @@ export default function DesignerStudio({
 
       api?.patchObject(frameId, { imageFrameContent: content });
 
+      const pageId = pagesRef.current[activeIdxRef.current]?.id;
+      const tr = brainTelemetryRef.current.track;
+      trackDesignerImageImported(tr, {
+        source: "USER_UPLOAD",
+        pageId,
+        frameId,
+        assetId,
+        assetRef: persistedUrl,
+        fileName: file.name?.trim(),
+        mimeType: file.type?.trim() || optBlob.type || "image/*",
+        imageWidth: iw,
+        imageHeight: ih,
+      });
+      trackDesignerImageUsed(tr, {
+        source: "USER_UPLOAD",
+        pageId,
+        frameId,
+        assetId,
+        assetRef: persistedUrl,
+        fileName: file.name?.trim(),
+        mimeType: file.type?.trim() || optBlob.type || "image/*",
+        imageWidth: iw,
+        imageHeight: ih,
+      });
+
       const idx = activeIdxRef.current;
       setPages((prev) => {
         const n = [...prev];
@@ -1138,6 +1176,24 @@ export default function DesignerStudio({
       await downloadMultiPageVectorPdf(markups, `diseno-${Date.now()}.pdf`, {
         optimizeImages: pdfOpts.optimizeImages === true,
       });
+      const imgSnap = countDesignerImagesInPages(pagesRef.current);
+      logDesignerExportImagesSummary({
+        exportFormat: "vector_pdf",
+        pages: pageCount,
+        ...imgSnap,
+      });
+      brainTelemetryRef.current.track({
+        kind: "CONTENT_EXPORTED",
+        exportFormat: "vector_pdf",
+        designer: {
+          pageExported: true,
+          exportImagesSummary: {
+            imageFramesWithContent: imgSnap.imageFramesWithContent,
+            looseImageObjects: imgSnap.looseImageObjects,
+          },
+        },
+      });
+      void brainTelemetryRef.current.flushTelemetry("export");
     } catch (e) {
       console.error("[Designer] PDF multipágina:", e);
       const msg = e instanceof Error ? e.message : String(e);
@@ -1202,6 +1258,24 @@ export default function DesignerStudio({
         autoImageOptimization: autoImageOptimization !== false,
         filenameBase: "diseno-foldder",
       });
+      const imgSnapDe = countDesignerImagesInPages(pagesRef.current);
+      logDesignerExportImagesSummary({
+        exportFormat: "de",
+        pages: pagesRef.current.length,
+        ...imgSnapDe,
+      });
+      brainTelemetryRef.current.track({
+        kind: "CONTENT_EXPORTED",
+        exportFormat: "de",
+        designer: {
+          pageExported: true,
+          exportImagesSummary: {
+            imageFramesWithContent: imgSnapDe.imageFramesWithContent,
+            looseImageObjects: imgSnapDe.looseImageObjects,
+          },
+        },
+      });
+      void brainTelemetryRef.current.flushTelemetry("export");
     } catch (e) {
       console.error("[Designer] export .de", e);
       alert(e instanceof Error ? e.message : String(e));
@@ -1256,6 +1330,7 @@ export default function DesignerStudio({
   const designerFreehandProps: DesignerEmbedProps = {
     designerMode: true,
     designerSkipAutoNodeExportOnClose: true,
+    designerBrainTelemetry: brainTelemetry,
     designerPageEnterDirection,
     onDesignerTextFrameCreate: handleDesignerTextFrameCreate,
     onDesignerImageFramePlace: handleDesignerImageFramePlace,

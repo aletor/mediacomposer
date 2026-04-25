@@ -24,6 +24,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { DesignerSpaceIdContext } from "@/contexts/DesignerSpaceIdContext";
+import { SpacesActiveProjectIdContext } from "@/contexts/SpacesActiveProjectIdContext";
 import { ProjectBrainCanvasContext } from "./project-brain-canvas-context";
 import { ProjectAssetsCanvasContext } from "./project-assets-canvas-context";
 
@@ -47,7 +48,7 @@ import { HandleTypeLegend } from "./HandleTypeLegend";
 import { AiRequestHud } from "./AiRequestHud";
 import { ExternalApiBlockedModal } from "./ExternalApiBlockedModal";
 import { TopbarPins } from "./TopbarPins";
-import { ProjectBrainFullscreen } from "./ProjectBrainFullscreen";
+import { ProjectBrainFullscreen, type BrainMainSection } from "./ProjectBrainFullscreen";
 import { ProjectAssetsFullscreen } from "./ProjectAssetsFullscreen";
 import {
   resolveHandleMetaForCanvasDrop,
@@ -251,6 +252,8 @@ export function SpacesContent() {
   const [savedProjects, setSavedProjects] = useState<SavedProjectMeta[]>([]);
   const [spacesMap, setSpacesMap] = useState<Record<string, any>>({});
   const [metadata, setMetadata] = useState<any>({});
+  /** True hasta el próximo guardado: análisis visual en memoria distinto del último persistido. */
+  const [visualReferenceAnalysisDirty, setVisualReferenceAnalysisDirty] = useState(false);
   
   const [isSaving, setIsSaving] = useState(false);
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
@@ -313,6 +316,7 @@ export function SpacesContent() {
   /** Arrastre activo desde la librería: oculta tooltips rollover y evita solapes de UI */
   const [paletteDragActive, setPaletteDragActive] = useState(false);
   const [projectBrainOpen, setProjectBrainOpen] = useState(false);
+  const [brainInitialSection, setBrainInitialSection] = useState<BrainMainSection | null>(null);
   const [projectAssetsOpen, setProjectAssetsOpen] = useState(false);
   const projectScopeId = activeProjectId || "__local__";
 
@@ -320,9 +324,18 @@ export function SpacesContent() {
     () => ({
       assetsMetadata: metadata.assets,
       projectScopeId,
-      openProjectBrain: () => setProjectBrainOpen(true),
+      openProjectBrain: () => {
+        setBrainInitialSection(null);
+        setProjectBrainOpen(true);
+      },
+      openProjectBrainReview: () => {
+        setBrainInitialSection("review");
+        setProjectBrainOpen(true);
+      },
+      flowNodes: nodes,
+      flowEdges: edges,
     }),
-    [metadata.assets, projectScopeId],
+    [metadata.assets, projectScopeId, nodes, edges],
   );
 
   const projectAssetsCanvasValue = useMemo(
@@ -336,7 +349,10 @@ export function SpacesContent() {
   );
 
   useEffect(() => {
-    const onOpenBrain = () => setProjectBrainOpen(true);
+    const onOpenBrain = () => {
+      setBrainInitialSection(null);
+      setProjectBrainOpen(true);
+    };
     window.addEventListener("foldder-open-project-brain", onOpenBrain);
     return () => window.removeEventListener("foldder-open-project-brain", onOpenBrain);
   }, []);
@@ -2061,6 +2077,7 @@ export function SpacesContent() {
   const refreshProjectsList = useCallback(async () => {
     const res = await fetch('/api/spaces?meta=1', {
       headers: devBypassHeaders,
+      cache: 'no-store',
     });
     const data = await readResponseJson<unknown[]>(res, 'GET /api/spaces?meta=1');
     if (Array.isArray(data)) {
@@ -2085,16 +2102,34 @@ export function SpacesContent() {
     return readJsonWithHttpError<SavedProjectDetail>(res, 'GET /api/spaces?id=...');
   }, [devBypassHeaders]);
 
-  // Lista de proyectos al montar y al validar la clave (lista actualizada al entrar)
+  /** Identidad para la que debe coincidir el listado de proyectos (cambia al switchar cuenta Gmail). */
+  const projectsListOwnerKey =
+    sessionStatus === 'authenticated'
+      ? `google:${String(session?.user?.email ?? session?.user?.id ?? '')}`
+      : passcodeBypass
+        ? 'passcode-bypass'
+        : '';
+
+  const projectsListOwnerRef = useRef<string | null>(null);
+
+  // Lista al entrar / al cambiar usuario real (misma sesión "authenticated" → deps sin email no bastaba)
   useEffect(() => {
     if (!isAuthenticated) {
+      projectsListOwnerRef.current = null;
       setSavedProjects([]);
       return;
     }
+
+    const prevOwner = projectsListOwnerRef.current;
+    if (projectsListOwnerKey && prevOwner !== projectsListOwnerKey) {
+      projectsListOwnerRef.current = projectsListOwnerKey;
+      setSavedProjects([]);
+    }
+
     void refreshProjectsList().catch((err) => {
       console.error('Fetch error:', err);
     });
-  }, [isAuthenticated, refreshProjectsList]);
+  }, [isAuthenticated, projectsListOwnerKey, refreshProjectsList]);
 
   const saveProject = async (
     nameToSave?: string,
@@ -2167,6 +2202,7 @@ export function SpacesContent() {
       } else {
         setSpacesMap(spacesToSave as Record<string, unknown>);
       }
+      setVisualReferenceAnalysisDirty(false);
       return true;
     } catch (err) {
       console.error('Save error:', err);
@@ -2260,6 +2296,7 @@ export function SpacesContent() {
       setSpacesMap({});
       setActiveProjectId(null);
       setMetadata({});
+      setVisualReferenceAnalysisDirty(false);
       setCurrentName(trimmed);
       closeViewer();
       setCardsFocusIndex(0);
@@ -2357,6 +2394,7 @@ export function SpacesContent() {
       setCurrentName(project.name || projectMeta.name);
       setSpacesMap(spaces as Record<string, any>);
       setMetadata(project.metadata || {});
+      setVisualReferenceAnalysisDirty(false);
 
       const nav = ui?.navigationStack;
       setNavigationStack(
@@ -3876,6 +3914,7 @@ export function SpacesContent() {
           </div>
         )}
         {/* Wheel: listener global (ratón→zoom, trackpad→pan); panOnScroll false para no solapar con XY Flow. noPanClassName placeholder evita .nopan bloqueando wheel en nodos */}
+        <SpacesActiveProjectIdContext.Provider value={activeProjectId}>
         <ProjectAssetsCanvasContext.Provider value={projectAssetsCanvasValue}>
         <ProjectBrainCanvasContext.Provider value={projectBrainCanvasValue}>
         <DesignerSpaceIdContext.Provider value={activeSpaceId === "root" ? null : activeSpaceId}>
@@ -3990,6 +4029,7 @@ export function SpacesContent() {
         </DesignerSpaceIdContext.Provider>
         </ProjectBrainCanvasContext.Provider>
         </ProjectAssetsCanvasContext.Provider>
+        </SpacesActiveProjectIdContext.Provider>
 
         {isAuthenticated && <HandleTypeLegend />}
 
@@ -4427,7 +4467,10 @@ export function SpacesContent() {
             <TopbarPins
               embedded
               fullWidthRow
-              onBrainClick={() => setProjectBrainOpen(true)}
+              onBrainClick={() => {
+                setBrainInitialSection(null);
+                setProjectBrainOpen(true);
+              }}
               onAssetsClick={() => setProjectAssetsOpen(true)}
               onPinDoubleClick={addNodeFromTopbarPinDoubleClick}
               paletteDragActive={paletteDragActive}
@@ -4438,8 +4481,20 @@ export function SpacesContent() {
         {isAuthenticated && (
           <ProjectBrainFullscreen
             open={projectBrainOpen}
-            onClose={() => setProjectBrainOpen(false)}
+            onClose={() => {
+              setProjectBrainOpen(false);
+              setBrainInitialSection(null);
+            }}
             assetsMetadata={metadata.assets}
+            projectId={activeProjectId}
+            workspaceId={projectScopeId}
+            canvasNodes={nodes}
+            canvasEdges={edges}
+            initialSection={brainInitialSection}
+            visualReferenceAnalysisDirty={visualReferenceAnalysisDirty}
+            onVisualReferenceAnalysisDirty={() => setVisualReferenceAnalysisDirty(true)}
+            onSaveProjectFromBrain={() => saveProject(undefined, { silentError: true })}
+            isSavingProject={isSaving}
             onAssetsMetadataChange={(next) =>
               setMetadata((m: Record<string, unknown>) => ({ ...m, assets: next }))
             }

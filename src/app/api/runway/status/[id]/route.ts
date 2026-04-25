@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import RunwayML from '@runwayml/sdk';
+import { recordApiUsage, resolveUsageUserEmailFromRequest } from "@/lib/api-usage";
 
 function getRunwayClient() {
   const apiKey =
@@ -17,6 +18,18 @@ export async function GET(req: Request, props: { params: Promise<{ id: string }>
 
     const runway = getRunwayClient();
     const task = await runway.tasks.retrieve(taskId) as any;
+
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
+    await recordApiUsage({
+      provider: "runway",
+      userEmail: usageUserEmail,
+      serviceId: "runway-status",
+      route: "/api/runway/status/[id]",
+      operation: "poll_task",
+      costIsKnown: false,
+      costUsd: 0,
+      metadata: { taskId },
+    });
 
     return NextResponse.json({
       status: task.status, // 'PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED'

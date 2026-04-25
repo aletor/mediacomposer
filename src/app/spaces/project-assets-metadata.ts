@@ -1,3 +1,10 @@
+import type {
+  BrainFieldSourceInfo,
+  BrainSourceConfidence,
+  BrainSourceTier,
+  BrainStrategyFieldProvenance,
+} from "@/lib/brain/brain-field-provenance";
+
 /**
  * Datos de «Assets» del proyecto (marca + fuente de conocimiento).
  * Se persisten en `project.metadata.assets` al guardar el proyecto.
@@ -41,10 +48,24 @@ export type ProjectBrandKit = {
   colorAccent: string;
 };
 
+/** Memoria explícita solo para este proyecto (p. ej. tras KEEP_IN_PROJECT). */
+export type BrainProjectMemoryEntry = {
+  id: string;
+  topic: string;
+  value: string;
+  createdAt: string;
+  sourceLearningId?: string;
+};
+
+/** Contexto puntual u outlier (SAVE_AS_CONTEXT / MARK_OUTLIER). */
+export type BrainContextualMemoryEntry = BrainProjectMemoryEntry & { isOutlier: boolean };
+
 export type ProjectKnowledgeSource = {
   urls: string[];
   documents: KnowledgeDocumentEntry[];
   corporateContext?: string;
+  projectOnlyMemories?: BrainProjectMemoryEntry[];
+  contextualMemories?: BrainContextualMemoryEntry[];
 };
 
 export type BrainVoiceExample = {
@@ -123,6 +144,176 @@ export type BrainVisualStyleSlot = {
 
 export type BrainVisualStyle = Record<BrainVisualStyleSlotKey, BrainVisualStyleSlot>;
 
+/** Clasificación de referencia visual (no implica promoción automática a ADN). */
+export type VisualImageClassification =
+  | "CORE_VISUAL_DNA"
+  | "PROJECT_VISUAL_REFERENCE"
+  | "CONTEXTUAL_VISUAL_MEMORY"
+  | "RAW_ASSET_ONLY";
+
+/** Prioridad manual sobre la clasificación del analizador (mock o visión). */
+export type BrainVisualImageUserOverride = VisualImageClassification | "EXCLUDED";
+
+export type BrainVisualColorAnalysis = {
+  dominant: string[];
+  secondary: string[];
+  temperature?: string;
+  saturation?: string;
+  contrast?: string;
+};
+
+/** Origen semántico de la imagen para telemetría / Brain Studio. */
+export type BrainVisualTelemetryImageSource =
+  | "USER_UPLOAD"
+  | "BRAIN_SUGGESTION"
+  | "PROJECT_ASSET"
+  | "BRAIN_REFERENCE"
+  | "EXTERNAL"
+  | "GENERATED_IMAGE"
+  | "PHOTOROOM_EDIT"
+  | "VIDEO_FRAME"
+  | "MOODBOARD_REFERENCE";
+
+export type BrainVisualPeopleDetail = {
+  present: boolean;
+  description?: string;
+  attitude?: string[];
+  pose?: string[];
+  energy?: string[];
+  relationToCamera?: string;
+};
+
+export type BrainVisualClothingDetail = {
+  present: boolean;
+  style?: string[];
+  colors?: string[];
+  textures?: string[];
+  formality?: "casual" | "casual_premium" | "formal" | "technical" | "sport" | "mixed";
+};
+
+export type BrainVisualGraphicDetail = {
+  present: boolean;
+  typography?: string[];
+  shapes?: string[];
+  iconography?: string[];
+  layout?: string[];
+  texture?: string[];
+};
+
+export type BrainVisualAnalysisStatus = "pending" | "queued" | "analyzing" | "analyzed" | "failed";
+
+/** Calidad heurística del análisis (re-estudio / trazabilidad). */
+export type BrainVisualAnalysisQualityTier = "specific" | "acceptable" | "too_generic" | "failed" | "mock";
+
+/** Proveedor de visión usado al generar la fila (último reanálisis). */
+export type BrainVisionProviderId = "mock" | "gemini-vision" | "openai-vision";
+
+export type BrainVisionFallbackProvider = "mock" | "local-heuristic";
+
+/** Análisis estructurado por imagen (capa interpretada; el binario sigue en assets). */
+export type BrainVisualImageAnalysis = {
+  id: string;
+  sourceAssetId: string;
+  sourceKind:
+    | "knowledge_document"
+    | "visual_style_slot"
+    | "brand_logo"
+    | "designer_image"
+    | "photoroom_image"
+    | "project_asset"
+    | "generated_image";
+  sourceLabel?: string;
+  /** Texto compacto legible (compat); preferir subjectTags para señales densas. */
+  subject: string;
+  subjectTags?: string[];
+  visualStyle: string[];
+  mood: string[];
+  colorPalette: BrainVisualColorAnalysis;
+  composition: string[];
+  people: string;
+  clothingStyle: string;
+  graphicStyle: string;
+  brandSignals: string[];
+  possibleUse: string[];
+  /** Qué mensaje de marca sugiere la imagen a nivel visual (mock o visión). */
+  implicitBrandMessage?: string;
+  /** Mensajes visuales explícitos (visión estructurada). */
+  visualMessage?: string[];
+  classification: VisualImageClassification;
+  coherenceScore?: number;
+  analyzedAt: string;
+  /** Marca manual: CORE, referencia de proyecto, contexto o excluida del ADN visual agregado. */
+  userVisualOverride?: BrainVisualImageUserOverride;
+  /** Dedupe estable: assetId, hash o URL normalizada. */
+  analysisDedupeKey?: string;
+  assetRef?: string;
+  imageFingerprint?: string;
+  visualTelemetrySource?: BrainVisualTelemetryImageSource;
+  originNodeId?: string;
+  /** Eco de BrainNodeType en string para no acoplar imports circulares. */
+  originNodeType?: string;
+  usedInExport?: boolean;
+  pageId?: string;
+  frameId?: string;
+  fileName?: string;
+  mimeType?: string;
+  width?: number;
+  height?: number;
+  peopleDetail?: BrainVisualPeopleDetail;
+  clothingDetail?: BrainVisualClothingDetail;
+  graphicDetail?: BrainVisualGraphicDetail;
+  reasoning?: string;
+  analysisStatus?: BrainVisualAnalysisStatus;
+  /** Proveedor que produjo este análisis (persistido con la fila). */
+  visionProviderId?: BrainVisionProviderId;
+  /** Proveedor remoto intentado cuando `visionProviderId` es mock por fallo. */
+  visionProviderAttempted?: BrainVisionProviderId;
+  /** Eco de la versión del analizador del lote (`BrainVisualReferenceLayer.analyzerVersion`). */
+  analyzerVersion?: string;
+  /** True si el contenido mostrado es heurístico / mock tras fallo o falta de píxeles. */
+  fallbackUsed?: boolean;
+  fallbackProvider?: BrainVisionFallbackProvider;
+  failureReason?: string;
+  /** Si había URL o data URL utilizable para visión remota. */
+  imageUrlForVisionAvailable?: boolean;
+  /** Clasificación de especificidad (post-proceso, p. ej. re-estudio Brain). */
+  analysisQuality?: BrainVisualAnalysisQualityTier;
+};
+
+export type AggregatedVisualPatterns = {
+  recurringStyles: string[];
+  dominantMoods: string[];
+  dominantPalette: string[];
+  dominantSecondaryPalette: string[];
+  frequentSubjects: string[];
+  compositionNotes: string[];
+  peopleClothingNotes: string[];
+  graphicStyleNotes: string[];
+  implicitBrandMessages: string[];
+  narrativeSummary: string;
+  countsByClassification: Partial<Record<VisualImageClassification, number>>;
+  /** Referencias marcadas como excluidas del agregado ADN visual. */
+  excludedFromVisualDnaCount: number;
+  /** IDs de referencias que se alejan del patrón central. */
+  outlierSourceAssetIds?: string[];
+  /** Confianza agregada heurística (0–1). */
+  patternConfidence?: number;
+  /** Frase densa para candidatos Brain / UI (sin prefijos de producto). */
+  patternSummary?: string;
+};
+
+/** Memoria visual interpretada encima de `metadata.assets`. */
+export type BrainVisualReferenceLayer = {
+  analyses: BrainVisualImageAnalysis[];
+  aggregated?: AggregatedVisualPatterns;
+  lastAnalyzedAt?: string;
+  analyzerVersion?: string;
+  /** Proveedor del último lote «Reanalizar imágenes». */
+  lastVisionProviderId?: BrainVisionProviderId;
+  /** Patrones visuales confirmados por el usuario (p. ej. promoción desde «Por revisar»). */
+  confirmedVisualPatterns?: string[];
+};
+
 export function defaultBrainVisualStyle(): BrainVisualStyle {
   return {
     protagonist: {
@@ -186,6 +377,10 @@ export type BrainStrategy = {
   approvedPatterns: string[];
   rejectedPatterns: string[];
   visualStyle: BrainVisualStyle;
+  /** Análisis visual de referencias (moodboards, slots, logos); opcional para compatibilidad. */
+  visualReferenceAnalysis?: BrainVisualReferenceLayer;
+  /** Procedencia por bloques (resumen / ADN) tras analizar o promover aprendizajes. */
+  fieldProvenance?: BrainStrategyFieldProvenance;
 };
 
 export const AUDIENCE_PERSONA_CATALOG: BrainPersona[] = [
@@ -515,6 +710,31 @@ export function normalizeProjectAssets(raw: unknown): ProjectAssetsMetadata {
     if (typeof k.corporateContext === "string") {
       knowledge.corporateContext = k.corporateContext;
     }
+    if (Array.isArray(k.projectOnlyMemories)) {
+      knowledge.projectOnlyMemories = k.projectOnlyMemories
+        .filter((x): x is Record<string, unknown> => Boolean(x && typeof x === "object"))
+        .map((x) => ({
+          id: typeof x.id === "string" ? x.id : crypto.randomUUID(),
+          topic: typeof x.topic === "string" ? x.topic.slice(0, 200) : "",
+          value: typeof x.value === "string" ? x.value.slice(0, 2000) : "",
+          createdAt: typeof x.createdAt === "string" ? x.createdAt : new Date().toISOString(),
+          ...(typeof x.sourceLearningId === "string" ? { sourceLearningId: x.sourceLearningId } : {}),
+        }))
+        .filter((e) => e.topic.trim() || e.value.trim());
+    }
+    if (Array.isArray(k.contextualMemories)) {
+      knowledge.contextualMemories = k.contextualMemories
+        .filter((x): x is Record<string, unknown> => Boolean(x && typeof x === "object"))
+        .map((x) => ({
+          id: typeof x.id === "string" ? x.id : crypto.randomUUID(),
+          topic: typeof x.topic === "string" ? x.topic.slice(0, 200) : "",
+          value: typeof x.value === "string" ? x.value.slice(0, 2000) : "",
+          createdAt: typeof x.createdAt === "string" ? x.createdAt : new Date().toISOString(),
+          isOutlier: x.isOutlier === true,
+          ...(typeof x.sourceLearningId === "string" ? { sourceLearningId: x.sourceLearningId } : {}),
+        }))
+        .filter((e) => e.topic.trim() || e.value.trim());
+    }
   }
 
   const strategy: BrainStrategy = {
@@ -729,6 +949,268 @@ export function normalizeProjectAssets(raw: unknown): ProjectAssetsMetadata {
         people: parseSlot("people", "Personas"),
       };
     }
+    if (s.visualReferenceAnalysis && typeof s.visualReferenceAnalysis === "object") {
+      const v = s.visualReferenceAnalysis as Record<string, unknown>;
+      const CLASS: readonly VisualImageClassification[] = [
+        "CORE_VISUAL_DNA",
+        "PROJECT_VISUAL_REFERENCE",
+        "CONTEXTUAL_VISUAL_MEMORY",
+        "RAW_ASSET_ONLY",
+      ];
+      const OVERRIDE: readonly BrainVisualImageUserOverride[] = [...CLASS, "EXCLUDED"];
+      const SOURCE_KINDS: readonly BrainVisualImageAnalysis["sourceKind"][] = [
+        "knowledge_document",
+        "visual_style_slot",
+        "brand_logo",
+        "designer_image",
+        "photoroom_image",
+        "project_asset",
+        "generated_image",
+      ];
+      const TELEM_SRC: readonly BrainVisualTelemetryImageSource[] = [
+        "USER_UPLOAD",
+        "BRAIN_SUGGESTION",
+        "PROJECT_ASSET",
+        "BRAIN_REFERENCE",
+        "EXTERNAL",
+        "GENERATED_IMAGE",
+        "PHOTOROOM_EDIT",
+        "VIDEO_FRAME",
+        "MOODBOARD_REFERENCE",
+      ];
+      const VISION_PROVIDER_IDS: readonly BrainVisionProviderId[] = ["mock", "gemini-vision", "openai-vision"];
+      const analyses: BrainVisualImageAnalysis[] = [];
+      if (Array.isArray(v.analyses)) {
+        for (const row of v.analyses) {
+          if (!row || typeof row !== "object") continue;
+          const r = row as Record<string, unknown>;
+          const cls = CLASS.includes(r.classification as VisualImageClassification)
+            ? (r.classification as VisualImageClassification)
+            : "PROJECT_VISUAL_REFERENCE";
+          const userOv = OVERRIDE.includes(r.userVisualOverride as BrainVisualImageUserOverride)
+            ? (r.userVisualOverride as BrainVisualImageUserOverride)
+            : undefined;
+          const cp = r.colorPalette && typeof r.colorPalette === "object" ? (r.colorPalette as Record<string, unknown>) : {};
+          const sk =
+            typeof r.sourceKind === "string" && SOURCE_KINDS.includes(r.sourceKind as BrainVisualImageAnalysis["sourceKind"])
+              ? (r.sourceKind as BrainVisualImageAnalysis["sourceKind"])
+              : "knowledge_document";
+          const vts =
+            typeof r.visualTelemetrySource === "string" &&
+            TELEM_SRC.includes(r.visualTelemetrySource as BrainVisualTelemetryImageSource)
+              ? (r.visualTelemetrySource as BrainVisualTelemetryImageSource)
+              : undefined;
+          analyses.push({
+            id: typeof r.id === "string" ? r.id : crypto.randomUUID(),
+            sourceAssetId: typeof r.sourceAssetId === "string" ? r.sourceAssetId : "unknown",
+            sourceKind: sk,
+            sourceLabel: typeof r.sourceLabel === "string" ? r.sourceLabel : undefined,
+            subject: typeof r.subject === "string" ? r.subject : "",
+            subjectTags: Array.isArray(r.subjectTags)
+              ? r.subjectTags.filter((x): x is string => typeof x === "string")
+              : undefined,
+            visualStyle: Array.isArray(r.visualStyle) ? r.visualStyle.filter((x): x is string => typeof x === "string") : [],
+            mood: Array.isArray(r.mood) ? r.mood.filter((x): x is string => typeof x === "string") : [],
+            colorPalette: {
+              dominant: Array.isArray(cp.dominant) ? cp.dominant.filter((x): x is string => typeof x === "string") : [],
+              secondary: Array.isArray(cp.secondary) ? cp.secondary.filter((x): x is string => typeof x === "string") : [],
+              temperature: typeof cp.temperature === "string" ? cp.temperature : undefined,
+              saturation: typeof cp.saturation === "string" ? cp.saturation : undefined,
+              contrast: typeof cp.contrast === "string" ? cp.contrast : undefined,
+            },
+            composition: Array.isArray(r.composition)
+              ? r.composition.filter((x): x is string => typeof x === "string")
+              : [],
+            people: typeof r.people === "string" ? r.people : "",
+            clothingStyle: typeof r.clothingStyle === "string" ? r.clothingStyle : "",
+            graphicStyle: typeof r.graphicStyle === "string" ? r.graphicStyle : "",
+            brandSignals: Array.isArray(r.brandSignals)
+              ? r.brandSignals.filter((x): x is string => typeof x === "string")
+              : [],
+            possibleUse: Array.isArray(r.possibleUse)
+              ? r.possibleUse.filter((x): x is string => typeof x === "string")
+              : [],
+            implicitBrandMessage: typeof r.implicitBrandMessage === "string" ? r.implicitBrandMessage : undefined,
+            visualMessage: Array.isArray(r.visualMessage)
+              ? r.visualMessage.filter((x): x is string => typeof x === "string")
+              : undefined,
+            classification: cls,
+            coherenceScore: typeof r.coherenceScore === "number" ? r.coherenceScore : undefined,
+            analyzedAt: typeof r.analyzedAt === "string" ? r.analyzedAt : new Date().toISOString(),
+            ...(userOv ? { userVisualOverride: userOv } : {}),
+            ...(typeof r.analysisDedupeKey === "string" ? { analysisDedupeKey: r.analysisDedupeKey } : {}),
+            ...(typeof r.assetRef === "string" ? { assetRef: r.assetRef } : {}),
+            ...(typeof r.imageFingerprint === "string" ? { imageFingerprint: r.imageFingerprint } : {}),
+            ...(vts ? { visualTelemetrySource: vts } : {}),
+            ...(typeof r.originNodeId === "string" ? { originNodeId: r.originNodeId } : {}),
+            ...(typeof r.originNodeType === "string" ? { originNodeType: r.originNodeType } : {}),
+            ...(r.usedInExport === true ? { usedInExport: true } : {}),
+            ...(typeof r.pageId === "string" ? { pageId: r.pageId } : {}),
+            ...(typeof r.frameId === "string" ? { frameId: r.frameId } : {}),
+            ...(typeof r.fileName === "string" ? { fileName: r.fileName } : {}),
+            ...(typeof r.mimeType === "string" ? { mimeType: r.mimeType } : {}),
+            ...(typeof r.width === "number" ? { width: r.width } : {}),
+            ...(typeof r.height === "number" ? { height: r.height } : {}),
+            ...(r.peopleDetail && typeof r.peopleDetail === "object"
+              ? { peopleDetail: r.peopleDetail as BrainVisualImageAnalysis["peopleDetail"] }
+              : {}),
+            ...(r.clothingDetail && typeof r.clothingDetail === "object"
+              ? { clothingDetail: r.clothingDetail as BrainVisualImageAnalysis["clothingDetail"] }
+              : {}),
+            ...(r.graphicDetail && typeof r.graphicDetail === "object"
+              ? { graphicDetail: r.graphicDetail as BrainVisualImageAnalysis["graphicDetail"] }
+              : {}),
+            ...(typeof r.reasoning === "string" ? { reasoning: r.reasoning } : {}),
+            ...(typeof r.analysisStatus === "string" &&
+            ["pending", "queued", "analyzing", "analyzed", "failed"].includes(r.analysisStatus as string)
+              ? { analysisStatus: r.analysisStatus as BrainVisualAnalysisStatus }
+              : {}),
+            ...(typeof r.visionProviderId === "string" &&
+            VISION_PROVIDER_IDS.includes(r.visionProviderId as BrainVisionProviderId)
+              ? { visionProviderId: r.visionProviderId as BrainVisionProviderId }
+              : {}),
+            ...(typeof r.analyzerVersion === "string" && r.analyzerVersion.trim()
+              ? { analyzerVersion: r.analyzerVersion.trim() }
+              : {}),
+            ...(typeof r.visionProviderAttempted === "string" &&
+            VISION_PROVIDER_IDS.includes(r.visionProviderAttempted as BrainVisionProviderId)
+              ? { visionProviderAttempted: r.visionProviderAttempted as BrainVisionProviderId }
+              : {}),
+            ...(r.fallbackUsed === true ? { fallbackUsed: true } : {}),
+            ...(r.fallbackProvider === "mock" || r.fallbackProvider === "local-heuristic"
+              ? { fallbackProvider: r.fallbackProvider }
+              : {}),
+            ...(typeof r.failureReason === "string" && r.failureReason.trim()
+              ? { failureReason: r.failureReason.trim().slice(0, 800) }
+              : {}),
+            ...(r.imageUrlForVisionAvailable === true || r.imageUrlForVisionAvailable === false
+              ? { imageUrlForVisionAvailable: r.imageUrlForVisionAvailable }
+              : {}),
+            ...(typeof r.analysisQuality === "string" &&
+            ["specific", "acceptable", "too_generic", "failed", "mock"].includes(String(r.analysisQuality))
+              ? { analysisQuality: r.analysisQuality as BrainVisualAnalysisQualityTier }
+              : {}),
+          });
+        }
+      }
+      let aggregated: AggregatedVisualPatterns | undefined;
+      if (v.aggregated && typeof v.aggregated === "object") {
+        const g = v.aggregated as Record<string, unknown>;
+        const counts = g.countsByClassification;
+        const countsByClassification: Partial<Record<VisualImageClassification, number>> = {};
+        if (counts && typeof counts === "object" && !Array.isArray(counts)) {
+          for (const k of CLASS) {
+            const n = (counts as Record<string, unknown>)[k];
+            if (typeof n === "number") countsByClassification[k] = n;
+          }
+        }
+        aggregated = {
+          recurringStyles: Array.isArray(g.recurringStyles)
+            ? g.recurringStyles.filter((x): x is string => typeof x === "string")
+            : [],
+          dominantMoods: Array.isArray(g.dominantMoods) ? g.dominantMoods.filter((x): x is string => typeof x === "string") : [],
+          dominantPalette: Array.isArray(g.dominantPalette)
+            ? g.dominantPalette.filter((x): x is string => typeof x === "string")
+            : [],
+          dominantSecondaryPalette: Array.isArray(g.dominantSecondaryPalette)
+            ? g.dominantSecondaryPalette.filter((x): x is string => typeof x === "string")
+            : [],
+          frequentSubjects: Array.isArray(g.frequentSubjects)
+            ? g.frequentSubjects.filter((x): x is string => typeof x === "string")
+            : [],
+          compositionNotes: Array.isArray(g.compositionNotes)
+            ? g.compositionNotes.filter((x): x is string => typeof x === "string")
+            : [],
+          peopleClothingNotes: Array.isArray(g.peopleClothingNotes)
+            ? g.peopleClothingNotes.filter((x): x is string => typeof x === "string")
+            : [],
+          graphicStyleNotes: Array.isArray(g.graphicStyleNotes)
+            ? g.graphicStyleNotes.filter((x): x is string => typeof x === "string")
+            : [],
+          implicitBrandMessages: Array.isArray(g.implicitBrandMessages)
+            ? g.implicitBrandMessages.filter((x): x is string => typeof x === "string")
+            : [],
+          narrativeSummary: typeof g.narrativeSummary === "string" ? g.narrativeSummary : "",
+          countsByClassification,
+          excludedFromVisualDnaCount:
+            typeof g.excludedFromVisualDnaCount === "number" ? g.excludedFromVisualDnaCount : 0,
+          ...(Array.isArray(g.outlierSourceAssetIds)
+            ? {
+                outlierSourceAssetIds: g.outlierSourceAssetIds.filter((x): x is string => typeof x === "string"),
+              }
+            : {}),
+          ...(typeof g.patternConfidence === "number" && Number.isFinite(g.patternConfidence)
+            ? { patternConfidence: g.patternConfidence }
+            : {}),
+          ...(typeof g.patternSummary === "string" && g.patternSummary.trim() ? { patternSummary: g.patternSummary.trim() } : {}),
+        };
+      }
+      const lastProv =
+        typeof v.lastVisionProviderId === "string" &&
+        VISION_PROVIDER_IDS.includes(v.lastVisionProviderId as BrainVisionProviderId)
+          ? (v.lastVisionProviderId as BrainVisionProviderId)
+          : undefined;
+      const confirmedVisualPatterns = Array.isArray(v.confirmedVisualPatterns)
+        ? v.confirmedVisualPatterns.filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+        : undefined;
+      strategy.visualReferenceAnalysis = {
+        analyses,
+        aggregated,
+        lastAnalyzedAt: typeof v.lastAnalyzedAt === "string" ? v.lastAnalyzedAt : undefined,
+        analyzerVersion: typeof v.analyzerVersion === "string" ? v.analyzerVersion : undefined,
+        ...(lastProv ? { lastVisionProviderId: lastProv } : {}),
+        ...(confirmedVisualPatterns?.length ? { confirmedVisualPatterns } : {}),
+      };
+    }
+    if (s.fieldProvenance && typeof s.fieldProvenance === "object") {
+      const fp = s.fieldProvenance as Record<string, unknown>;
+      const TIERS: readonly BrainSourceTier[] = [
+        "confirmed",
+        "core_document",
+        "visual_real",
+        "user_manual",
+        "pending",
+        "heuristic",
+        "mock",
+        "default",
+        "legacy",
+        "unknown",
+      ];
+      const nextFp: BrainStrategyFieldProvenance = { ...(strategy.fieldProvenance ?? {}) };
+      for (const [k, val] of Object.entries(fp)) {
+        if (!val || typeof val !== "object") continue;
+        const o = val as Record<string, unknown>;
+        const tierRaw = typeof o.sourceTier === "string" ? o.sourceTier : "unknown";
+        const tier = TIERS.includes(tierRaw as BrainSourceTier) ? (tierRaw as BrainSourceTier) : "unknown";
+        const confRaw = o.sourceConfidence;
+        const sourceConfidence: BrainSourceConfidence =
+          confRaw === "high" || confRaw === "medium" || confRaw === "low" ? confRaw : "medium";
+        const row: BrainFieldSourceInfo = {
+          label: typeof o.label === "string" ? o.label.slice(0, 200) : k,
+          sourceTier: tier,
+          sourceConfidence,
+          ...(typeof o.updatedAt === "string" ? { updatedAt: o.updatedAt } : {}),
+          ...(typeof o.value === "string" && o.value.trim() ? { value: o.value.trim().slice(0, 500) } : {}),
+          ...(typeof o.badge === "string" && o.badge.trim() ? { badge: o.badge.trim().slice(0, 64) } : {}),
+          ...(typeof o.changedPath === "string" && o.changedPath.trim()
+            ? { changedPath: o.changedPath.trim().slice(0, 200) }
+            : {}),
+          ...(Array.isArray(o.assetIds) ? { assetIds: o.assetIds.filter((x): x is string => typeof x === "string") } : {}),
+          ...(Array.isArray(o.documentIds)
+            ? { documentIds: o.documentIds.filter((x): x is string => typeof x === "string") }
+            : {}),
+          ...(Array.isArray(o.imageIds) ? { imageIds: o.imageIds.filter((x): x is string => typeof x === "string") } : {}),
+          ...(Array.isArray(o.learningIds)
+            ? { learningIds: o.learningIds.filter((x): x is string => typeof x === "string") }
+            : {}),
+          ...(typeof o.analyzerVersion === "string" ? { analyzerVersion: o.analyzerVersion } : {}),
+          ...(typeof o.provider === "string" ? { provider: o.provider } : {}),
+          ...(o.fallbackUsed === true ? { fallbackUsed: true } : {}),
+        };
+        nextFp[k] = row;
+      }
+      strategy.fieldProvenance = nextFp;
+    }
   }
 
   return { brand, knowledge, strategy };
@@ -750,5 +1232,12 @@ export function summarizeProjectAssetsForAssistant(raw: unknown): string {
     `Voice examples: ${a.strategy.voiceExamples.length}.`,
     `Facts & evidence: ${a.strategy.factsAndEvidence.length}.`,
     `Visual style: protagonist="${a.strategy.visualStyle.protagonist.description || "-"}"; environment="${a.strategy.visualStyle.environment.description || "-"}"; textures="${a.strategy.visualStyle.textures.description || "-"}"; people="${a.strategy.visualStyle.people.description || "-"}".`,
+    (() => {
+      const v = a.strategy.visualReferenceAnalysis;
+      const n = v?.analyses?.length ?? 0;
+      const sum = v?.aggregated?.narrativeSummary?.trim();
+      if (sum) return `Visual references (Brain): ${sum}`;
+      return `Visual reference images analyzed in Brain: ${n}.`;
+    })(),
   ].join(" ");
 }

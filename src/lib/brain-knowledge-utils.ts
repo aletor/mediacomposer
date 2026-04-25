@@ -311,10 +311,16 @@ export function chunkText(input: string, maxChars = 12000): string[] {
   return out;
 }
 
+export type BrainOpenAiChatUsageHook = (
+  model: string,
+  usage: OpenAI.Chat.Completions.ChatCompletion["usage"],
+) => void;
+
 async function extractChunkDna(
   openai: OpenAI,
   text: string,
   mode: "strict" | "technical",
+  onChatUsage?: BrainOpenAiChatUsageHook,
 ): Promise<BrainDnaExtraction> {
   const systemPrompt =
     mode === "strict"
@@ -340,10 +346,15 @@ CRITICAL: capture numeric and market data explicitly into mercado + data_relevan
       { role: "user", content: `Extract corporate DNA from this content:\n\n${text}` },
     ],
   });
+  onChatUsage?.("gpt-4o", completion.usage);
   return safeParseDna(completion.choices[0]?.message?.content || "{}");
 }
 
-export async function extractDnaFromTextRobust(openai: OpenAI, fullText: string): Promise<BrainDnaExtraction> {
+export async function extractDnaFromTextRobust(
+  openai: OpenAI,
+  fullText: string,
+  onChatUsage?: BrainOpenAiChatUsageHook,
+): Promise<BrainDnaExtraction> {
   const normalized = normalizeExtractedText(fullText);
   const chunks = chunkText(normalized, 12000).slice(0, 8);
   if (chunks.length === 0) return defaultDna();
@@ -355,7 +366,7 @@ export async function extractDnaFromTextRobust(openai: OpenAI, fullText: string)
       let lastError: unknown = null;
       for (let attempt = 0; attempt < 2 && !ok; attempt += 1) {
         try {
-          const dna = await extractChunkDna(openai, chunk, mode);
+          const dna = await extractChunkDna(openai, chunk, mode, onChatUsage);
           partial.push(dna);
           ok = true;
         } catch (e) {
@@ -381,6 +392,7 @@ Preserve market and numeric information.`,
         { role: "user", content: JSON.stringify({ partial }, null, 2) },
       ],
     });
+    onChatUsage?.("gpt-4o", mergeCompletion.usage);
     return safeParseDna(mergeCompletion.choices[0]?.message?.content || "{}");
   };
 
@@ -395,6 +407,7 @@ export async function extractDnaFromImageRobust(
   openai: OpenAI,
   base64Image: string,
   mimeType: string,
+  onChatUsage?: BrainOpenAiChatUsageHook,
 ): Promise<BrainDnaExtraction> {
   const userContent = [
     {
@@ -432,6 +445,7 @@ Rules:
       },
     ],
   });
+  onChatUsage?.("gpt-4o", completion.usage);
   const parsed = safeParseDna(completion.choices[0]?.message?.content || "{}");
   const visualEvidence = [
     ...(parsed.visual_signals?.evidence_text || []),

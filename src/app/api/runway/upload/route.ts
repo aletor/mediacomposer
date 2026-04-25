@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
+import { recordApiUsage, resolveUsageUserEmailFromRequest } from "@/lib/api-usage";
 import { uploadToS3, getPresignedUrl } from '@/lib/s3-utils';
 
 export async function POST(req: Request) {
   try {
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
     const formData = await req.formData();
     const file = formData.get('file') as File;
 
@@ -17,7 +19,18 @@ export async function POST(req: Request) {
 
     // Upload to S3
     const s3Key = await uploadToS3(file.name, buffer, contentType);
-    
+    await recordApiUsage({
+      provider: "aws",
+      userEmail: usageUserEmail,
+      serviceId: "s3-knowledge",
+      route: "/api/runway/upload",
+      operation: "put_object",
+      costIsKnown: false,
+      costUsd: 0,
+      bytes: buffer.length,
+      metadata: { key: s3Key, contentType },
+    });
+
     // Get a URL that Runway can access
     const url = await getPresignedUrl(s3Key);
 

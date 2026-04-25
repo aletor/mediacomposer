@@ -1,4 +1,5 @@
 import type * as React from "react";
+import type { BrainNodeTelemetryApi } from "@/lib/brain/brain-telemetry";
 import type { FreehandObject, DesignerStudioApi } from "../FreehandStudio";
 import type { VectorPdfExportOptions } from "./text-outline";
 
@@ -87,4 +88,6 @@ export type DesignerEmbedProps = {
    * Si true, no se ejecuta el PNG automático del lienzo actual en `handleCloseStudio`.
    */
   designerSkipAutoNodeExportOnClose?: boolean;
+  /** Telemetría Brain agnóstica del nodo (canvas Designer usa `nodeType: DESIGNER`). */
+  designerBrainTelemetry?: BrainNodeTelemetryApi | null;
 };

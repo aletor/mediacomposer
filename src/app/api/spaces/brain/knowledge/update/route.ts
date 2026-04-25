@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import {
+  ApiServiceDisabledError,
+  assertApiServiceEnabled,
+} from "@/lib/api-usage-controls";
+import { recordApiUsage, resolveUsageUserEmailFromRequest } from "@/lib/api-usage";
 import { buildReadableCorporateContext } from "@/lib/brain-knowledge-utils";
 
 type BrainDoc = {
@@ -22,10 +27,14 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function POST(req: NextRequest) {
   try {
-    const { id, context, documents } = (await req.json()) as {
+    await assertApiServiceEnabled("openai-embeddings");
+    const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
+    const { id, context, documents, projectId, workspaceId } = (await req.json()) as {
       id?: string;
       context?: unknown;
       documents?: BrainDoc[];
+      projectId?: string;
+      workspaceId?: string;
     };
 
     if (!id || !context || !Array.isArray(documents)) {
@@ -45,6 +54,23 @@ export async function POST(req: NextRequest) {
         input: contextString,
       });
       nextDocs[idx].embedding = embeddingResponse.data[0]?.embedding;
+      const eu = embeddingResponse.usage;
+      if (eu) {
+        await recordApiUsage({
+          provider: "openai",
+          userEmail: usageUserEmail,
+          serviceId: "openai-embeddings",
+          route: "/api/spaces/brain/knowledge/update",
+          model: "text-embedding-3-small",
+          operation: "embedding",
+          inputTokens: eu.prompt_tokens ?? eu.total_tokens,
+          outputTokens: 0,
+          totalTokens: eu.total_tokens,
+          projectId: typeof projectId === "string" ? projectId.trim() || undefined : undefined,
+          workspaceId: typeof workspaceId === "string" ? workspaceId.trim() || undefined : undefined,
+          metadata: { documentId: id },
+        });
+      }
     } catch (embErr) {
       console.error("[brain/knowledge/update] embedding failed:", embErr);
     }
@@ -57,6 +83,12 @@ export async function POST(req: NextRequest) {
       corporateContext,
     });
   } catch (error) {
+    if (error instanceof ApiServiceDisabledError) {
+      return NextResponse.json(
+        { error: `API bloqueada en admin: ${error.label}` },
+        { status: 423 },
+      );
+    }
     console.error("[brain/knowledge/update]", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }

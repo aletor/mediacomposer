@@ -14,6 +14,7 @@ import {
   newDocumentBackgroundToCss,
 } from "./new-document-model";
 import { PhotoRoomNewDocumentPanel } from "./PhotoRoomNewDocumentPanel";
+import { useBrainNodeTelemetry } from "@/lib/brain/use-brain-node-telemetry";
 
 export type PhotoRoomConnectedImageInput = { slot: string; src: string };
 
@@ -168,6 +169,7 @@ export default function PhotoRoomStudio({
   onPhotoRoomRasterizeInputImage,
   onPhotoRoomOpenConnectedNanoStudio,
 }: PhotoRoomStudioProps) {
+  const brainNodeTelemetry = useBrainNodeTelemetry({ canvasNodeId: nodeId, nodeType: "PHOTOROOM" });
   /** ≥1 para que FreehandStudio ejecute fit al montar (`designerFitToViewNonce === 0` no hace encuadre). */
   const [fitNonce, setFitNonce] = useState(1);
   const [studioBootNonce, setStudioBootNonce] = useState(0);
@@ -353,7 +355,7 @@ export default function PhotoRoomStudio({
     const api = studioApiRef?.current;
     if (api?.getNodePreviewPngDataUrl) {
       void api
-        .getNodePreviewPngDataUrl({ maxSide: 720 })
+        .getNodePreviewPngDataUrl({ maxSide: 720, brainExportTelemetry: true })
         .then((url) => {
           if (url) onExportPreview(url);
         })
@@ -376,6 +378,8 @@ export default function PhotoRoomStudio({
         <PhotoRoomFreehandStudio
           key={canvasKey}
           nodeId={canvasKey}
+          photoRoomStudioEmbed
+          designerBrainTelemetry={brainNodeTelemetry}
           initialObjects={objects}
           initialLayoutGuides={layoutGuides}
           initialArtboards={initialArtboards}

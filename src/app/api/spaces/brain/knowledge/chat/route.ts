@@ -48,10 +48,16 @@ function lexicalScore(query: string, context: string): number {
 
 export async function POST(req: NextRequest) {
   try {
-    await assertApiServiceEnabled("openai-assistant");
+    await assertApiServiceEnabled("openai-brain-chat");
+    await assertApiServiceEnabled("openai-embeddings");
     const usageUserEmail = await resolveUsageUserEmailFromRequest(req);
 
-    const body = (await req.json()) as { question?: string; documents?: BrainDoc[] };
+    const body = (await req.json()) as {
+      question?: string;
+      documents?: BrainDoc[];
+      projectId?: string;
+      workspaceId?: string;
+    };
     const question = body.question?.trim() || "";
     const docs = Array.isArray(body.documents) ? body.documents : [];
 
@@ -88,6 +94,22 @@ export async function POST(req: NextRequest) {
       input: question,
     });
     const qv = queryEmb.data[0]?.embedding || [];
+    const embU = queryEmb.usage;
+    if (embU) {
+      await recordApiUsage({
+        provider: "openai",
+        userEmail: usageUserEmail,
+        serviceId: "openai-embeddings",
+        route: "/api/spaces/brain/knowledge/chat",
+        model: "text-embedding-3-small",
+        operation: "embedding",
+        inputTokens: embU.prompt_tokens ?? embU.total_tokens,
+        outputTokens: 0,
+        totalTokens: embU.total_tokens,
+        projectId: typeof body.projectId === "string" ? body.projectId.trim() || undefined : undefined,
+        workspaceId: typeof body.workspaceId === "string" ? body.workspaceId.trim() || undefined : undefined,
+      });
+    }
 
     const preferCore =
       /\b(tone|tono|voz|mensaje|copy|propuesta de valor|marca|branding)\b/i.test(question);
@@ -147,12 +169,15 @@ export async function POST(req: NextRequest) {
       await recordApiUsage({
         provider: "openai",
         userEmail: usageUserEmail,
-        serviceId: "openai-assistant",
+        serviceId: "openai-brain-chat",
         route: "/api/spaces/brain/knowledge/chat",
         model: "gpt-4o",
+        operation: "chat",
         inputTokens: usage.prompt_tokens,
         outputTokens: usage.completion_tokens,
         totalTokens: usage.total_tokens,
+        projectId: typeof body.projectId === "string" ? body.projectId.trim() || undefined : undefined,
+        workspaceId: typeof body.workspaceId === "string" ? body.workspaceId.trim() || undefined : undefined,
       });
     }
 

@@ -34,6 +34,13 @@ export function estimateOpenAIUsd(
   return (inputTokens * pi + outputTokens * po) / 1_000_000;
 }
 
+/** USD / 1M tokens — embeddings OpenAI (orientativo). */
+export function estimateOpenAIEmbeddingUsd(model: string | undefined, totalTokens: number): number {
+  const m = (model || "").toLowerCase();
+  const perM = m.includes("embedding-3-large") ? 0.13 : m.includes("embedding-3-small") ? 0.02 : 0.02;
+  return (totalTokens * perM) / 1_000_000;
+}
+
 export function estimateGeminiUsd(
   model: string | undefined,
   inputTokens: number,

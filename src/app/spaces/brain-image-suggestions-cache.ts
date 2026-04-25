@@ -1,12 +1,16 @@
 "use client";
 
 import { tryExtractKnowledgeFilesKeyFromUrl } from "@/lib/s3-media-hydrate";
+import type { BrainImageSuggestionDiagnostics } from "@/lib/brain/build-brain-visual-prompt-context";
+
+export type { BrainImageSuggestionDiagnostics };
 
 export type BrainImageSuggestion = {
   id: string;
   label: string;
   prompt: string;
   src: string;
+  visualDiagnostics?: BrainImageSuggestionDiagnostics;
 };
 
 export type BrainImageSuggestionEntry = {
@@ -19,7 +23,7 @@ export type BrainImageSuggestionEntry = {
 
 type EnsureArgs = {
   key: string;
-  plans: Array<{ id: string; label: string; prompt: string }>;
+  plans: Array<{ id: string; label: string; prompt: string; visualDiagnostics?: BrainImageSuggestionDiagnostics }>;
   aspectRatio: string;
   logoRefs: string[];
   force?: boolean;
@@ -179,11 +183,46 @@ function normalizeSuggestion(item: unknown, index: number): BrainImageSuggestion
           : "";
   const src = rawSrc.trim();
   if (!isRenderableImageSrc(src)) return null;
+  const vdRaw = row.visualDiagnostics;
+  let visualDiagnostics: BrainImageSuggestionDiagnostics | undefined;
+  if (vdRaw && typeof vdRaw === "object") {
+    const v = vdRaw as Record<string, unknown>;
+    const vsu = v.visualSourcesUsed;
+    visualDiagnostics = {
+      finalPromptUsed: typeof v.finalPromptUsed === "string" ? v.finalPromptUsed : "",
+      visualSourcesUsed:
+        vsu && typeof vsu === "object"
+          ? {
+              confirmedUserVisualDna: !!(vsu as Record<string, unknown>).confirmedUserVisualDna,
+              coreVisualReferenceAnalysis: !!(vsu as Record<string, unknown>).coreVisualReferenceAnalysis,
+              projectVisualReferenceAnalysis: !!(vsu as Record<string, unknown>).projectVisualReferenceAnalysis,
+              aggregatedPatternsTrusted: !!(vsu as Record<string, unknown>).aggregatedPatternsTrusted,
+              visionDerivedVisualStyleSlots: !!(vsu as Record<string, unknown>).visionDerivedVisualStyleSlots,
+              secondaryBrandStrategyText: !!(vsu as Record<string, unknown>).secondaryBrandStrategyText,
+            }
+          : {
+              confirmedUserVisualDna: false,
+              coreVisualReferenceAnalysis: false,
+              projectVisualReferenceAnalysis: false,
+              aggregatedPatternsTrusted: false,
+              visionDerivedVisualStyleSlots: false,
+              secondaryBrandStrategyText: false,
+            },
+      visualReferenceAnalysisRealCount:
+        typeof v.visualReferenceAnalysisRealCount === "number" ? v.visualReferenceAnalysisRealCount : 0,
+      confirmedVisualDnaUsed: !!v.confirmedVisualDnaUsed,
+      patternSummaryUsed: !!v.patternSummaryUsed,
+      fallbackDefaultUsed: !!v.fallbackDefaultUsed,
+      textOnlyGeneration: !!v.textOnlyGeneration,
+      secondaryBrandProductCopy: !!v.secondaryBrandProductCopy,
+    };
+  }
   return {
     id: typeof row.id === "string" && row.id.trim() ? row.id : `brain-img-${index + 1}`,
     label: typeof row.label === "string" ? row.label : "Sugerencia",
     prompt: typeof row.prompt === "string" ? row.prompt : "",
     src,
+    ...(visualDiagnostics ? { visualDiagnostics } : {}),
   };
 }
 
@@ -315,7 +354,13 @@ async function runGeneration(args: EnsureArgs): Promise<BrainImageSuggestionEntr
     for (const attempt of attempts) {
       try {
         const src = await callGeminiGenerate(attempt.prompt, attempt.refs, args.aspectRatio);
-        created.push({ ...plan, src });
+        const diag = plan.visualDiagnostics
+          ? {
+              ...plan.visualDiagnostics,
+              finalPromptUsed: attempt.prompt,
+            }
+          : undefined;
+        created.push({ id: plan.id, label: plan.label, prompt: attempt.prompt, src, ...(diag ? { visualDiagnostics: diag } : {}) });
         success = true;
         break;
       } catch (err) {

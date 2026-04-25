@@ -183,6 +183,7 @@ export async function filterImageUrlsByIntent(
           serviceId: "gemini-search-verify",
           route: "/api/spaces/search",
           model: VISION_MODEL,
+          operation: "image_intent_verify",
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
           totalTokens: usage.totalTokens,

@@ -294,8 +294,24 @@ import {
   getBrainImageSuggestionEntry,
   getBrainImageSuggestionForceCooldownMs,
   listAllBrainGeneratedSuggestionUrls,
+  type BrainImageSuggestion,
   type BrainImageSuggestionEntry,
 } from "./brain-image-suggestions-cache";
+import {
+  buildBrainVisualPromptContext,
+  composeBrainDesignerImagePrompt,
+} from "@/lib/brain/build-brain-visual-prompt-context";
+import type { TelemetryImageSource } from "@/lib/brain/brain-models";
+import { trackDesignerImageImported, trackDesignerImageUsed } from "./designer/designer-image-telemetry";
+import {
+  emitPhotoroomExportToBrain,
+  trackPhotoroomImageEdited,
+  trackPhotoroomImageImported,
+  trackPhotoroomImageUsed,
+  trackPhotoroomLayerUsed,
+  trackPhotoroomMaskUsed,
+  trackPhotoroomStyleApplied,
+} from "./photo-room/photo-room-brain-telemetry";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  TYPES
@@ -820,6 +836,11 @@ export interface FreehandStudioProps extends DesignerEmbedProps {
   /** PhotoRoom: bloque de tamaño/orientación del lienzo en el panel Propiedades (sin capa seleccionada). */
   studioPhotoRoomCanvasPanel?: React.ReactNode;
   /**
+   * PhotoRoom: instancia embebida del nodo (telemetría Brain con `nodeType: PHOTOROOM`).
+   * Preferir esta bandera explícita frente a inferir solo por `studioPhotoRoomCanvasPanel`.
+   */
+  photoRoomStudioEmbed?: boolean;
+  /**
    * PhotoRoom: crear en el grafo Media → Nano Banana → este PhotoRoom y enlazar la capa como entrada conectada
    * (misma geometría; `studioNodeKey` === prop `nodeId` del studio, p. ej. `photoroom-fh-…`).
    */
@@ -862,7 +883,7 @@ export interface DesignerStudioApi {
   /** Same value as `nodeId` / studio key — used to wait until export API matches the active page after remount. */
   getExportSessionKey?: () => string;
   /** PNG data URL del pliego actual (miniatura escalada) para preview del nodo / rail de páginas. */
-  getNodePreviewPngDataUrl?: (opts?: { maxSide?: number }) => Promise<string | null>;
+  getNodePreviewPngDataUrl?: (opts?: { maxSide?: number; brainExportTelemetry?: boolean }) => Promise<string | null>;
 }
 
 interface ContextMenuItem {
@@ -8652,6 +8673,7 @@ export function FreehandStudioCanvas({
   photoRoomOnRasterizeInputImage,
   photoRoomOnOpenConnectedNanoStudio,
   studioCapabilities,
+  photoRoomStudioEmbed = false,
   designerMode,
   onDesignerTextFrameCreate,
   onDesignerImageFramePlace,
@@ -8680,8 +8702,13 @@ export function FreehandStudioCanvas({
   designerSkipAutoNodeExportOnClose = false,
   designerCanvasZenMode,
   onDesignerCanvasZenModeChange,
+  designerBrainTelemetry,
   brainConnected = false,
 }: FreehandStudioProps) {
+  const designerBrainTelemetryRef = useRef(designerBrainTelemetry);
+  designerBrainTelemetryRef.current = designerBrainTelemetry;
+  const photoRoomStudioEmbedRef = useRef(!!photoRoomStudioEmbed);
+  photoRoomStudioEmbedRef.current = !!photoRoomStudioEmbed;
   const projectBrainCtx = useProjectBrainCanvas();
   const projectAssetsCtx = useProjectAssetsCanvas();
   const projectScopeId = projectAssetsCtx?.projectScopeId || projectBrainCtx?.projectScopeId || "__local__";
@@ -8868,7 +8895,7 @@ export function FreehandStudioCanvas({
   }, [photoRectMarqueeSelection, photoPolygonMarqueeSelection, photoEllipseMarqueeSelection]);
 
   /** Studio del nodo PhotoRoom (incluye solo imágenes importadas en el lienzo; no exige cables al grafo). */
-  const isPhotoRoomStudioEmbed = studioPhotoRoomCanvasPanel != null;
+  const isPhotoRoomStudioEmbed = photoRoomStudioEmbed === true || studioPhotoRoomCanvasPanel != null;
 
   const studioCaps = useMemo(
     () =>
@@ -8877,7 +8904,7 @@ export function FreehandStudioCanvas({
         isPhotoRoomEmbed: isPhotoRoomStudioEmbed,
         override: studioCapabilities,
       }),
-    [designerMode, isPhotoRoomStudioEmbed, studioCapabilities],
+    [designerMode, isPhotoRoomStudioEmbed, studioCapabilities, photoRoomStudioEmbed],
   );
 
   const artboardW = artboards[0]?.width ?? 1920;
@@ -9378,12 +9405,11 @@ export function FreehandStudioCanvas({
   const [brainManualTextKind, setBrainManualTextKind] = useState<BrainTextBlockKind | "">("");
   const [brainTonePreset, setBrainTonePreset] = useState<"auto" | "directo" | "editorial">("auto");
   const [brainLengthPreset, setBrainLengthPreset] = useState<"auto" | "corto" | "medio" | "largo">("auto");
-  const [brainImageSuggestions, setBrainImageSuggestions] = useState<
-    Array<{ id: string; label: string; prompt: string; src: string }>
-  >([]);
+  const [brainImageSuggestions, setBrainImageSuggestions] = useState<BrainImageSuggestion[]>([]);
   const [brainImageLoading, setBrainImageLoading] = useState(false);
   const [brainImageError, setBrainImageError] = useState<string | null>(null);
   const [brainForceCooldownMs, setBrainForceCooldownMs] = useState(0);
+  const [brainImageWhyId, setBrainImageWhyId] = useState<string | null>(null);
   const brainSuggestionsSigRef = useRef("");
   const brainImageLoadingRef = useRef(false);
   const brainImageErrorRef = useRef<string | null>(null);
@@ -9912,7 +9938,7 @@ export function FreehandStudioCanvas({
         }
         return strRaw;
       },
-      getNodePreviewPngDataUrl: async (opts?: { maxSide?: number }) => {
+      getNodePreviewPngDataUrl: async (opts?: { maxSide?: number; brainExportTelemetry?: boolean }) => {
         try {
           const svg = svgRef.current;
           if (!svg) return null;
@@ -9934,7 +9960,18 @@ export function FreehandStudioCanvas({
           const cw = Math.max(1, Math.round(bounds.w * scale));
           const ch = Math.max(1, Math.round(bounds.h * scale));
           const canvas = await svgStringToCanvasSafe(str, cw, ch);
-          return canvasToPngDataUrlSafe(canvas);
+          const dataUrl = canvasToPngDataUrlSafe(canvas);
+          if (opts?.brainExportTelemetry) {
+            const tel = designerBrainTelemetryRef.current;
+            if (photoRoomStudioEmbedRef.current && tel?.nodeType === "PHOTOROOM") {
+              await emitPhotoroomExportToBrain(tel, objs, {
+                exportFormat: "png",
+                width: bounds.w,
+                height: bounds.h,
+              });
+            }
+          }
+          return dataUrl;
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           console.warn("[Freehand] getNodePreviewPngDataUrl:", msg);
@@ -10204,6 +10241,7 @@ export function FreehandStudioCanvas({
   useEffect(() => {
     setBrainManualTextKind((prev) => (prev === "" ? prev : ""));
     setBrainSuggestionsTick((prev) => (prev === 0 ? prev : 0));
+    setBrainImageWhyId(null);
   }, [singleSelected?.id]);
 
   const supportsBrainTextSuggestions = brainConnected && !!singleSelected && (singleSelected.type === "text" || singleSelected.type === "textOnPath");
@@ -10344,6 +10382,36 @@ export function FreehandStudioCanvas({
     brainLengthPreset,
   ]);
 
+  useEffect(() => {
+    if (!designerMode || !designerBrainTelemetry || !supportsBrainTextSuggestions || !effectiveTextKind) return;
+    for (let idx = 0; idx < 4; idx++) {
+      designerBrainTelemetry.track({
+        kind: "SUGGESTION_SHOWN",
+        suggestionId: `txt:${brainSuggestionsTick}:${idx}`,
+        designer: { brainPanelFieldRef: "text_suggestions" },
+      });
+    }
+  }, [
+    designerMode,
+    designerBrainTelemetry,
+    supportsBrainTextSuggestions,
+    effectiveTextKind,
+    brainSuggestionsTick,
+    brainTonePreset,
+    brainLengthPreset,
+  ]);
+
+  useEffect(() => {
+    if (!designerMode || !designerBrainTelemetry || !supportsBrainImageSuggestions) return;
+    for (const it of brainImageSuggestions.slice(0, 2)) {
+      designerBrainTelemetry.track({
+        kind: "SUGGESTION_SHOWN",
+        suggestionId: `img:${it.id}`,
+        designer: { imageFrameUsed: true },
+      });
+    }
+  }, [designerMode, designerBrainTelemetry, supportsBrainImageSuggestions, brainImageSuggestions]);
+
   const brainImageAspectRatio = useMemo(
     () => brainAspectRatioForGemini(singleSelected?.width ?? 1, singleSelected?.height ?? 1),
     [singleSelected?.width, singleSelected?.height],
@@ -10434,73 +10502,62 @@ export function FreehandStudioCanvas({
     return base || "tono profesional, claro y orientado a control creativo";
   }, [brainAssets]);
 
-  const brainVisualStyleLine = useMemo(() => {
-    const vs = brainAssets.strategy.visualStyle;
-    const lines = [
-      vs.protagonist?.description ? `protagonista: ${vs.protagonist.description}` : "",
-      vs.environment?.description ? `entorno: ${vs.environment.description}` : "",
-      vs.textures?.description ? `texturas: ${vs.textures.description}` : "",
-      vs.people?.description ? `personas: ${vs.people.description}` : "",
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    return lines || "estilo gráfico editorial moderno, foco en producto y contexto real";
-  }, [brainAssets]);
+  const brainVisualPromptContext = useMemo(
+    () => buildBrainVisualPromptContext(brainAssets),
+    [brainAssets],
+  );
 
   const brainImagePromptPlans = useMemo(() => {
     const claim = brainClaims[0] ?? "Narrativa con evidencia";
     const claimB = brainClaims[1] ?? "Sistema creativo conectado";
-    const support = brainSupport[0] ?? "contexto de marca y mercado";
     const nearby = brainPageContextText || brainNearbyText[0] || selectedTextValue || "";
-    const featureLine =
-      brainFeatureHints.length > 0
-        ? brainFeatureHints.join(", ")
-        : "Canvas, Brain, Designer, PhotoRoom y Presenter";
-    const diffLine =
-      brainDifferentiators.length > 0
-        ? brainDifferentiators.join(" | ")
-        : "integración de flujos creativos con memoria de proyecto";
-    const metricsLine =
-      brainMarketSignals.length > 0
-        ? brainMarketSignals.join(", ")
-        : "sin métricas explícitas";
-    const common = [
-      "Create a premium marketing key visual with strong art direction and believable product context.",
-      `PRIMARY PAGE CONTEXT (highest priority): ${nearby}.`,
-      "The generated image must semantically match the page context text. If there is conflict, prioritize this page context.",
-      `Brand voice: ${brainVoiceStyleLine}.`,
-      `Visual style ADN: ${brainVisualStyleLine}.`,
-      `Brand colors: ${brainBrandColorLine}.`,
-      `Core capabilities to reflect: ${featureLine}.`,
-      `Differentiators: ${diffLine}.`,
-      `Market or numeric signals: ${metricsLine}.`,
-      "If a screen/UI is shown, represent real modules/features from the capability list.",
-      "Use ONLY the brand logo attached in Brain references. Never invent or substitute another logo.",
-      "Do NOT use Foldder logo or Foldder wordmark unless it is exactly the attached Brain logo.",
-      "Integrate the attached Brain logo naturally (header/app chrome or product surface) and keep strict palette coherence with Brain colors.",
-      "No watermark, no gibberish, no random fake logos, no unrelated brands.",
-      "Suitable for professional creative deck and product storytelling.",
-    ].join(" ");
+    const featureLine = brainFeatureHints.length > 0 ? brainFeatureHints.join(", ") : "";
+    const diffLine = brainDifferentiators.length > 0 ? brainDifferentiators.join(" | ") : "";
+    const metricsLine = brainMarketSignals.length > 0 ? brainMarketSignals.join(", ") : "";
     const brandBlock = `Colores de marca: ${brainBrandColorLine}.`;
     const logoBlock =
       brainLogoReferences.length > 0
         ? "Usar el logo de referencia adjunto con presencia sutil y coherente de marca."
         : "No incluir logotipo explícito.";
+
+    const editorial = composeBrainDesignerImagePrompt({
+      context: brainVisualPromptContext,
+      pieceMessage: claim,
+      pageContext: nearby,
+      brandColorLine: brandBlock,
+      logoBlock,
+      featureLine: featureLine || undefined,
+      differentiatorsLine: diffLine || undefined,
+      metricsLine: metricsLine || undefined,
+    });
+    const performance = composeBrainDesignerImagePrompt({
+      context: brainVisualPromptContext,
+      pieceMessage: claimB,
+      pageContext: nearby,
+      brandColorLine: brandBlock,
+      logoBlock,
+      featureLine: featureLine || undefined,
+      differentiatorsLine: diffLine || undefined,
+      metricsLine: metricsLine || undefined,
+    });
+
     return [
       {
         id: "brain-img-1",
         label: "Visual editorial",
-        prompt: `Objetivo visual: ${claim}. Soporte: ${support}. Contexto de página detectado: ${nearby}. ${brandBlock} ${logoBlock} ${common}`,
+        prompt: editorial.prompt,
+        visualDiagnostics: editorial.diagnostics,
       },
       {
         id: "brain-img-2",
         label: "Visual performance",
-        prompt: `Objetivo visual: ${claimB}. Soporte: ${support}. Contexto de página detectado: ${nearby}. ${brandBlock} ${logoBlock} ${common}`,
+        prompt: performance.prompt,
+        visualDiagnostics: performance.diagnostics,
       },
     ];
   }, [
+    brainVisualPromptContext,
     brainClaims,
-    brainSupport,
     brainPageContextText,
     brainNearbyText,
     selectedTextValue,
@@ -10509,8 +10566,6 @@ export function FreehandStudioCanvas({
     brainFeatureHints,
     brainDifferentiators,
     brainMarketSignals,
-    brainVoiceStyleLine,
-    brainVisualStyleLine,
   ]);
 
   const prepareBrainLogoRefsForGemini = useCallback(
@@ -10711,6 +10766,9 @@ export function FreehandStudioCanvas({
     push(brainAssets.brand.colorPrimary);
     push(brainAssets.brand.colorSecondary);
     push(brainAssets.brand.colorAccent);
+    for (const h of brainAssets.strategy.visualReferenceAnalysis?.aggregated?.dominantPalette ?? []) {
+      push(h);
+    }
     return out.slice(0, 12);
   }, [brainAssets]);
 
@@ -10785,9 +10843,16 @@ export function FreehandStudioCanvas({
   );
 
   const applyBrainTextSuggestion = useCallback(
-    (nextText: string) => {
+    (nextText: string, suggestionId?: string) => {
       if (!singleSelected) return;
       if (singleSelected.type !== "text" && singleSelected.type !== "textOnPath") return;
+      if (suggestionId) {
+        designerBrainTelemetryRef.current?.track({
+          kind: "SUGGESTION_ACCEPTED",
+          suggestionId,
+          designer: { brainPanelFieldRef: "text_suggestions" },
+        });
+      }
       const targetId = singleSelected.id;
       setObjects((prev) => {
         const next = prev.map((o) =>
@@ -10802,10 +10867,38 @@ export function FreehandStudioCanvas({
   );
 
   const applyBrainImageSuggestion = useCallback(
-    async (src: string) => {
+    async (src: string, imageSuggestionId?: string) => {
       if (!singleSelected) return;
       const targetId = singleSelected.id;
       const natural = await loadImageNaturalSize(src);
+      if (imageSuggestionId) {
+        designerBrainTelemetryRef.current?.track({
+          kind: "SUGGESTION_ACCEPTED",
+          suggestionId: imageSuggestionId,
+          designer: { imageFrameUsed: true },
+        });
+        const api = designerBrainTelemetryRef.current;
+        if (api) {
+          if (photoRoomStudioEmbedRef.current && api.nodeType === "PHOTOROOM") {
+            trackPhotoroomImageUsed(api.track, {
+              source: "BRAIN_SUGGESTION",
+              canvasObjectId: targetId,
+              assetRef: src,
+              imageWidth: natural.w,
+              imageHeight: natural.h,
+            });
+          } else {
+            trackDesignerImageUsed(api.track, {
+              source: "BRAIN_SUGGESTION",
+              pageId: designerActivePageId,
+              frameId: targetId,
+              assetRef: src,
+              imageWidth: natural.w,
+              imageHeight: natural.h,
+            });
+          }
+        }
+      }
       setObjects((prev) => {
         const next = prev.map((o) => {
           if (o.id !== targetId) return o;
@@ -10853,7 +10946,7 @@ export function FreehandStudioCanvas({
       });
       setSelectedIds(new Set([targetId]));
     },
-    [singleSelected, pushHistory, loadImageNaturalSize],
+    [singleSelected, pushHistory, loadImageNaturalSize, designerActivePageId],
   );
 
   /** Capa a la que aplican fusión/opacidad del panel (primaria si existe; si no, la primera seleccionada). */
@@ -10903,6 +10996,10 @@ export function FreehandStudioCanvas({
       return next;
     });
     setLayerStylesUi({ open: false, targetId: null, draft: null });
+    const api = designerBrainTelemetryRef.current;
+    if (photoRoomStudioEmbedRef.current && api?.nodeType === "PHOTOROOM") {
+      trackPhotoroomStyleApplied(api.track, { canvasObjectId: targetId, layerId: targetId });
+    }
   }, [layerStylesUi, pushHistory]);
 
   const cancelLayerStylesModal = useCallback(() => {
@@ -10943,6 +11040,14 @@ export function FreehandStudioCanvas({
         });
         setSelectedIds(new Set([o.id]));
         setPrimarySelectedId(o.id);
+        const api = designerBrainTelemetryRef.current;
+        if (photoRoomStudioEmbedRef.current && api?.nodeType === "PHOTOROOM") {
+          trackPhotoroomMaskUsed(api.track, {
+            layerId: o.id,
+            canvasObjectId: o.id,
+            maskId: `layer-mask:${o.id}`,
+          });
+        }
       });
     },
     [studioCaps.layerMask, primarySelectedId, objects, firstSelected, pushHistory],
@@ -10956,6 +11061,14 @@ export function FreehandStudioCanvas({
         pushHistory(next, new Set([id]));
         return next;
       });
+      const api = designerBrainTelemetryRef.current;
+      if (photoRoomStudioEmbedRef.current && api?.nodeType === "PHOTOROOM") {
+        trackPhotoroomMaskUsed(api.track, {
+          layerId: id,
+          canvasObjectId: id,
+          maskId: `layer-mask-cleared:${id}`,
+        });
+      }
     },
     [pushHistory],
   );
@@ -11013,6 +11126,10 @@ export function FreehandStudioCanvas({
     if (newId) {
       setSelectedIds(new Set([newId]));
       setPrimarySelectedId(newId);
+      const api = designerBrainTelemetryRef.current;
+      if (photoRoomStudioEmbedRef.current && api?.nodeType === "PHOTOROOM") {
+        trackPhotoroomLayerUsed(api.track, { canvasObjectId: newId, layerId: newId });
+      }
     }
   }, [artboards, pushHistory]);
 
@@ -11031,6 +11148,10 @@ export function FreehandStudioCanvas({
       if (copyId) {
         setSelectedIds(new Set([copyId]));
         setPrimarySelectedId(copyId);
+        const api = designerBrainTelemetryRef.current;
+        if (photoRoomStudioEmbedRef.current && api?.nodeType === "PHOTOROOM") {
+          trackPhotoroomLayerUsed(api.track, { canvasObjectId: copyId, layerId: copyId });
+        }
       }
     },
     [pushHistory],
@@ -11419,6 +11540,42 @@ export function FreehandStudioCanvas({
             pixelHeight: img.naturalHeight || img.height,
           },
         } as ImageObject;
+        if (designerMode && designerBrainTelemetryRef.current) {
+          const api = designerBrainTelemetryRef.current;
+          const tr = api.track;
+          const nw = img.naturalWidth || img.width || 1;
+          const nh = img.naturalHeight || img.height || 1;
+          if (photoRoomStudioEmbedRef.current && api.nodeType === "PHOTOROOM") {
+            trackPhotoroomImageImported(tr, {
+              source: "USER_UPLOAD",
+              canvasObjectId: newObj.id,
+              fileName: file.name?.trim(),
+              mimeType: (file.type && file.type.trim()) || dataMime || "image/*",
+              imageWidth: nw,
+              imageHeight: nh,
+            });
+            trackPhotoroomImageUsed(tr, {
+              source: "USER_UPLOAD",
+              canvasObjectId: newObj.id,
+              fileName: file.name?.trim(),
+              mimeType: (file.type && file.type.trim()) || dataMime || "image/*",
+              imageWidth: nw,
+              imageHeight: nh,
+            });
+          } else {
+            const base = {
+              source: "USER_UPLOAD" as const,
+              pageId: designerActivePageId,
+              frameId: newObj.id,
+              fileName: file.name?.trim(),
+              mimeType: (file.type && file.type.trim()) || dataMime || "image/*",
+              imageWidth: nw,
+              imageHeight: nh,
+            };
+            trackDesignerImageImported(tr, base);
+            trackDesignerImageUsed(tr, base);
+          }
+        }
         setObjects((prev) => {
           const next = [...prev, newObj];
           pushHistory(next, new Set([newObj.id]));
@@ -11429,7 +11586,7 @@ export function FreehandStudioCanvas({
       img.src = src;
     };
     reader.readAsDataURL(file);
-  }, [pushHistory]);
+  }, [pushHistory, designerMode, designerActivePageId]);
 
   /** Coloca imagen en un marco existente (data URL + ajuste fill-proportional), sin subida S3. */
   const importImageIntoFrame = useCallback(
@@ -11441,6 +11598,47 @@ export function FreehandStudioCanvas({
         img.onload = () => {
           const iw = img.naturalWidth || 1;
           const ih = img.naturalHeight || 1;
+          if (designerMode && designerBrainTelemetryRef.current) {
+            const api = designerBrainTelemetryRef.current;
+            const tr = api.track;
+            if (photoRoomStudioEmbedRef.current && api.nodeType === "PHOTOROOM") {
+              trackPhotoroomImageImported(tr, {
+                source: "USER_UPLOAD",
+                canvasObjectId: frameId,
+                fileName: file.name?.trim(),
+                mimeType: (file.type && file.type.trim()) || "image/*",
+                imageWidth: iw,
+                imageHeight: ih,
+              });
+              trackPhotoroomImageUsed(tr, {
+                source: "USER_UPLOAD",
+                canvasObjectId: frameId,
+                fileName: file.name?.trim(),
+                mimeType: (file.type && file.type.trim()) || "image/*",
+                imageWidth: iw,
+                imageHeight: ih,
+              });
+            } else {
+              trackDesignerImageImported(tr, {
+                source: "USER_UPLOAD",
+                pageId: designerActivePageId,
+                frameId,
+                fileName: file.name?.trim(),
+                mimeType: (file.type && file.type.trim()) || "image/*",
+                imageWidth: iw,
+                imageHeight: ih,
+              });
+              trackDesignerImageUsed(tr, {
+                source: "USER_UPLOAD",
+                pageId: designerActivePageId,
+                frameId,
+                fileName: file.name?.trim(),
+                mimeType: (file.type && file.type.trim()) || "image/*",
+                imageWidth: iw,
+                imageHeight: ih,
+              });
+            }
+          }
           setObjects((prev) => {
             const idx = prev.findIndex((o) => o.id === frameId);
             if (idx < 0) return prev;
@@ -11471,7 +11669,7 @@ export function FreehandStudioCanvas({
       };
       reader.readAsDataURL(file);
     },
-    [pushHistory],
+    [pushHistory, designerMode, designerActivePageId],
   );
 
   const triggerImageFramePlacement = useCallback(
@@ -11542,8 +11740,45 @@ export function FreehandStudioCanvas({
       });
       setSelectedIds(new Set([target.targetId]));
       setFoldderImagePickerOpen(false);
+      if (designerMode && designerBrainTelemetryRef.current) {
+        const trimmed = src.trim();
+        const fromKnowledge = trimmed.includes("knowledge-files/");
+        const source: TelemetryImageSource = aiGenerated
+          ? "BRAIN_SUGGESTION"
+          : fromKnowledge
+            ? "PROJECT_ASSET"
+            : /^https?:\/\//i.test(trimmed)
+              ? "EXTERNAL"
+              : "library";
+        const api = designerBrainTelemetryRef.current;
+        if (photoRoomStudioEmbedRef.current && api.nodeType === "PHOTOROOM") {
+          trackPhotoroomImageUsed(api.track, {
+            source,
+            canvasObjectId: target.targetId,
+            assetRef: trimmed,
+            imageWidth: natural.w,
+            imageHeight: natural.h,
+          });
+        } else {
+          trackDesignerImageUsed(api.track, {
+            source,
+            pageId: designerActivePageId,
+            frameId: target.targetId,
+            assetRef: trimmed,
+            imageWidth: natural.w,
+            imageHeight: natural.h,
+          });
+        }
+      }
     },
-    [foldderImagePickerTarget, foldderGeneratedUrlSet, loadImageNaturalSize, pushHistory],
+    [
+      foldderImagePickerTarget,
+      foldderGeneratedUrlSet,
+      loadImageNaturalSize,
+      pushHistory,
+      designerMode,
+      designerActivePageId,
+    ],
   );
 
   /** Arrastre desde el SO / Finder: asegura lectura de ficheros y evita listas vacías en algunos navegadores. */
@@ -11902,6 +12137,8 @@ export function FreehandStudioCanvas({
     if (!s) return;
     const url = s.canvas.toDataURL("image/png");
     const r = s.raster;
+    const api = designerBrainTelemetryRef.current;
+    const prTel = photoRoomStudioEmbedRef.current && api?.nodeType === "PHOTOROOM";
     if (s.target === "mask") {
       setObjects((prev) =>
         prev.map((o) => {
@@ -11914,6 +12151,13 @@ export function FreehandStudioCanvas({
           } as FreehandObject;
         }),
       );
+      if (prTel && api) {
+        trackPhotoroomMaskUsed(api.track, {
+          layerId: s.objectId,
+          canvasObjectId: s.objectId,
+          maskId: `brush-mask:${s.objectId}`,
+        });
+      }
       return;
     }
     setObjects((prev) =>
@@ -11922,6 +12166,9 @@ export function FreehandStudioCanvas({
         return { ...o, src: url, x: r.x, y: r.y, width: r.width, height: r.height } as FreehandObject;
       }),
     );
+    if (prTel && api) {
+      trackPhotoroomImageEdited(api.track, { canvasObjectId: s.objectId, layerId: s.objectId });
+    }
   }, []);
 
   const cancelBrushPreviewRaf = useCallback(() => {
@@ -13959,7 +14206,16 @@ export function FreehandStudioCanvas({
     });
     const str = substituteNativeTextForRasterExport(strRaw, objects);
     const canvas = await svgStringToCanvasSafe(str, bounds.w, bounds.h);
-    onExport(canvasToPngDataUrlSafe(canvas));
+    const dataUrl = canvasToPngDataUrlSafe(canvas);
+    const tel = designerBrainTelemetryRef.current;
+    if (photoRoomStudioEmbedRef.current && tel?.nodeType === "PHOTOROOM") {
+      await emitPhotoroomExportToBrain(tel, objectsRef.current, {
+        exportFormat: "png",
+        width: bounds.w,
+        height: bounds.h,
+      });
+    }
+    onExport(dataUrl);
   }, [objects, artboards, onExport]);
 
   const closeInFlight = useRef(false);
@@ -14154,6 +14410,15 @@ export function FreehandStudioCanvas({
           src: dataUrl,
           intrinsicRatio: bounds.w / Math.max(bounds.h, 1),
         } as ImageObject;
+
+        const tel = designerBrainTelemetryRef.current;
+        if (photoRoomStudioEmbedRef.current && tel?.nodeType === "PHOTOROOM") {
+          trackPhotoroomImageEdited(tel.track, {
+            canvasObjectId: newObj.id,
+            layerId: newObj.id,
+            fileName: newObj.name,
+          });
+        }
 
         setObjects((prev) => {
           let next: FreehandObject[];
@@ -21868,7 +22133,16 @@ export function FreehandStudioCanvas({
                       <div className="grid grid-cols-3 gap-1.5">
                         <select
                           value={effectiveTextKind ?? ""}
-                          onChange={(e) => setBrainManualTextKind((e.target.value || "") as BrainTextBlockKind | "")}
+                          onChange={(e) => {
+                            const v = (e.target.value || "") as BrainTextBlockKind | "";
+                            designerBrainTelemetry?.track({
+                              kind: "MANUAL_OVERRIDE",
+                              fieldRef: "brain:textKind",
+                              lengthChars: v.length,
+                              designer: { brainPanelFieldRef: "textKind" },
+                            });
+                            setBrainManualTextKind(v);
+                          }}
                           className="col-span-1 rounded-[5px] border border-white/[0.1] bg-[#1a1e26] px-2 py-1 text-[10px] text-zinc-100"
                           title="Tipo detectado / manual"
                         >
@@ -21881,7 +22155,16 @@ export function FreehandStudioCanvas({
                         </select>
                         <select
                           value={brainTonePreset}
-                          onChange={(e) => setBrainTonePreset(e.target.value as "auto" | "directo" | "editorial")}
+                          onChange={(e) => {
+                            const v = e.target.value as "auto" | "directo" | "editorial";
+                            designerBrainTelemetry?.track({
+                              kind: "MANUAL_OVERRIDE",
+                              fieldRef: "brain:tonePreset",
+                              lengthChars: v.length,
+                              designer: { brainPanelFieldRef: "tonePreset" },
+                            });
+                            setBrainTonePreset(v);
+                          }}
                           className="col-span-1 rounded-[5px] border border-white/[0.1] bg-[#1a1e26] px-2 py-1 text-[10px] text-zinc-100"
                           title="Tono"
                         >
@@ -21891,7 +22174,16 @@ export function FreehandStudioCanvas({
                         </select>
                         <select
                           value={brainLengthPreset}
-                          onChange={(e) => setBrainLengthPreset(e.target.value as "auto" | "corto" | "medio" | "largo")}
+                          onChange={(e) => {
+                            const v = e.target.value as "auto" | "corto" | "medio" | "largo";
+                            designerBrainTelemetry?.track({
+                              kind: "MANUAL_OVERRIDE",
+                              fieldRef: "brain:lengthPreset",
+                              lengthChars: v.length,
+                              designer: { brainPanelFieldRef: "lengthPreset" },
+                            });
+                            setBrainLengthPreset(v);
+                          }}
                           className="col-span-1 rounded-[5px] border border-white/[0.1] bg-[#1a1e26] px-2 py-1 text-[10px] text-zinc-100"
                           title="Longitud"
                         >
@@ -21907,7 +22199,9 @@ export function FreehandStudioCanvas({
                           <button
                             key={`brain-t-${idx}`}
                             type="button"
-                            onClick={() => applyBrainTextSuggestion(suggestion)}
+                            onClick={() =>
+                              applyBrainTextSuggestion(suggestion, `txt:${brainSuggestionsTick}:${idx}`)
+                            }
                             title="Aplicar este texto"
                             className="w-full rounded-[6px] border border-white/[0.08] bg-[#171a21] px-2.5 py-2 text-left text-[11px] leading-snug text-zinc-200 transition-colors hover:border-violet-400/35 hover:bg-violet-500/10"
                           >
@@ -21917,7 +22211,18 @@ export function FreehandStudioCanvas({
                       </div>
                       <button
                         type="button"
-                        onClick={() => setBrainSuggestionsTick((v) => v + 1)}
+                        onClick={() => {
+                          if (designerBrainTelemetry) {
+                            for (let i = 0; i < Math.min(4, brainTextSuggestions.length); i++) {
+                              designerBrainTelemetry.track({
+                                kind: "SUGGESTION_IGNORED",
+                                suggestionId: `txt:${brainSuggestionsTick}:${i}`,
+                                designer: { brainPanelFieldRef: "text_suggestions" },
+                              });
+                            }
+                          }
+                          setBrainSuggestionsTick((v) => v + 1);
+                        }}
                         className="w-full rounded-[5px] border border-white/[0.12] bg-white/[0.04] px-2 py-1.5 text-[10px] font-semibold text-zinc-200 transition-colors hover:bg-white/[0.08]"
                       >
                         Regenerar sugerencias
@@ -21938,19 +22243,57 @@ export function FreehandStudioCanvas({
                         </div>
                       ) : (
                         <div className="grid grid-cols-2 gap-2">
-                          {brainImageSuggestions.slice(0, 2).map((it) => (
-                            <button
-                              key={it.id}
-                              type="button"
-                              onClick={() => {
-                                void applyBrainImageSuggestion(it.src);
-                              }}
-                              title="Aplicar esta imagen"
-                              className="overflow-hidden rounded-[8px] border border-white/[0.1] bg-[#171a21] transition-colors hover:border-violet-400/40"
-                            >
-                              <img src={it.src} alt={it.label || "Sugerencia Brain"} className="h-[92px] w-full object-cover" />
-                            </button>
-                          ))}
+                          {brainImageSuggestions.slice(0, 2).map((it) => {
+                            const d = it.visualDiagnostics;
+                            return (
+                              <div key={it.id} className="space-y-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    void applyBrainImageSuggestion(it.src, `img:${it.id}`);
+                                  }}
+                                  title="Aplicar esta imagen"
+                                  className="w-full overflow-hidden rounded-[8px] border border-white/[0.1] bg-[#171a21] transition-colors hover:border-violet-400/40"
+                                >
+                                  <img
+                                    src={it.src}
+                                    alt={it.label || "Sugerencia Brain"}
+                                    className="h-[92px] w-full object-cover"
+                                  />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setBrainImageWhyId((cur) => (cur === it.id ? null : it.id))}
+                                  className="w-full rounded-[5px] px-1 py-0.5 text-left text-[9px] font-medium text-violet-300/95 hover:bg-violet-500/10"
+                                >
+                                  Ver por qué
+                                </button>
+                                {brainImageWhyId === it.id && d ? (
+                                  <div className="rounded-[6px] border border-white/[0.08] bg-[#12151c] p-2 text-[9px] leading-snug text-zinc-300">
+                                    {d.textOnlyGeneration ? (
+                                      <p className="mb-1.5 text-amber-300/95">
+                                        Esta imagen se generó principalmente desde texto de marca, no desde ADN visual
+                                        analizado.
+                                      </p>
+                                    ) : (
+                                      <p className="mb-1.5 text-emerald-300/95">
+                                        Generada usando ADN visual / referencias analizadas cuando fue posible.
+                                      </p>
+                                    )}
+                                    <p className="mb-1 font-mono text-[8px] text-zinc-500">
+                                      refs reales: {d.visualReferenceAnalysisRealCount} · patternSummary:{" "}
+                                      {d.patternSummaryUsed ? "sí" : "no"} · ADN confirmado:{" "}
+                                      {d.confirmedVisualDnaUsed ? "sí" : "no"} · fallback/default:{" "}
+                                      {d.fallbackDefaultUsed ? "sí" : "no"}
+                                    </p>
+                                    <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words text-[8px] text-zinc-400">
+                                      {d.finalPromptUsed}
+                                    </pre>
+                                  </div>
+                                ) : null}
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                       <button
@@ -24763,6 +25106,16 @@ export function FreehandStudioCanvas({
             if (photoGradientPickerOpen === "start") setStrokeColor(n);
             else setFillColor(n);
             setPhotoGradientPickerOpen(null);
+            const api = designerBrainTelemetryRef.current;
+            if (photoRoomStudioEmbedRef.current && api?.nodeType === "PHOTOROOM") {
+              api.track({
+                kind: "COLOR_USED",
+                colorHex: n,
+                artifactType: "image",
+                visualHints: {},
+                photoroom: { visualHints: {} },
+              });
+            }
           }}
         />
       ) : null}

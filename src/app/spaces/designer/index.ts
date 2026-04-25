@@ -22,5 +22,12 @@ export {
 export type { DesignerOptimizeProgressState } from "./useDesignerImagePipeline";
 export { useDesignerImagePipeline } from "./useDesignerImagePipeline";
 export { useDesignerTextFrameLayoutSync } from "./useDesignerTextFrameLayoutSync";
+export {
+  useBrainNodeTelemetry,
+  useBrainTelemetry,
+  type UseBrainNodeTelemetryOptions,
+  type UseBrainNodeTelemetryResult,
+  type UseBrainTelemetryResult,
+} from "./useBrainTelemetry";
 export type { DesignerEmbedProps } from "../freehand/designer-embed-props";
 export type { DesignerFormatModalState } from "./DesignerFormatModal";
