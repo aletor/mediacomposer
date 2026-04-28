@@ -77,10 +77,7 @@ function resolveRunTypo(base: Typography, style?: SpanStyle): Typography {
     ...base,
     ...(style.fontWeight != null ? { fontWeight: style.fontWeight } : {}),
     ...(style.fontStyle != null ? { fontStyle: style.fontStyle } : {}),
-    ...(style.fontSize != null ? { fontSize: style.fontSize } : {}),
     ...(style.color != null ? { color: style.color } : {}),
-    ...(style.fontFamily != null ? { fontFamily: style.fontFamily } : {}),
-    ...(style.letterSpacing != null ? { letterSpacing: style.letterSpacing } : {}),
   };
 }
 

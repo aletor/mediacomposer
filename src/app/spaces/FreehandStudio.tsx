@@ -1212,8 +1212,57 @@ function normalizeInlineFrameRichHtml(html: string): string {
     const tag = (n as HTMLElement).tagName.toLowerCase();
     return tag === "div" || tag === "p" || tag === "ul" || tag === "ol";
   });
-  if (hasBlock) return html;
-  return `<div>${html || "<br>"}</div>`;
+  if (!hasBlock) {
+    c.innerHTML = `<div>${html || "<br>"}</div>`;
+  }
+
+  const isSoftEmptyBlock = (el: Element): boolean => {
+    const tag = el.tagName.toLowerCase();
+    if (tag !== "div" && tag !== "p") return false;
+    const txt = (el.textContent ?? "").replace(/\u00a0/g, " ").trim();
+    if (txt.length > 0) return false;
+    for (const node of Array.from(el.childNodes)) {
+      if (node.nodeType === Node.TEXT_NODE && (node.textContent ?? "").trim().length > 0) return false;
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const t = (node as Element).tagName.toLowerCase();
+        if (t !== "br" && t !== "span") return false;
+      }
+    }
+    return true;
+  };
+
+  // contentEditable suele añadir un último `<div><br></div>` para caret; no debe afectar el threading.
+  while (c.children.length > 1) {
+    const last = c.lastElementChild;
+    if (!last || !isSoftEmptyBlock(last)) break;
+    c.removeChild(last);
+  }
+
+  const last = c.lastElementChild;
+  if (last && (last.tagName.toLowerCase() === "div" || last.tagName.toLowerCase() === "p")) {
+    const childNodes = Array.from(last.childNodes);
+    for (let i = childNodes.length - 1; i >= 0; i--) {
+      const n = childNodes[i]!;
+      if (n.nodeType === Node.TEXT_NODE) {
+        const txt = n.textContent ?? "";
+        const trimmed = txt.replace(/\n+$/g, "");
+        if (trimmed !== txt) n.textContent = trimmed;
+        if ((n.textContent ?? "").length === 0 && childNodes.length > 1) last.removeChild(n);
+        if ((n.textContent ?? "").length > 0) break;
+        continue;
+      }
+      if (n.nodeType === Node.ELEMENT_NODE && (n as Element).tagName.toLowerCase() === "br") {
+        const textWithoutBr = (last.textContent ?? "").replace(/\u00a0/g, " ").trim();
+        if (textWithoutBr.length > 0) {
+          last.removeChild(n);
+        }
+        break;
+      }
+      break;
+    }
+  }
+
+  return c.innerHTML || "<div><br></div>";
 }
 
 /** Texto copiado (ChatGPT, Word, etc.): espacios raros y caracteres invisibles / de formato. */
@@ -6754,10 +6803,7 @@ export function renderObj(
           if (st.textUnderline || st.textStrikethrough) {
             ss.textDecoration = [st.textUnderline && "underline", st.textStrikethrough && "line-through"].filter(Boolean).join(" ");
           }
-          if (st.fontSize != null) ss.fontSize = st.fontSize;
           if (st.color) ss.color = st.color;
-          if (st.fontFamily) ss.fontFamily = st.fontFamily;
-          if (st.letterSpacing != null) ss.letterSpacing = st.letterSpacing;
           if (st.linkHref) {
             const noCanvasLink = !!(t.isTextFrame && opts?.designerMode);
             return (
@@ -22071,11 +22117,13 @@ export function FreehandStudioCanvas({
           const rcx = to.x + foW / 2;
           const rcy = to.y + foH / 2;
           const rot = to.rotation ?? 0;
+          const sx = to.scaleX ?? 1;
+          const sy = to.scaleY ?? 1;
           const tl = rotatePointAround({ x: to.x, y: to.y }, { x: rcx, y: rcy }, rot);
           const left = viewport.x + tl.x * viewport.zoom;
           const top = viewport.y + tl.y * viewport.zoom;
-          const w = Math.max(foW * viewport.zoom, 120);
-          const h = Math.max(foH * viewport.zoom, to.fontSize * to.lineHeight * viewport.zoom);
+          const w = Math.max(foW * viewport.zoom, 1);
+          const h = Math.max(foH * viewport.zoom, 1);
           const fill = migrateFill(to.fill);
           const caretColor =
             fill.type === "solid"
@@ -22089,15 +22137,16 @@ export function FreehandStudioCanvas({
             width: w,
             height: h,
             fontFamily: to.fontFamily,
-            fontSize: Math.max(8, to.fontSize * z),
+            fontSize: Math.max(1, to.fontSize * z),
             fontWeight: to.fontWeight,
+            fontStyle: to.fontStyle ?? "normal",
             lineHeight: to.lineHeight,
             letterSpacing: to.letterSpacing !== undefined ? `${to.letterSpacing * z}px` : undefined,
             textAlign: to.textAlign,
-            fontFeatureSettings: to.fontFeatureSettings ?? '"kern" 1, "liga" 1',
+            fontFeatureSettings: to.fontFeatureSettings ?? '"kern" 1, "liga" 1, "calt" 1',
             fontVariantLigatures: to.fontVariantLigatures ?? "common-ligatures",
             ...(to.fontVariantCaps === "small-caps" ? { fontVariantCaps: "small-caps" as const } : {}),
-            fontKerning: to.fontKerning === "none" ? "none" : undefined,
+            fontKerning: to.fontKerning === "none" ? "none" : "auto",
             textDecoration:
               [to.textUnderline && "underline", to.textStrikethrough && "line-through"]
                 .filter(Boolean)
@@ -22113,7 +22162,10 @@ export function FreehandStudioCanvas({
             opacity: to.opacity,
             whiteSpace: to.textMode === "point" ? "pre" : "pre-wrap",
             wordBreak: to.textMode === "area" ? ("break-word" as const) : "normal",
-            transform: rot ? `rotate(${rot}deg)` : undefined,
+            transform:
+              rot || sx !== 1 || sy !== 1
+                ? `${rot ? `rotate(${rot}deg)` : ""}${sx !== 1 || sy !== 1 ? ` scale(${sx}, ${sy})` : ""}`.trim()
+                : undefined,
             transformOrigin: `${(foW / 2) * z}px ${(foH / 2) * z}px`,
           };
 

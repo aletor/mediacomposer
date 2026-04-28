@@ -86,6 +86,11 @@ export default function DesignerStudio({
   onAutoImageOptimizationChange,
   brainConnected = false,
 }: DesignerStudioProps) {
+  /**
+   * El editor inline puede inyectar estilos métricos (font-size/family/letter-spacing) en spans.
+   * En marcos encadenados, esos overrides desalinean el layout (saltos de caja tempranos).
+   * Conservamos estilos semánticos (bold/italic/underline/strike/link/color) y limpiamos métricas.
+   */
   const normalizeInlineRichNodes = useCallback((nodes: StoryNode[]): StoryNode[] => {
     return nodes.map((node) => ({
       ...node,
@@ -515,6 +520,7 @@ export default function DesignerStudio({
         const textFrames = p.textFrames ?? [];
         const story = stories.find((s) => s.id === storyId);
         if (!story) return prev;
+        const normalizedStoryContent = normalizeInlineRichNodes(story.content);
 
         const newNodes = richHtml
           ? normalizeInlineRichNodes(htmlToStoryNodes(richHtml))
@@ -529,7 +535,7 @@ export default function DesignerStudio({
           const layouts = layoutPageStories(stories, textFrames);
           const frameLayout = layouts.find((l) => l.frameId === frameId);
           if (frameLayout) {
-            const before = sliceStoryContent(story.content, 0, frameLayout.contentRange.start);
+            const before = sliceStoryContent(normalizedStoryContent, 0, frameLayout.contentRange.start);
             const currentRangeLen = Math.max(0, frameLayout.contentRange.end - frameLayout.contentRange.start);
             const nextRangeLen = flattenStoryContent(newNodes).reduce((sum, run) => sum + run.text.length, 0);
             /**
@@ -538,8 +544,8 @@ export default function DesignerStudio({
              */
             const overlapCompensatedEnd =
               frameLayout.contentRange.end + Math.max(0, nextRangeLen - currentRangeLen);
-            const after = sliceStoryContent(story.content, overlapCompensatedEnd, Number.MAX_SAFE_INTEGER);
-            const merged = [...before, ...newNodes, ...after];
+            const after = sliceStoryContent(normalizedStoryContent, overlapCompensatedEnd, Number.MAX_SAFE_INTEGER);
+            const merged = normalizeInlineRichNodes([...before, ...newNodes, ...after]);
             nextStories = stories.map((s) =>
               s.id === storyId ? { ...s, content: merged } : s,
             );
