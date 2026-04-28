@@ -24,6 +24,7 @@ import {
   Square,
   Circle,
   PenTool,
+  Scissors,
   Eye,
   EyeOff,
   Lock,
@@ -326,6 +327,7 @@ type Tool =
   | "select"
   | "directSelect"
   | "pen"
+  | "scissors"
   | "rect"
   | "line"
   | "ellipse"
@@ -353,7 +355,7 @@ type Tool =
 type ToolFlyoutGroupId = "tf-pen" | "tf-shape" | "tf-photo-marquee" | "tf-text" | "tf-img";
 
 type ToolFlyoutPrimaryState = {
-  "tf-pen": "directSelect" | "pen";
+  "tf-pen": "directSelect" | "pen" | "scissors";
   "tf-shape": "rect" | "line" | "ellipse";
   "tf-photo-marquee": "rectMarquee" | "ellipseMarquee" | "lassoMarquee" | "polygonMarquee";
   "tf-text": "text" | "textFrame";
@@ -372,6 +374,7 @@ function toolFlyoutGroupForTool(tool: Tool): ToolFlyoutGroupId | null {
   switch (tool) {
     case "directSelect":
     case "pen":
+    case "scissors":
       return "tf-pen";
     case "rect":
     case "line":
@@ -3445,6 +3448,67 @@ function findTopAnchorHitForDirectSelectDelete(
   return null;
 }
 
+function findTopOpenPathEndpointHitForPen(
+  pos: Point,
+  threshold: number,
+  objects: FreehandObject[],
+): { objId: string; endpoint: "start" | "end"; point: Point } | null {
+  for (let i = objects.length - 1; i >= 0; i--) {
+    const obj = objects[i];
+    if (obj.locked || !obj.visible || obj.type !== "path") continue;
+    const p = obj as PathObject;
+    if (p.closed || !p.points || p.points.length < 2) continue;
+    const first = pathBezierPointToWorld(p.points[0]!.anchor, p);
+    if (dist(pos, first) < threshold) return { objId: p.id, endpoint: "start", point: first };
+    const last = pathBezierPointToWorld(p.points[p.points.length - 1]!.anchor, p);
+    if (dist(pos, last) < threshold) return { objId: p.id, endpoint: "end", point: last };
+  }
+  return null;
+}
+
+function findTopScissorsCutHover(
+  pos: Point,
+  threshold: number,
+  objects: FreehandObject[],
+): { objId: string; ringIdx: number; segIdx: number; t: number; point: Point } | null {
+  for (let i = objects.length - 1; i >= 0; i--) {
+    const obj = objects[i];
+    if (obj.locked || !obj.visible || obj.type !== "path") continue;
+    const p = obj as PathObject;
+    if (!p.points || p.points.length < 2) continue;
+    let hp = pos;
+    if (obj.rotation || obj.flipX || obj.flipY) {
+      const inv = inverseObjMatrix(obj);
+      if (inv) {
+        const tpt = inv.transformPoint(new DOMPoint(pos.x, pos.y));
+        hp = { x: tpt.x, y: tpt.y };
+      }
+    }
+    const seg = distToPathSegments(hp, p);
+    if (seg.dist >= threshold) continue;
+    const rings = getPathRings(p);
+    const ring = rings[seg.ringIdx];
+    if (!ring || ring.length < 2) continue;
+    const segCount = p.closed ? ring.length : ring.length - 1;
+    if (seg.segIdx < 0 || seg.segIdx >= segCount) continue;
+    const j = (seg.segIdx + 1) % ring.length;
+    const p0 = ring[seg.segIdx]!.anchor;
+    const cp1 = ring[seg.segIdx]!.handleOut;
+    const cp2 = ring[j]!.handleIn;
+    const p3 = ring[j]!.anchor;
+    const localPoint = cubicBezierAt(seg.t, p0, cp1, cp2, p3);
+    const worldPoint = pathBezierPointToWorld(localPoint, p);
+    return {
+      objId: p.id,
+      ringIdx: seg.ringIdx,
+      segIdx: seg.segIdx,
+      t: seg.t,
+      point: worldPoint,
+    };
+  }
+  return null;
+}
+
 function applyDeletePathPointIndicesToObjects(
   prev: FreehandObject[],
   sp: Map<string, Set<number>>,
@@ -5611,6 +5675,47 @@ function splitBezierSegment(pts: BezierPoint[], segIdx: number, t: number): Bezi
   newPts[j] = { ...newPts[j], handleIn: c };
   newPts.splice(segIdx + 1, 0, newPt);
   return newPts;
+}
+
+function collapseInHandle(pt: BezierPoint): BezierPoint {
+  return { ...pt, handleIn: { ...pt.anchor } };
+}
+
+function collapseOutHandle(pt: BezierPoint): BezierPoint {
+  return { ...pt, handleOut: { ...pt.anchor } };
+}
+
+/**
+ * Abre un trazado cerrado en `cutIdx` conservando toda la geometría:
+ * crea dos extremos coincidentes en el punto de corte (inicio/fin).
+ */
+function openClosedRingAtCutIndex(pts: BezierPoint[], cutIdx: number): BezierPoint[] {
+  if (pts.length < 2) return pts;
+  const n = pts.length;
+  const i = ((cutIdx % n) + n) % n;
+  const cut = pts[i]!;
+  const start = collapseInHandle(cut);
+  const end = collapseOutHandle(cut);
+  const orderedMiddle = [...pts.slice(i + 1), ...pts.slice(0, i)];
+  return [start, ...orderedMiddle, end];
+}
+
+/**
+ * Corta un trazado abierto en `cutIdx` (punto ya insertado):
+ * devuelve dos trazados abiertos con los manejadores de extremos colapsados.
+ */
+function splitOpenRingAtCutIndex(pts: BezierPoint[], cutIdx: number): { left: BezierPoint[]; right: BezierPoint[] } {
+  const leftRaw = pts.slice(0, cutIdx + 1);
+  const rightRaw = pts.slice(cutIdx);
+  const left =
+    leftRaw.length > 0
+      ? [...leftRaw.slice(0, -1), collapseOutHandle(leftRaw[leftRaw.length - 1]!)]
+      : leftRaw;
+  const right =
+    rightRaw.length > 0
+      ? [collapseInHandle(rightRaw[0]!), ...rightRaw.slice(1)]
+      : rightRaw;
+  return { left, right };
 }
 
 function lerp2(a: Point, b: Point, t: number): Point {
@@ -9111,6 +9216,10 @@ export function FreehandStudioCanvas({
   const prToolCursorBlockedRef = useRef(false);
 
   useEffect(() => {
+    if (activeTool === "scissors" && !designerMode) {
+      setActiveTool("select");
+      return;
+    }
     if (activeTool === "brush" && !studioCaps.toolBrush) {
       setActiveTool("select");
       return;
@@ -9132,7 +9241,7 @@ export function FreehandStudioCanvas({
     ) {
       setActiveTool("select");
     }
-  }, [activeTool, studioCaps]);
+  }, [activeTool, studioCaps, designerMode]);
 
   useEffect(() => {
     prToolCursorBlockedRef.current = false;
@@ -9246,6 +9355,44 @@ export function FreehandStudioCanvas({
   const [penPoints, setPenPoints] = useState<BezierPoint[]>([]);
   const [isPenDrawing, setIsPenDrawing] = useState(false);
   const [penDragging, setPenDragging] = useState(false);
+  const penClosePendingRef = useRef<{ objId: string; endpoint: "start" | "end" } | null>(null);
+  const [penCloseEndpointHover, setPenCloseEndpointHover] = useState<{
+    objId: string;
+    endpoint: "start" | "end";
+    point: Point;
+  } | null>(null);
+  const penCloseEndpointHoverRef = useRef<{
+    objId: string;
+    endpoint: "start" | "end";
+    point: Point;
+  } | null>(null);
+  const [scissorsCutHover, setScissorsCutHover] = useState<{
+    objId: string;
+    ringIdx: number;
+    segIdx: number;
+    t: number;
+    point: Point;
+  } | null>(null);
+  const scissorsCutHoverRef = useRef<{
+    objId: string;
+    ringIdx: number;
+    segIdx: number;
+    t: number;
+    point: Point;
+  } | null>(null);
+  useEffect(() => {
+    if (activeTool !== "pen") penClosePendingRef.current = null;
+  }, [activeTool]);
+  useEffect(() => {
+    if (activeTool !== "pen") {
+      penCloseEndpointHoverRef.current = null;
+      setPenCloseEndpointHover(null);
+    }
+    if (activeTool !== "scissors") {
+      scissorsCutHoverRef.current = null;
+      setScissorsCutHover(null);
+    }
+  }, [activeTool]);
   /** Posición en lienzo del cursor para la línea guía (tramo siguiente antes de clic; con Mayús puede estar snapada). */
   const [penHoverCanvas, setPenHoverCanvas] = useState<Point | null>(null);
   /** Posición cruda del cursor (para detectar cerca del primer punto aunque el snap aleje la guía). */
@@ -11582,12 +11729,24 @@ export function FreehandStudioCanvas({
     if (dragState) {
       setHoverCanvasId(null);
       setHoverCornerRadiusHandle(null);
+      penCloseEndpointHoverRef.current = null;
+      setPenCloseEndpointHover(null);
+      scissorsCutHoverRef.current = null;
+      setScissorsCutHover(null);
     }
   }, [dragState]);
 
   useEffect(() => {
     hoverCanvasIdRef.current = hoverCanvasId;
   }, [hoverCanvasId]);
+
+  useEffect(() => {
+    penCloseEndpointHoverRef.current = penCloseEndpointHover;
+  }, [penCloseEndpointHover]);
+
+  useEffect(() => {
+    scissorsCutHoverRef.current = scissorsCutHover;
+  }, [scissorsCutHover]);
 
   useEffect(() => {
     hoverCornerRadiusHandleRef.current = hoverCornerRadiusHandle;
@@ -12383,6 +12542,7 @@ export function FreehandStudioCanvas({
   // ── Pen finish ────────────────────────────────────────────────────
 
   const finishPenPath = useCallback((closed: boolean) => {
+    penClosePendingRef.current = null;
     setPenHoverCanvas(null);
     setPenHoverCanvasRaw(null);
     if (penPoints.length < 2) { setPenPoints([]); setIsPenDrawing(false); return; }
@@ -14347,6 +14507,126 @@ export function FreehandStudioCanvas({
     [pushHistory],
   );
 
+  const cutPathOnSegment = useCallback(
+    (objId: string, ringIdx: number, segIdx: number, t: number) => {
+      const sel = selectedIdsRef.current;
+      const safeT = clamp(t, 1 / 120, 1 - 1 / 120);
+      let didCut = false;
+      let blockedCompound = false;
+      let nextSelection: Set<string> | null = null;
+      let nextPrimaryId: string | null = null;
+
+      setObjects((prev) => {
+        const next: FreehandObject[] = [];
+        for (const o of prev) {
+          if (o.id !== objId || o.type !== "path") {
+            next.push(o);
+            continue;
+          }
+
+          const p = o as PathObject;
+          const rings = getPathRings(p);
+          if (rings.length !== 1 || ringIdx !== 0) {
+            blockedCompound = true;
+            next.push(o);
+            continue;
+          }
+          const ring = rings[0]!;
+          if (!ring || ring.length < 2) {
+            next.push(o);
+            continue;
+          }
+          const segCount = p.closed ? ring.length : ring.length - 1;
+          if (segCount < 1) {
+            next.push(o);
+            continue;
+          }
+          if (segIdx < 0 || segIdx >= segCount) {
+            next.push(o);
+            continue;
+          }
+          const seg = segIdx;
+          const splitRing = splitBezierSegment(ring, seg, safeT);
+          const cutIdx = seg + 1;
+
+          if (p.closed) {
+            const opened = openClosedRingAtCutIndex(splitRing, cutIdx);
+            const pb = getPathBoundsFromPoints(opened);
+            const nextPath: PathObject = {
+              ...p,
+              points: opened,
+              contourStarts: undefined,
+              closed: false,
+              fill: solidFill("none"),
+              x: pb.x,
+              y: pb.y,
+              width: pb.w,
+              height: pb.h,
+            };
+            next.push(nextPath);
+            didCut = true;
+            nextSelection = new Set([nextPath.id]);
+            nextPrimaryId = nextPath.id;
+            continue;
+          }
+
+          const { left, right } = splitOpenRingAtCutIndex(splitRing, cutIdx);
+          if (left.length < 2 || right.length < 2) {
+            next.push(o);
+            continue;
+          }
+          const pbL = getPathBoundsFromPoints(left);
+          const pbR = getPathBoundsFromPoints(right);
+          const rightId = uid();
+          const leftPath: PathObject = {
+            ...p,
+            points: left,
+            contourStarts: undefined,
+            closed: false,
+            fill: solidFill("none"),
+            strokeMarkerEnd: "none",
+            x: pbL.x,
+            y: pbL.y,
+            width: pbL.w,
+            height: pbL.h,
+          };
+          const rightPath: PathObject = {
+            ...p,
+            id: rightId,
+            name: p.name ? `${p.name} (2)` : p.name,
+            points: right,
+            contourStarts: undefined,
+            closed: false,
+            fill: solidFill("none"),
+            strokeMarkerStart: "none",
+            x: pbR.x,
+            y: pbR.y,
+            width: pbR.w,
+            height: pbR.h,
+          };
+          next.push(leftPath, rightPath);
+          didCut = true;
+          nextSelection = new Set([leftPath.id, rightPath.id]);
+          nextPrimaryId = leftPath.id;
+        }
+
+        if (!didCut) return prev;
+        pushHistory(next, sel);
+        return next;
+      });
+
+      if (blockedCompound) {
+        setToast("Tijeras: aún no disponible en trazados compuestos.");
+        window.setTimeout(() => setToast(null), 2400);
+      }
+      if (!didCut || !nextSelection || nextSelection.size === 0) return;
+      setSelectedPoints(new Map());
+      setSelectedIds(nextSelection);
+      setPrimarySelectedId(nextPrimaryId);
+    },
+    [pushHistory],
+  );
+
   const addMidAnchorToSelectedPath = useCallback(() => {
     const sel = selectedIdsRef.current;
     if (sel.size !== 1) return;
@@ -14380,6 +14660,32 @@ export function FreehandStudioCanvas({
       return next;
     });
   }, [pushHistory]);
+
+  const closeOpenPathWithPen = useCallback((objId: string) => {
+    const sel = selectedIdsRef.current;
+    let didClose = false;
+    setObjects((prev) => {
+      const next = prev.map((o) => {
+        if (o.id !== objId || o.type !== "path") return o;
+        const p = o as PathObject;
+        if (p.closed || !p.points || p.points.length < 2) return o;
+        if (p.contourStarts && p.contourStarts.length > 1) return o;
+        didClose = true;
+        return { ...p, closed: true };
+      });
+      if (!didClose) return prev;
+      pushHistory(next, sel);
+      return next;
+    });
+    if (!didClose) {
+      setToast("No se pudo cerrar el trazado.");
+      window.setTimeout(() => setToast(null), 2200);
+      return;
+    }
+    setSelectedPoints(new Map());
+    setSelectedIds(new Set([objId]));
+    setPrimarySelectedId(objId);
+  }, [pushHistory, setToast]);
 
   const cycleVertexMode = useCallback((objId: string, ptIdx: number) => {
     const sel = selectedIdsRef.current;
@@ -15065,6 +15371,11 @@ export function FreehandStudioCanvas({
         if (!e.repeat) shapeShortcutKeyDownAtRef.current.KeyT = Date.now();
         return;
       }
+      if ((e.key === "c" || e.key === "C") && e.shiftKey && !e.metaKey && !e.ctrlKey && designerMode) {
+        e.preventDefault();
+        setActiveTool("scissors");
+        return;
+      }
       // C = marco de texto encadenado (Designer); si no Designer, elipse
       if ((e.key === "c" || e.key === "C") && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
@@ -15417,6 +15728,7 @@ export function FreehandStudioCanvas({
           return;
         }
         setQuickEditMode(null);
+        if (activeToolRef.current === "pen") penClosePendingRef.current = null;
         if (isPenDrawing && penPoints.length > 0) finishPenPath(false);
         else if (isolationStackRef.current.length > 0) exitIsolation();
         else {
@@ -16217,6 +16529,31 @@ export function FreehandStudioCanvas({
     if (activeTool === "pen") {
       ensureVisibleDrawStroke();
       if (e.button === 0) e.preventDefault();
+
+      if (!isPenDrawing) {
+        const endpointHit = findTopOpenPathEndpointHitForPen(pos, 10 / viewport.zoom, objects);
+        if (endpointHit) {
+          const pending = penClosePendingRef.current;
+          if (
+            pending &&
+            pending.objId === endpointHit.objId &&
+            pending.endpoint !== endpointHit.endpoint
+          ) {
+            penClosePendingRef.current = null;
+            closeOpenPathWithPen(endpointHit.objId);
+            return;
+          }
+          penClosePendingRef.current = endpointHit;
+          setSelectedPoints(new Map());
+          setSelectedIds(new Set([endpointHit.objId]));
+          setPrimarySelectedId(endpointHit.objId);
+          return;
+        }
+        penClosePendingRef.current = null;
+      } else {
+        penClosePendingRef.current = null;
+      }
+
       let anchorPos = pos;
       if (isPenDrawing && penPoints.length >= 1 && isShiftHeld(e)) {
         anchorPos = snapCanvasPointTo45From(penPoints[penPoints.length - 1]!.anchor, pos);
@@ -16264,6 +16601,17 @@ export function FreehandStudioCanvas({
     }
     if (activeTool === "imageFrame") {
       setDragState({ type: "createImageFrame", startX: e.clientX, startY: e.clientY, createOrigin: pos, currentCanvas: pos });
+      return;
+    }
+
+    // ── Scissors tool (Designer): cut path segments ─────────────────
+    if (activeTool === "scissors") {
+      const hit = findTopScissorsCutHover(pos, 8 / viewport.zoom, objects);
+      if (hit) {
+        scissorsCutHoverRef.current = null;
+        setScissorsCutHover(null);
+        cutPathOnSegment(hit.objId, hit.ringIdx, hit.segIdx, hit.t);
+      }
       return;
     }
 
@@ -16923,7 +17271,7 @@ export function FreehandStudioCanvas({
     }
     setDragState({ type: "marquee", startX: e.clientX, startY: e.clientY, marqueeOrigin: pos, currentCanvas: pos, shiftKey: extendSel });
   }, [activeTool, viewport, spaceHeld, objects, artboards, selectedIds, selectedObjects, groupBounds, selectionFrame,
-      screenToCanvas, isPenDrawing, penPoints, finishPenPath, resolveSelection, addPointOnSegment, pushHistory,
+      screenToCanvas, isPenDrawing, penPoints, finishPenPath, resolveSelection, addPointOnSegment, cutPathOnSegment, closeOpenPathWithPen, pushHistory,
       layoutGuides, showLayoutGuides, designerMode, imageFrameContentEditId, setupGuideWindowListeners,
       isClipContentIsolation, clipContentEditId, isPhotoRoomStudioEmbed, photoRectMarqueeSelection,
       photoPolygonMarqueeSelection, photoEllipseMarqueeSelection,
@@ -17521,6 +17869,45 @@ export function FreehandStudioCanvas({
     }
     if (!dragState) {
       const pos = screenToCanvas(e.clientX, e.clientY);
+      if (activeTool === "pen" && !isPenDrawing) {
+        const hit = findTopOpenPathEndpointHitForPen(pos, 10 / viewport.zoom, objects);
+        const nextHover = hit
+          ? { objId: hit.objId, endpoint: hit.endpoint, point: hit.point }
+          : null;
+        const cur = penCloseEndpointHoverRef.current;
+        const same =
+          (!!cur && !!nextHover && cur.objId === nextHover.objId && cur.endpoint === nextHover.endpoint) ||
+          (!cur && !nextHover);
+        if (!same) {
+          penCloseEndpointHoverRef.current = nextHover;
+          setPenCloseEndpointHover(nextHover);
+        }
+      } else if (penCloseEndpointHoverRef.current != null) {
+        penCloseEndpointHoverRef.current = null;
+        setPenCloseEndpointHover(null);
+      }
+      if (activeTool === "scissors") {
+        const hit = findTopScissorsCutHover(pos, 8 / viewport.zoom, objects);
+        const nextHover = hit
+          ? { objId: hit.objId, ringIdx: hit.ringIdx, segIdx: hit.segIdx, t: hit.t, point: hit.point }
+          : null;
+        const cur = scissorsCutHoverRef.current;
+        const same =
+          (!!cur &&
+            !!nextHover &&
+            cur.objId === nextHover.objId &&
+            cur.ringIdx === nextHover.ringIdx &&
+            cur.segIdx === nextHover.segIdx &&
+            Math.abs(cur.t - nextHover.t) < 1e-6) ||
+          (!cur && !nextHover);
+        if (!same) {
+          scissorsCutHoverRef.current = nextHover;
+          setScissorsCutHover(nextHover);
+        }
+      } else if (scissorsCutHoverRef.current != null) {
+        scissorsCutHoverRef.current = null;
+        setScissorsCutHover(null);
+      }
       if (activeTool === "select" || activeTool === "directSelect") {
         const threshold = 8 / viewport.zoom;
         let found: string | null = null;
@@ -19421,6 +19808,7 @@ export function FreehandStudioCanvas({
     }
     if (
       activeTool === "pen" ||
+      activeTool === "scissors" ||
       activeTool === "brush" ||
       activeTool === "cloneStamp" ||
       activeTool === "photoGradient" ||
@@ -19688,6 +20076,7 @@ export function FreehandStudioCanvas({
   // ═══════════════════════════════════════════════════════════════════
 
   const primaryPenTool = toolFlyoutPrimary["tf-pen"];
+  const primaryPenToolSafe = !designerMode && primaryPenTool === "scissors" ? "directSelect" : primaryPenTool;
   const primaryShapeTool = toolFlyoutPrimary["tf-shape"];
   const primaryPhotoMarqueeTool = toolFlyoutPrimary["tf-photo-marquee"];
   const primaryTextTool = toolFlyoutPrimary["tf-text"];
@@ -20044,12 +20433,20 @@ export function FreehandStudioCanvas({
           groupId="tf-pen"
           flyoutOpen={leftToolbarToolFlyout}
           setFlyoutOpen={setLeftToolbarToolFlyout}
-          active={activeTool === "directSelect" || activeTool === "pen"}
-          mainTitle={primaryPenTool === "pen" ? "Pluma (⇧P)" : "Selección directa (A)"}
-          onMainClick={() => setActiveTool(primaryPenTool)}
+          active={activeTool === "directSelect" || activeTool === "pen" || activeTool === "scissors"}
+          mainTitle={
+            primaryPenToolSafe === "pen"
+              ? "Pluma (⇧P)"
+              : primaryPenToolSafe === "scissors"
+                ? "Tijeras (⇧C)"
+                : "Selección directa (A)"
+          }
+          onMainClick={() => setActiveTool(primaryPenToolSafe)}
           mainIcon={
-            primaryPenTool === "pen" ? (
+            primaryPenToolSafe === "pen" ? (
               <PenTool size={19} strokeWidth={TOOLBAR_ICON_STROKE} />
+            ) : primaryPenToolSafe === "scissors" ? (
+              <Scissors size={19} strokeWidth={TOOLBAR_ICON_STROKE} />
             ) : (
               <MousePointer2 size={19} strokeWidth={TOOLBAR_ICON_STROKE} className="opacity-60" />
             )
@@ -20081,6 +20478,21 @@ export function FreehandStudioCanvas({
           >
             <PenTool size={17} strokeWidth={TOOLBAR_ICON_STROKE} />
           </button>
+          {designerMode && (
+            <button
+              type="button"
+              title="Tijeras (⇧C)"
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] transition ${
+                activeTool === "scissors" ? "bg-white/[0.15] text-white" : "text-zinc-500 hover:bg-white/[0.08] hover:text-white"
+              }`}
+              onClick={() => {
+                setActiveTool("scissors");
+                setLeftToolbarToolFlyout(null);
+              }}
+            >
+              <Scissors size={17} strokeWidth={TOOLBAR_ICON_STROKE} />
+            </button>
+          )}
         </ToolFlyoutGroup>
 
         <ToolFlyoutGroup
@@ -20588,6 +21000,10 @@ export function FreehandStudioCanvas({
         onMouseUp={handleMouseUp}
         onMouseLeave={() => {
           setHoverCanvasId(null);
+          penCloseEndpointHoverRef.current = null;
+          setPenCloseEndpointHover(null);
+          scissorsCutHoverRef.current = null;
+          setScissorsCutHover(null);
           prToolCursorBlockedRef.current = false;
           setPrToolCursorBlocked(false);
           cancelBrushCursorOverlayRaf();
@@ -21231,6 +21647,58 @@ export function FreehandStudioCanvas({
                   pointerEvents="none" data-ui="hover-outline" />
               );
             })()}
+
+            {/* Pen: hover hint on open-path endpoints (Illustrator-like close workflow) */}
+            {activeTool === "pen" && !isPenDrawing && penCloseEndpointHover && (() => {
+              const pending = penClosePendingRef.current;
+              const isPending =
+                !!pending &&
+                pending.objId === penCloseEndpointHover.objId &&
+                pending.endpoint === penCloseEndpointHover.endpoint;
+              const p = penCloseEndpointHover.point;
+              return (
+                <g pointerEvents="none" data-ui="pen-open-endpoint-hover">
+                  <circle
+                    cx={p.x}
+                    cy={p.y}
+                    r={(isPending ? 9 : 8) / viewport.zoom}
+                    fill={isPending ? "rgba(34,197,94,0.05)" : "rgba(99,102,241,0.05)"}
+                    stroke={isPending ? "rgba(34,197,94,0.46)" : "rgba(99,102,241,0.5)"}
+                    strokeWidth={1 / viewport.zoom}
+                  />
+                  <circle
+                    cx={p.x}
+                    cy={p.y}
+                    r={3.2 / viewport.zoom}
+                    fill={isPending ? "#22c55e" : "#6366f1"}
+                    stroke="#ffffff"
+                    strokeWidth={1.2 / viewport.zoom}
+                  />
+                </g>
+              );
+            })()}
+
+            {/* Scissors: hover hint on cut point before click */}
+            {activeTool === "scissors" && scissorsCutHover && (
+              <g pointerEvents="none" data-ui="scissors-cut-hover">
+                <circle
+                  cx={scissorsCutHover.point.x}
+                  cy={scissorsCutHover.point.y}
+                  r={8 / viewport.zoom}
+                  fill="rgba(99,102,241,0.05)"
+                  stroke="rgba(99,102,241,0.5)"
+                  strokeWidth={1 / viewport.zoom}
+                />
+                <circle
+                  cx={scissorsCutHover.point.x}
+                  cy={scissorsCutHover.point.y}
+                  r={3.2 / viewport.zoom}
+                  fill="#6366f1"
+                  stroke="#ffffff"
+                  strokeWidth={1.2 / viewport.zoom}
+                />
+              </g>
+            )}
 
             {/* Pen WIP */}
             {isPenDrawing && penPoints.length > 0 && (
