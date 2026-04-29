@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element */
+
 import React, { memo, useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef, type ComponentProps } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { Position, NodeProps, BaseEdge, EdgeLabelRenderer, getBezierPath, EdgeProps, useReactFlow, useUpdateNodeInternals, useNodes, useEdges, NodeResizer, useNodeId, type Node } from '@xyflow/react';
@@ -29,17 +31,13 @@ import {
   Paintbrush,
   ChevronLeft,
   ChevronRight,
-  ChevronUp,
   ChevronDown,
   Plus,
   Sparkles,
   Eraser,
   Crop,
-  Check,
   Pencil,
-  Square,
   Trash2,
-  EyeOff,
   Camera,
   Upload,
   BookOpen,
@@ -83,19 +81,6 @@ function captureCurrentOutput(
   };
   if (typeof data.s3Key === "string") entry.s3Key = data.s3Key;
   return [...prev, entry];
-}
-
-/** Solid color as 1×1 PNG data URL so downstream nodes can read `data.value` like other image outputs. */
-function solidColorToPngDataUrl(hex: string): string {
-  if (typeof document === "undefined") return "";
-  const canvas = document.createElement("canvas");
-  canvas.width = 1;
-  canvas.height = 1;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return "";
-  ctx.fillStyle = hex;
-  ctx.fillRect(0, 0, 1, 1);
-  return canvas.toDataURL("image/png");
 }
 
 import './spaces.css';
@@ -185,35 +170,77 @@ interface BaseNodeData {
   uploadError?: string;
 }
 
-/** Same affordance as the old OUTPUT card — opens the fixed viewer for this node's media. */
-function ViewerOpenButton({ nodeId, disabled, className }: { nodeId: string; disabled?: boolean; className?: string }) {
-  return (
-    <button
-      type="button"
-      title="Open viewer"
-      disabled={disabled}
-      onClick={(e) => {
-        e.stopPropagation();
-        window.dispatchEvent(new CustomEvent('open-viewer-for-node', { detail: { nodeId } }));
-      }}
-      className={`nodrag flex shrink-0 items-center justify-center rounded-md cursor-pointer transition-colors ${className ?? ''}`}
-      style={{
-        padding: 3,
-        borderRadius: 6,
-        background: 'rgba(255,255,255,0.12)',
-        border: '1px solid rgba(255,255,255,0.28)',
-        color: '#fff',
-        textShadow: '0 1px 2px rgba(0,0,0,0.45)',
-        filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.35))',
-        opacity: disabled ? 0.35 : 1,
-        pointerEvents: disabled ? 'none' : 'auto',
-      }}
-    >
-      <Maximize2 size={9} />
-    </button>
-  );
+type BackgroundRemoverNodeData = BaseNodeData & {
+  expansion?: number;
+  feather?: number;
+  threshold?: number;
+  result_rgba?: string;
+  result_mask?: string;
+  bbox?: number[];
+};
+
+type MattePreviewMode = 'original' | 'mask' | 'cutout';
+
+type CropRect = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+function createNodeFrameSnapshot(
+  node: Pick<Node, "width" | "height" | "measured" | "style"> | undefined,
+): Pick<Node, "width" | "height" | "measured" | "style"> | undefined {
+  if (!node) return undefined;
+  return {
+    width: node.width,
+    height: node.height,
+    measured: node.measured
+      ? {
+          width: node.measured.width,
+          height: node.measured.height,
+        }
+      : undefined,
+    style: node.style
+      ? {
+          width: node.style.width,
+          height: node.style.height,
+        }
+      : undefined,
+  };
 }
 
+function useCurrentNodeFrameSnapshot(node: Node | undefined): Pick<Node, "width" | "height" | "measured" | "style"> | undefined {
+  const width = node?.width;
+  const height = node?.height;
+  const measuredWidth = node?.measured?.width;
+  const measuredHeight = node?.measured?.height;
+  const styleWidth = node?.style?.width;
+  const styleHeight = node?.style?.height;
+
+  return useMemo(() => {
+    const hasFrame =
+      width !== undefined ||
+      height !== undefined ||
+      measuredWidth !== undefined ||
+      measuredHeight !== undefined ||
+      styleWidth !== undefined ||
+      styleHeight !== undefined;
+    if (!hasFrame) return undefined;
+    return createNodeFrameSnapshot({
+      width,
+      height,
+      measured:
+        measuredWidth !== undefined || measuredHeight !== undefined
+          ? { width: measuredWidth, height: measuredHeight }
+          : undefined,
+      style:
+        styleWidth !== undefined || styleHeight !== undefined
+          ? { width: styleWidth, height: styleHeight }
+          : undefined,
+    });
+  }, [height, measuredHeight, measuredWidth, styleHeight, styleWidth, width]);
+}
 
 /** Media Input: mismo patrón que Studio Mode — hover sobre el preview para elegir otro archivo (misma lógica que upload inicial). */
 function MediaInputChangeMediaButton({
@@ -247,32 +274,6 @@ function MediaInputChangeMediaButton({
       </div>
     </div>
   );
-}
-
-interface ComposerLayer {
-  id: string;
-  type: 'image' | 'color' | 'rect' | 'circle' | 'gradient' | 'text' | 'paint';
-  label: string;
-  x: number; y: number; w: number; h: number;
-  opacity: number;
-  visible: boolean;
-  locked: boolean;
-  // type-specific
-  src?: string;          // image
-  color?: string;        // color layer
-  fill?: string;         // rect / circle fill
-  radius?: number;       // rect corner radius
-  // gradient
-  gradientFrom?: string;
-  gradientTo?: string;
-  gradientAngle?: number; // degrees
-  text?: string;
-  fontSize?: number;
-  fontColor?: string;
-  // paint layer
-  paintData?: string;      // dataURL of drawn canvas, transparent bg
-  paintBrushSize?: number; // px
-  paintColor?: string;     // hex
 }
 
 export const ButtonEdge = ({
@@ -367,98 +368,7 @@ function FoldderNodeResizer(props: ComponentProps<typeof NodeResizer>) {
 
 // --- CORE INPUT NODES ---
 
-export const BackgroundNode = memo(({ id, data, selected }: NodeProps<any>) => {
-  const nodeData = data as BaseNodeData & { width?: number, height?: number, color?: string };
-  const { setNodes } = useReactFlow();
-
-  const updateData = (key: string, val: any) => {
-    setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n));
-  };
-
-  const w = nodeData.width ?? 1920;
-  const h = nodeData.height ?? 1080;
-  const color = nodeData.color ?? '#000000';
-
-  useEffect(() => {
-    const url = solidColorToPngDataUrl(color);
-    if (!url) return;
-    setNodes((nds: any) =>
-      nds.map((n: any) => {
-        if (n.id !== id) return n;
-        if (n.data?.value === url) return n;
-        return { ...n, data: { ...n.data, value: url, type: "image" } };
-      }),
-    );
-  }, [color, id, setNodes]);
-
-  return (
-    <div className={`custom-node background-node` }>
-            <FoldderNodeResizer minWidth={280} minHeight={200} isVisible={selected} />
-<NodeLabel id={id} label={nodeData.label} defaultLabel="Background" />
-      <div className="node-header">
-        <NodeIcon type="background" selected={selected} size={16} />
-        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
-          CANVAS
-        </FoldderNodeHeaderTitle>
-      </div>
-      <div className="node-content">
-        <div className="grid grid-cols-2 gap-4 mb-4">
-          <div>
-            <label className="node-label">Width (px)</label>
-            <input 
-              type="number" 
-              className="node-input" 
-              value={w}
-              onChange={(e) => updateData('width', parseInt(e.target.value))}
-              onContextMenu={(e) => e.stopPropagation()}
-            />
-          </div>
-          <div>
-            <label className="node-label">Height (px)</label>
-            <input 
-              type="number" 
-              className="node-input" 
-              value={h}
-              onChange={(e) => updateData('height', parseInt(e.target.value))}
-              onContextMenu={(e) => e.stopPropagation()}
-            />
-          </div>
-        </div>
-
-        <div>
-          <label className="node-label">Background Color</label>
-          <div className="flex gap-3 items-center bg-slate-50/50 p-3 rounded-xl border border-slate-200/60">
-            <input 
-              type="color" 
-              className="w-10 h-10 rounded-lg cursor-pointer bg-transparent border-none"
-              value={color}
-              onChange={(e) => updateData('color', e.target.value)}
-              onContextMenu={(e) => e.stopPropagation()}
-            />
-            <input 
-              type="text" 
-              className="flex-1 bg-transparent border-none text-[10px] font-mono text-gray-300 uppercase focus:outline-none"
-              value={color}
-              onChange={(e) => updateData('color', e.target.value)}
-              onContextMenu={(e) => e.stopPropagation()}
-            />
-          </div>
-        </div>
-
-        <div className="mt-4 p-3 bg-white/5 rounded-xl border border-slate-200/60 flex flex-col items-center justify-center min-h-[100px]" style={{ backgroundColor: color + '44' }}>
-          <div className="w-20 h-12 border border-white/20 rounded shadow-lg" style={{ backgroundColor: color }}></div>
-          <span className="text-[8px] font-black text-gray-500 uppercase mt-2">{w}x{h} ASPECT</span>
-        </div>
-      </div>
-      <div className="handle-wrapper handle-right">
-        <span className="handle-label">Image out</span>
-        <FoldderDataHandle type="source" position={Position.Right} id="image" dataType="image" />
-      </div>
-    </div>
-  );
-});
-
-export const UrlImageNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const UrlImageNode = memo(function UrlImageNode({ id, data, selected }: NodeProps) {
   const nodeData = data as BaseNodeData & { 
     urls?: string[], 
     selectedIndex?: number,
@@ -495,7 +405,7 @@ export const UrlImageNode = memo(({ id, data, selected }: NodeProps<any>) => {
         });
         const json = await res.json();
         if (json.urls && json.urls.length > 0) {
-          setNodes((nds: any) => nds.map((n: any) => n.id === id ? {
+          setNodes((nds) => nds.map((n) => n.id === id ? {
             ...n,
             data: {
               ...n.data,
@@ -508,21 +418,21 @@ export const UrlImageNode = memo(({ id, data, selected }: NodeProps<any>) => {
             },
           } : n));
         } else {
-          setNodes((nds: any) => nds.map((n: any) => n.id === id ? {
+          setNodes((nds) => nds.map((n) => n.id === id ? {
             ...n,
             data: { ...n.data, pendingSearch: false },
           } : n));
         }
       });
       if (!ok) {
-        setNodes((nds: any) => nds.map((n: any) => n.id === id ? {
+        setNodes((nds) => nds.map((n) => n.id === id ? {
           ...n,
           data: { ...n.data, pendingSearch: false },
         } : n));
       }
     } catch (err) {
       console.error('Search failed:', err);
-      setNodes((nds: any) => nds.map((n: any) => n.id === id ? {
+      setNodes((nds) => nds.map((n) => n.id === id ? {
         ...n,
         data: { ...n.data, pendingSearch: false },
       } : n));
@@ -539,8 +449,8 @@ export const UrlImageNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   useRegisterAssistantNodeRun(id, runCarouselSearch);
 
-  const updateData = (updates: any) => {
-    setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, ...updates } } : n));
+  const updateData = (updates: Record<string, unknown>) => {
+    setNodes((nds) => nds.map((n) => n.id === id ? { ...n, data: { ...n.data, ...updates } } : n));
   };
 
   const next = () => {
@@ -565,7 +475,6 @@ export const UrlImageNode = memo(({ id, data, selected }: NodeProps<any>) => {
           CAROUSEL
         </FoldderNodeHeaderTitle>
         {loading && <Loader2 size={12} className="animate-spin shrink-0" />}
-        <ViewerOpenButton nodeId={id} disabled={!currentUrl} className="ml-auto" />
       </div>
       <div className="node-content">
         <div className="relative w-full aspect-video bg-slate-50 rounded-xl overflow-hidden border border-white/10 group mb-3 shadow-inner">
@@ -638,7 +547,7 @@ export const UrlImageNode = memo(({ id, data, selected }: NodeProps<any>) => {
                       onClick={() => updateData({ selectedIndex: i, value: url, type: 'image' })}
                       className={`flex-shrink-0 w-12 h-12 rounded-lg border transition-all cursor-pointer overflow-hidden ${i === selectedIndex ? 'border-cyan-500 ring-2 ring-cyan-500/20' : 'border-white/10 opacity-50 hover:opacity-100'}`}
                     >
-                      {url ? <img src={url} className="w-full h-full object-cover" /> : <div className="w-full h-full bg-white/5 flex items-center justify-center"><Link size={10} /></div>}
+                      {url ? <img src={url} alt="" className="w-full h-full object-cover" /> : <div className="w-full h-full bg-white/5 flex items-center justify-center"><Link size={10} /></div>}
                     </div>
                   ))}
                 </div>
@@ -656,7 +565,7 @@ export const UrlImageNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
 type PinterestPin = { id: string; imageUrl: string; title?: string };
 
-export const PinterestSearchNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const PinterestSearchNode = memo(function PinterestSearchNode({ id, data, selected }: NodeProps) {
   const nodeData = data as BaseNodeData & {
     pins?: PinterestPin[];
     selectedIndex?: number;
@@ -683,8 +592,8 @@ export const PinterestSearchNode = memo(({ id, data, selected }: NodeProps<any>)
 
   const updateData = useCallback(
     (updates: Record<string, unknown>) => {
-      setNodes((nds: any) =>
-        nds.map((n: any) => (n.id === id ? { ...n, data: { ...n.data, ...updates } } : n))
+      setNodes((nds) =>
+        nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...updates } } : n))
       );
     },
     [id, setNodes]
@@ -774,7 +683,6 @@ export const PinterestSearchNode = memo(({ id, data, selected }: NodeProps<any>)
           PINTEREST
         </FoldderNodeHeaderTitle>
         {loading && <Loader2 size={12} className="animate-spin shrink-0" />}
-        <ViewerOpenButton nodeId={id} disabled={!currentUrl} className="ml-auto" />
       </div>
       <div className="node-content">
         <div className="mb-2 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-2">
@@ -844,1185 +752,12 @@ export const PinterestSearchNode = memo(({ id, data, selected }: NodeProps<any>)
   );
 });
 
-// --- IMAGE COMPOSER NODE ---
-/** Lienzo fijo del compositor; la caja por defecto de cada imagen conectada cubre todo el artboard (object-contain). Antes 960×540 dejaba la imagen pequeña en una esquina. */
-const COMPOSER_ARTBOARD_W = 1920;
-const COMPOSER_ARTBOARD_H = 1080;
-
-export const ImageComposerNode = memo(({ id, data, selected }: NodeProps<any>) => {
-  const nodes = useNodes();
-  const edges = useEdges();
-  const { setNodes } = useReactFlow();
-  const updateNodeInternals = useUpdateNodeInternals();
-  const currentNode = nodes.find((node) => node.id === id);
-  const frameRef = useRef<HTMLDivElement | null>(null);
-  const previewRef = useRef<HTMLDivElement | null>(null);
-
-  const nodeData = data as BaseNodeData & {
-    layers?: ComposerLayer[];          // internal layers (rects, colors, texts)
-    legacyLayersConfig?: Record<string, any>;
-    selectedLayerId?: string | null;
-    value?: string;
-  };
-
-  const [isStudioOpen, setIsStudioOpen] = useState(false);
-
-  useEffect(() => {
-    if (isStudioOpen) document.body.classList.add('nb-studio-open');
-    else document.body.classList.remove('nb-studio-open');
-    return () => document.body.classList.remove('nb-studio-open');
-  }, [isStudioOpen]);
-
-  // ── Internal layers stored in node data ──────────────────────────────
-  const internalLayers: ComposerLayer[] = nodeData.layers ?? [];
-
-  const updateNodeLayers = useCallback((updater: (prev: ComposerLayer[]) => ComposerLayer[]) => {
-    setNodes((nds: any) => nds.map((n: any) => {
-      if (n.id !== id) return n;
-      const newLayers = updater(n.data.layers ?? []);
-      return { ...n, data: { ...n.data, layers: newLayers } };
-    }));
-  }, [id, setNodes]);
-
-  const updateData = useCallback((updates: any) => {
-    setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, ...updates } } : n));
-  }, [id, setNodes]);
-
-  // ── Input image handles (from connected nodes) ───────────────────────
-  const connectedInputs = useMemo(() =>
-    edges.filter((e: any) => e.target === id)
-      .sort((a: any, b: any) => (a.targetHandle || '').localeCompare(b.targetHandle || '')),
-    [edges, id]
-  );
-
-  const imageLayersFromInputs = useMemo(() => {
-    return connectedInputs.map(edge => {
-      const srcNode = nodes.find(n => n.id === edge.source);
-      const hId = edge.targetHandle || 'slot-0';
-      const srcHandle = (edge as any).sourceHandle;
-      const value = srcHandle
-        ? (srcNode?.data[srcHandle] || srcNode?.data[`result_${srcHandle}`] || srcNode?.data.value)
-        : srcNode?.data.value;
-      const layerCfg = internalLayers.find(l => l.id === hId);
-      return {
-        id: hId,
-        edgeId: edge.id,
-        type: 'image' as const,
-        src: value as string | undefined,
-        color: srcNode?.data.color as string | undefined,
-        x: layerCfg?.x ?? 0,
-        y: layerCfg?.y ?? 0,
-        w: layerCfg?.w ?? COMPOSER_ARTBOARD_W,
-        h: layerCfg?.h ?? COMPOSER_ARTBOARD_H,
-        opacity: layerCfg?.opacity ?? 1,
-        visible: layerCfg?.visible !== false,
-        locked: layerCfg?.locked ?? false,
-        label: `Input ${connectedInputs.indexOf(edge) + 1}`,
-      };
-    }).filter(l => l.src || l.color);
-  }, [connectedInputs, nodes, internalLayers]);
-
-  const handleIds = useMemo(() => {
-    const ids = connectedInputs.map((e: any) => e.targetHandle || 'slot-0');
-    const lastNum = ids.length > 0 ? parseInt(ids[ids.length - 1].replace('slot-', '')) : -1;
-    return [...new Set([...ids, `slot-${lastNum + 1}`])];
-  }, [connectedInputs]);
-
-  useEffect(() => {
-    updateNodeInternals(id);
-  }, [id, handleIds.join(','), updateNodeInternals]);
-
-  useLayoutEffect(() => {
-    const chromeHeight = resolveNodeChromeHeight(frameRef.current, previewRef.current);
-    const nextFrame = resolveAspectLockedNodeFrame({
-      node: currentNode,
-      contentWidth: COMPOSER_ARTBOARD_W,
-      contentHeight: COMPOSER_ARTBOARD_H,
-      minWidth: 340,
-      maxWidth: 1600,
-      minHeight: 300,
-      maxHeight: STUDIO_NODE_MAX_HEIGHT,
-      chromeHeight,
-    });
-    if (!nodeFrameNeedsSync(currentNode, nextFrame)) return;
-    setNodes((nds: any) =>
-      nds.map((node: any) =>
-        node.id === id
-          ? {
-              ...node,
-              width: nextFrame.width,
-              height: nextFrame.height,
-              style: { ...node.style, width: nextFrame.width, height: nextFrame.height },
-            }
-          : node,
-      ),
-    );
-    requestAnimationFrame(() => updateNodeInternals(id));
-  }, [
-    currentNode?.width,
-    currentNode?.height,
-    currentNode?.measured?.width,
-    currentNode?.measured?.height,
-    id,
-    setNodes,
-    updateNodeInternals,
-  ]);
-
-  // All layers for rendering (internal first = bottom, image inputs on top)
-  const allLayersForRender = useMemo(() => {
-    // Build a map of live image layers by id for quick lookup
-    const imageMap = new Map(imageLayersFromInputs.map(il => [il.id, il]));
-    // Check if we have any saved order stubs / mixed array
-    const hasOrderInfo = internalLayers.some(l => (l as any)._orderStub || imageMap.has(l.id));
-
-    if (hasOrderInfo) {
-      // Reconstruct z-order from saved mixed array:
-      // replace image stubs with live image data, keep internal layers in place
-      const seen = new Set<string>();
-      const ordered = internalLayers
-        .map(l => {
-          if ((l as any)._orderStub || imageMap.has(l.id)) {
-            const live = imageMap.get(l.id);
-            if (!live || seen.has(l.id)) return null;
-            seen.add(l.id);
-            return { ...live, visible: l.visible !== false ? live.visible : false };
-          }
-          return l; // internal layer — keep as-is
-        })
-        .filter((l): l is ComposerLayer => l !== null && l.visible !== false);
-
-      // Append any live image inputs not yet in the saved order (new connections)
-      imageLayersFromInputs.forEach(il => {
-        if (!seen.has(il.id) && il.visible !== false) ordered.push(il);
-      });
-      return ordered;
-    }
-
-    // Fallback (no saved order yet): internal bottom, images on top
-    const int = internalLayers.filter(l => l.visible !== false);
-    const img = imageLayersFromInputs.filter(l => l.visible !== false);
-    return [...int, ...img];
-  }, [internalLayers, imageLayersFromInputs]);
-
-  // ── Real-time flatten ─────────────────────────────────────────────────
-  useEffect(() => {
-    const render = async () => {
-      if (allLayersForRender.length === 0) return;
-      const canvas = document.createElement('canvas');
-      canvas.width = COMPOSER_ARTBOARD_W;
-      canvas.height = COMPOSER_ARTBOARD_H;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      ctx.clearRect(0, 0, COMPOSER_ARTBOARD_W, COMPOSER_ARTBOARD_H);
-
-      for (const layer of allLayersForRender) {
-        ctx.globalAlpha = layer.opacity ?? 1;
-        const lx = layer.x ?? 0, ly = layer.y ?? 0, lw = layer.w ?? COMPOSER_ARTBOARD_W, lh = layer.h ?? COMPOSER_ARTBOARD_H;
-        if (layer.type === 'color') {
-          ctx.fillStyle = (layer as any).color || '#000';
-          ctx.fillRect(lx, ly, lw, lh);
-        } else if (layer.type === 'gradient') {
-          const angle = ((layer as any).gradientAngle ?? 0) * (Math.PI / 180);
-          const cx2 = lx + lw / 2, cy2 = ly + lh / 2;
-          const len = Math.sqrt(lw * lw + lh * lh) / 2;
-          const grd = ctx.createLinearGradient(
-            cx2 - Math.cos(angle) * len, cy2 - Math.sin(angle) * len,
-            cx2 + Math.cos(angle) * len, cy2 + Math.sin(angle) * len,
-          );
-          grd.addColorStop(0, (layer as any).gradientFrom || '#1e293b');
-          grd.addColorStop(1, (layer as any).gradientTo || '#0f172a');
-          ctx.fillStyle = grd;
-          ctx.fillRect(lx, ly, lw, lh);
-        } else if (layer.type === 'rect') {
-          ctx.fillStyle = (layer as any).fill || '#ffffff';
-          const r = Math.min((layer as any).radius ?? 0, lw / 2, lh / 2);
-          if (r > 0) {
-            ctx.beginPath();
-            ctx.moveTo(lx + r, ly);
-            ctx.lineTo(lx + lw - r, ly);
-            ctx.quadraticCurveTo(lx + lw, ly, lx + lw, ly + r);
-            ctx.lineTo(lx + lw, ly + lh - r);
-            ctx.quadraticCurveTo(lx + lw, ly + lh, lx + lw - r, ly + lh);
-            ctx.lineTo(lx + r, ly + lh);
-            ctx.quadraticCurveTo(lx, ly + lh, lx, ly + lh - r);
-            ctx.lineTo(lx, ly + r);
-            ctx.quadraticCurveTo(lx, ly, lx + r, ly);
-            ctx.closePath();
-            ctx.fill();
-          } else {
-            ctx.fillRect(lx, ly, lw, lh);
-          }
-        } else if (layer.type === 'circle') {
-          ctx.fillStyle = (layer as any).fill || '#ffffff';
-          const rx2 = lw / 2, ry2 = lh / 2;
-          ctx.beginPath();
-          ctx.ellipse(lx + rx2, ly + ry2, rx2, ry2, 0, 0, Math.PI * 2);
-          ctx.fill();
-        } else if (layer.type === 'paint') {
-          const paintSrc = (layer as any).paintData;
-          if (paintSrc) {
-            try {
-              // Paint canvas is always 1920x1080, same as compositor — draw full-stretch (no distortion)
-              const img = await loadCanvasImage(paintSrc);
-              ctx.drawImage(img, lx, ly, lw, lh);
-            } catch (e) { console.warn('[Composer] paint layer load fail', e); }
-          }
-        } else if (layer.type === 'image') {
-          const imgSrc = (layer as any).src || (layer as any)._src;
-          if (imgSrc) {
-            try {
-              const img = await loadCanvasImage(imgSrc);
-              // object-contain: preserve aspect ratio, center in layer box
-              const natW = img.naturalWidth  || img.width;
-              const natH = img.naturalHeight || img.height;
-              const boxRatio = lw / lh;
-              const imgRatio = natW / natH;
-              let dw: number, dh: number, dx: number, dy: number;
-              if (imgRatio > boxRatio) {
-                dw = lw; dh = lw / imgRatio;
-                dx = lx; dy = ly + (lh - dh) / 2;
-              } else {
-                dh = lh; dw = lh * imgRatio;
-                dy = ly; dx = lx + (lw - dw) / 2;
-              }
-              ctx.drawImage(img, dx, dy, dw, dh);
-            } catch (e) { console.warn('[Composer] layer load fail', e); }
-          }
-        }
-        ctx.globalAlpha = 1;
-      }
-
-      const url = canvas.toDataURL('image/png', 0.9);
-      if (nodeData.value !== url) updateData({ value: url, type: 'image' });
-    };
-    const t = setTimeout(render, 350);
-    return () => clearTimeout(t);
-  }, [allLayersForRender]);
-
-  // ── Add internal layer helpers ────────────────────────────────────────
-  const addRect = () => updateNodeLayers(prev => [...prev, {
-    id: `rect-${Date.now()}`, type: 'rect', label: 'Rectangle',
-    x: 200, y: 200, w: 400, h: 200, fill: '#3b82f6', opacity: 1, visible: true, locked: false, radius: 0,
-  }]);
-
-  const addColor = () => updateNodeLayers(prev => [...prev, {
-    id: `color-${Date.now()}`, type: 'color', label: 'Solid Color',
-    x: 0, y: 0, w: 1920, h: 1080, color: '#1e293b', opacity: 1, visible: true, locked: false,
-  }]);
-
-  const deleteLayer = (layerId: string) => updateNodeLayers(prev => prev.filter(l => l.id !== layerId));
-  const toggleVisible = (layerId: string) => updateNodeLayers(prev =>
-    prev.map(l => l.id === layerId ? { ...l, visible: !l.visible } : l)
-  );
-  const moveLayerUp = (layerId: string) => updateNodeLayers(prev => {
-    const i = prev.findIndex(l => l.id === layerId);
-    if (i >= prev.length - 1) return prev;
-    const n = [...prev]; [n[i], n[i+1]] = [n[i+1], n[i]]; return n;
-  });
-  const moveLayerDown = (layerId: string) => updateNodeLayers(prev => {
-    const i = prev.findIndex(l => l.id === layerId);
-    if (i <= 0) return prev;
-    const n = [...prev]; [n[i], n[i-1]] = [n[i-1], n[i]]; return n;
-  });
-
-  const selectedId = nodeData.selectedLayerId;
-
-  return (
-    <div
-      className="custom-node composer-node min-w-0 max-w-full group/node"
-      style={{ minWidth: 340 }}
-      ref={frameRef}
-    >
-      <FoldderNodeResizer minWidth={340} minHeight={300} maxWidth={1600} maxHeight={STUDIO_NODE_MAX_HEIGHT} keepAspectRatio isVisible={selected} />
-      <NodeLabel id={id} label={nodeData.label} defaultLabel="Composer" />
-
-      {/* Input handles */}
-      {handleIds.map((hId: string, index: number) => (
-        <div
-          key={hId}
-          className="handle-wrapper handle-left"
-          style={{ top: `${((index + 1) / 9) * 100}%` }}
-        >
-          <FoldderDataHandle type="target" position={Position.Left} id={hId} dataType="image" />
-          <span className="handle-label">Layer {index + 1}</span>
-        </div>
-      ))}
-
-      {/* Header */}
-      <div className="node-header">
-        <NodeIcon type="imageComposer" selected={selected} size={16} />
-        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
-          Composer
-        </FoldderNodeHeaderTitle>
-        <div className="node-badge">{allLayersForRender.length} layers</div>
-      </div>
-
-      {/* Mini canvas preview — min-w-0: flex no usa el ancho intrínseco del dataURL 1920×1080 */}
-      <div ref={previewRef} className="relative flex min-h-[120px] min-w-0 w-full max-w-full flex-1 items-center justify-center overflow-hidden bg-[#080808]">
-        {nodeData.value ? (
-          <img
-            src={nodeData.value}
-            alt="composition"
-            className="max-h-full max-w-full object-contain"
-            style={{ width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '100%' }}
-          />
-        ) : (
-          <div className="flex h-full min-h-[120px] w-full flex-col items-center justify-center gap-2 opacity-20">
-            <Layers size={28} className="text-zinc-400" />
-            <span className="text-[7px] font-black uppercase tracking-widest text-zinc-500">Connect layers or add shapes</span>
-          </div>
-        )}
-        <FoldderStudioModeCenterButton onClick={() => setIsStudioOpen(true)} />
-      </div>
-
-      {/* Layer panel */}
-      <div className="px-3 pt-2 pb-1" style={{ flexShrink: 0 }}>
-        {/* Toolbar */}
-        <div className="flex items-center gap-1.5 mb-2">
-          <span className="text-[7px] font-black text-slate-500 uppercase tracking-widest flex-1">Layers</span>
-          <button onClick={addColor} className="nodrag text-[7px] font-black px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30 transition-colors flex items-center gap-0.5">
-            <span>+ Color</span>
-          </button>
-          <button onClick={addRect} className="nodrag text-[7px] font-black px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-500/30 transition-colors flex items-center gap-0.5">
-            <Square size={7} /> Rect
-          </button>
-        </div>
-
-        {/* Layer list — all layers combined */}
-        <div className="space-y-1 max-h-[120px] overflow-y-auto custom-scrollbar pr-0.5">
-          {/* Image input layers */}
-          {imageLayersFromInputs.slice().reverse().map((layer, idx) => {
-            const isSelected = selectedId === layer.id;
-            return (
-              <div
-                key={layer.id}
-                onClick={() => updateData({ selectedLayerId: layer.id })}
-                className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border cursor-pointer transition-all ${isSelected ? 'bg-cyan-500/10 border-cyan-500/30' : 'bg-white/[0.02] border-white/5 hover:bg-white/5'}`}
-              >
-                <div className={`w-4 h-4 rounded text-[6px] font-black flex items-center justify-center ${isSelected ? 'bg-cyan-500 text-white' : 'bg-white/10 text-slate-400'}`}>
-                  <ImageIcon size={8} />
-                </div>
-                <span className={`text-[7px] font-bold flex-1 truncate ${isSelected ? 'text-cyan-300' : 'text-slate-400'}`}>{layer.label}</span>
-                <button onClick={(e) => { e.stopPropagation(); toggleVisible(layer.id); }} className="nodrag opacity-40 hover:opacity-100">
-                  {layer.visible ? <Eye size={8} className="text-slate-300" /> : <EyeOff size={8} className="text-slate-500" />}
-                </button>
-              </div>
-            );
-          })}
-
-          {/* Internal layers */}
-          {internalLayers.slice().reverse().map((layer) => {
-            const isSelected = selectedId === layer.id;
-            const color = (layer as any).fill || (layer as any).color || '#888';
-            return (
-              <div
-                key={layer.id}
-                onClick={() => updateData({ selectedLayerId: layer.id })}
-                className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border cursor-pointer transition-all group/layer ${isSelected ? 'bg-indigo-500/10 border-indigo-500/30' : 'bg-white/[0.02] border-white/5 hover:bg-white/5'}`}
-              >
-                <div className="w-4 h-4 rounded flex-shrink-0 border border-white/10" style={{ backgroundColor: color }} />
-                <span className={`text-[7px] font-bold flex-1 truncate ${isSelected ? 'text-indigo-300' : 'text-slate-400'}`}>{layer.label}</span>
-                <div className="flex items-center gap-0.5 opacity-0 group-hover/layer:opacity-100 transition-opacity">
-                  <button onClick={(e) => { e.stopPropagation(); moveLayerUp(layer.id); }} className="nodrag p-0.5 hover:text-white text-slate-500"><ChevronUp size={8} /></button>
-                  <button onClick={(e) => { e.stopPropagation(); moveLayerDown(layer.id); }} className="nodrag p-0.5 hover:text-white text-slate-500"><ChevronDown size={8} /></button>
-                  <button onClick={(e) => { e.stopPropagation(); toggleVisible(layer.id); }} className="nodrag p-0.5">
-                    {layer.visible !== false ? <Eye size={7} className="text-slate-400" /> : <EyeOff size={7} className="text-slate-600" />}
-                  </button>
-                  <button onClick={(e) => { e.stopPropagation(); deleteLayer(layer.id); }} className="nodrag p-0.5 hover:text-rose-400 text-slate-600"><Trash2 size={7} /></button>
-                </div>
-              </div>
-            );
-          })}
-
-          {internalLayers.length === 0 && imageLayersFromInputs.length === 0 && (
-            <div className="text-center py-2 text-[7px] text-slate-600 font-bold">No layers yet</div>
-          )}
-        </div>
-
-
-      </div>
-
-      <div className="handle-wrapper handle-right" style={{ top: '50%' }}>
-        <span className="handle-label">Output</span>
-        <FoldderDataHandle type="source" position={Position.Right} id="image" dataType="image" />
-      </div>
-
-      {isStudioOpen && createPortal(
-        <ComposerStudio
-          layers={internalLayers}
-          imageLayers={imageLayersFromInputs}
-          onUpdateLayers={(newLayers) => updateData({ layers: newLayers })}
-          onClose={() => setIsStudioOpen(false)}
-        />,
-        document.body
-      )}
-    </div>
-  );
-});
-
-
-// ─────────────────────────────────────────────────────────────
-// COMPOSER STUDIO — fullscreen layer editor
-// ─────────────────────────────────────────────────────────────
-
-interface ComposerStudioProps {
-  layers: ComposerLayer[];
-  imageLayers: any[];
-  onUpdateLayers: (layers: ComposerLayer[]) => void;
-  onClose: () => void;
-}
-
-// ── PaintLayerCanvas — freehand drawing on a transparent canvas layer ──────
-interface PaintLayerCanvasProps {
-  layer: ComposerLayer & { paintData?: string; paintBrushSize?: number; paintColor?: string };
-  canvasContainerRef: React.RefObject<HTMLDivElement | null>;
-  isSel: boolean;
-  mode: 'brush' | 'eraser';
-  onPaintSave: (id: string, dataURL: string) => void;
-}
-const PaintLayerCanvas = ({ layer, canvasContainerRef, isSel, mode, onPaintSave }: PaintLayerCanvasProps) => {
-  const canvasRef      = useRef<HTMLCanvasElement>(null);
-  const cursorRef      = useRef<HTMLDivElement>(null);
-  const isDrawingRef   = useRef(false);
-  const modeRef        = useRef<'brush' | 'eraser'>('brush');
-  const colorRef       = useRef(layer.paintColor || '#ffffff');
-  const brushSizeRef   = useRef(layer.paintBrushSize || 12);
-
-  // Keep refs in sync
-  useEffect(() => { colorRef.current = layer.paintColor || '#ffffff'; }, [layer.paintColor]);
-  useEffect(() => { modeRef.current = mode; }, [mode]);
-  useEffect(() => { brushSizeRef.current = layer.paintBrushSize || 12; }, [layer.paintBrushSize]);
-
-  // Load existing paint when layer first mounts
-  const initialized = useRef(false);
-  useEffect(() => {
-    if (initialized.current) return;
-    initialized.current = true;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    if (layer.paintData) {
-      const img = new Image();
-      img.onload = () => {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 1;
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      };
-      img.src = layer.paintData;
-    }
-    // else: leave canvas transparent — no further init needed
-  });
-
-  const getXY = (e: React.PointerEvent) => {
-    const canvas = canvasRef.current!;
-    const rect = canvas.getBoundingClientRect();
-    return {
-      x: (e.clientX - rect.left) * (canvas.width / rect.width),
-      y: (e.clientY - rect.top)  * (canvas.height / rect.height),
-    };
-  };
-
-  const updateCursor = (e: React.PointerEvent, visible: boolean) => {
-    const dot = cursorRef.current;
-    const canvas = canvasRef.current;
-    if (!dot || !canvas) return;
-    if (!visible) { dot.style.display = 'none'; return; }
-    const rect = canvas.getBoundingClientRect();
-    const scale = rect.width / canvas.width;
-    const sz = brushSizeRef.current * scale * (modeRef.current === 'eraser' ? 3 : 1);
-    dot.style.display = 'block';
-    dot.style.left  = `${e.clientX - rect.left}px`;
-    dot.style.top   = `${e.clientY - rect.top}px`;
-    dot.style.width = dot.style.height = `${sz}px`;
-    dot.style.borderColor = modeRef.current === 'eraser' ? 'rgba(255,255,255,0.6)' : colorRef.current;
-  };
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    if (!isSel) return; // only draw when layer is selected
-    e.preventDefault(); e.stopPropagation();
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-    const ctx = canvasRef.current?.getContext('2d');
-    if (!ctx) return;
-    const { x, y } = getXY(e);
-    const pressure = e.pressure > 0 ? e.pressure : 1;
-    const sz = modeRef.current === 'eraser' ? brushSizeRef.current * 3 : brushSizeRef.current * pressure;
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    ctx.lineWidth = sz;
-    ctx.globalCompositeOperation = modeRef.current === 'eraser' ? 'destination-out' : 'source-over';
-    ctx.strokeStyle = colorRef.current;
-    ctx.beginPath(); ctx.moveTo(x, y);
-    isDrawingRef.current = true;
-  };
-
-  const onPointerMove = (e: React.PointerEvent) => {
-    updateCursor(e, isSel);
-    if (!isDrawingRef.current) return;
-    e.preventDefault(); e.stopPropagation();
-    const ctx = canvasRef.current?.getContext('2d');
-    if (!ctx) return;
-    const { x, y } = getXY(e);
-    const pressure = e.pressure > 0 ? e.pressure : 1;
-    ctx.lineWidth = modeRef.current === 'eraser' ? brushSizeRef.current * 3 : brushSizeRef.current * pressure;
-    ctx.lineTo(x, y); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(x, y);
-  };
-
-  const onPointerUp = () => {
-    if (!isDrawingRef.current) return;
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (ctx) { ctx.closePath(); ctx.globalCompositeOperation = 'source-over'; }
-    isDrawingRef.current = false;
-    if (canvas) onPaintSave(layer.id, canvas.toDataURL('image/png')); // PNG preserves alpha channel
-  };
-
-  return (
-    <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 100 }}>
-      <canvas
-        ref={canvasRef}
-        width={1920} height={1080}
-        className="absolute inset-0 w-full h-full"
-        style={{
-          touchAction: 'none',
-          pointerEvents: isSel ? 'all' : 'none',
-          cursor: isSel ? 'crosshair' : 'default',
-        }}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerLeave={() => { if (cursorRef.current) cursorRef.current.style.display = 'none'; }}
-      />
-      {isSel && (
-        <div ref={cursorRef} style={{
-          position: 'absolute', display: 'none', pointerEvents: 'none',
-          borderRadius: '50%', border: '1.5px solid', transform: 'translate(-50%,-50%)',
-          boxShadow: '0 0 0 1px rgba(0,0,0,0.5)',
-        }} />
-      )}
-    </div>
-  );
-};
-
-const ComposerStudio = ({ layers: initLayers, imageLayers, onUpdateLayers, onClose }: ComposerStudioProps) => {
-  // ── Unified layer state ─────────────────────────────────────────────────
-  // imageLayers are merged in as _isImageInput=true, so they can be dragged
-  // and reordered. On save, we split them back out.
-  const [layers, setLayers] = useState<ComposerLayer[]>(() => {
-    const imageInputIds = new Set(imageLayers.map((il: any) => il.id));
-
-    if (initLayers.length === 0) {
-      // First open — no saved order, put image inputs at bottom
-      return imageLayers.map((il: any) => ({
-        id: il.id, type: 'image' as const,
-        label: il.label || 'Image Input',
-        x: il.x ?? 0, y: il.y ?? 0, w: il.w ?? COMPOSER_ARTBOARD_W, h: il.h ?? COMPOSER_ARTBOARD_H,
-        opacity: il.opacity ?? 1, visible: il.visible !== false, locked: false,
-        _src: il.src, _isImageInput: true,
-      } as any));
-    }
-
-    // Reconstruct mixed order from saved data.
-    // initLayers may contain:
-    //   - _orderStub entries (image input position stubs, id in imageInputIds)
-    //   - real internal layers (rect, gradient, color, etc.)
-    const idsInSaved = new Set(initLayers.map(l => l.id));
-
-    const reconstructed: ComposerLayer[] = initLayers.map((savedL: any) => {
-      if (imageInputIds.has(savedL.id) || savedL._orderStub) {
-        // Restore image input from live imageLayers with saved position
-        const actual = imageLayers.find((il: any) => il.id === savedL.id);
-        if (!actual) return null; // edge was removed
-        return {
-          id: savedL.id, type: 'image' as const,
-          label: actual.label || savedL.label || 'Image Input',
-          x: savedL.x ?? 0, y: savedL.y ?? 0,
-          w: savedL.w ?? COMPOSER_ARTBOARD_W, h: savedL.h ?? COMPOSER_ARTBOARD_H,
-          opacity: savedL.opacity ?? 1,
-          visible: savedL.visible !== false,
-          locked: savedL.locked ?? false,
-          _src: actual.src, _isImageInput: true,
-        } as any;
-      }
-      // Internal layer — use as-is
-      return savedL;
-    }).filter(Boolean) as ComposerLayer[];
-
-    // Append any new image inputs not yet in saved order (at bottom)
-    const newImageInputs: ComposerLayer[] = imageLayers
-      .filter((il: any) => !idsInSaved.has(il.id))
-      .map((il: any) => ({
-        id: il.id, type: 'image' as const,
-        label: il.label || 'Image Input',
-        x: il.x ?? 0, y: il.y ?? 0, w: il.w ?? COMPOSER_ARTBOARD_W, h: il.h ?? COMPOSER_ARTBOARD_H,
-        opacity: il.opacity ?? 1, visible: il.visible !== false, locked: false,
-        _src: il.src, _isImageInput: true,
-      } as any));
-
-    return [...newImageInputs, ...reconstructed];
-  });
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [dragLayerId, setDragLayerId] = useState<string | null>(null);
-  const [lockCanvasClick, setLockCanvasClick] = useState(false); // when true: select only via layer panel
-  const [paintMode, setPaintMode] = useState<'brush' | 'eraser'>('brush');
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
-  const [drag, setDrag] = useState<{
-    id: string; sx: number; sy: number;
-    ix: number; iy: number; iw: number; ih: number; mode: string;
-  } | null>(null);
-  const canvasRef = useRef<HTMLDivElement>(null);
-
-  const selectedLayer = layers.find(l => l.id === selectedId) ?? null;
-
-  // ── Helpers ────────────────────────────────────────────────────────────
-  const updateLayer = (id: string, patch: Partial<ComposerLayer> & Record<string, any>) =>
-    setLayers(prev => prev.map(l => l.id === id ? { ...l, ...patch } : l));
-  const deleteLayer = (id: string) => { setLayers(prev => prev.filter(l => l.id !== id)); setSelectedId(null); };
-  const moveUp = (id: string) => setLayers(prev => {
-    const i = prev.findIndex(l => l.id === id);
-    if (i >= prev.length - 1) return prev;
-    const n = [...prev]; [n[i], n[i + 1]] = [n[i + 1], n[i]]; return n;
-  });
-  const moveDown = (id: string) => setLayers(prev => {
-    const i = prev.findIndex(l => l.id === id);
-    if (i <= 0) return prev;
-    const n = [...prev]; [n[i], n[i - 1]] = [n[i - 1], n[i]]; return n;
-  });
-
-  const handleLayerDrop = (targetId: string) => {
-    if (!dragLayerId || dragLayerId === targetId) { setDragLayerId(null); setDragOverId(null); return; }
-    setLayers(prev => {
-      const from = prev.findIndex(l => l.id === dragLayerId);
-      const to = prev.findIndex(l => l.id === targetId);
-      if (from === -1 || to === -1) return prev;
-      const n = [...prev];
-      const [moved] = n.splice(from, 1);
-      n.splice(to, 0, moved);
-      return n;
-    });
-    setDragLayerId(null);
-    setDragOverId(null);
-  };
-
-  // ── Paint layer save ────────────────────────────────────────────────────
-  const onPaintSave = (layerId: string, dataURL: string) => {
-    setLayers(prev => prev.map(l => l.id === layerId ? { ...l, paintData: dataURL } : l));
-  };
-
-  // ── Add shapes ─────────────────────────────────────────────────────────
-  const addShape = (type: ComposerLayer['type'], extra: Partial<ComposerLayer> & Record<string, any> = {}) => {
-    const id = `${type}-${Date.now()}`;
-    const base: ComposerLayer = {
-      id, type, label: type.charAt(0).toUpperCase() + type.slice(1),
-      x: 400, y: 300, w: 400, h: 300, opacity: 1, visible: true, locked: false,
-    };
-    const layer = { ...base, ...extra };
-    setLayers(prev => [...prev, layer]);
-    setSelectedId(id);
-  };
-
-  // ── Keyboard ───────────────────────────────────────────────────────────
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      // ALWAYS stop Delete/Backspace from reaching ReactFlow (which would delete the whole node)
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        e.stopPropagation();   // block ReactFlow's node-delete shortcut
-        if (target.tagName === 'INPUT') return; // still allow browser input clearing
-        if (selectedId) {
-          const l = layers.find(x => x.id === selectedId);
-          if (l && !(l as any)._isImageInput) deleteLayer(selectedId);
-        }
-        e.preventDefault();
-        return;
-      }
-      if (!selectedId) return;
-      if (target.tagName === 'INPUT') return;
-      const step = e.shiftKey ? 50 : 5;
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-        setLayers(prev => prev.map(l => {
-          if (l.id !== selectedId) return l;
-          if (e.key === 'ArrowUp') return { ...l, y: l.y - step };
-          if (e.key === 'ArrowDown') return { ...l, y: l.y + step };
-          if (e.key === 'ArrowLeft') return { ...l, x: l.x - step };
-          if (e.key === 'ArrowRight') return { ...l, x: l.x + step };
-          return l;
-        }));
-        e.preventDefault();
-      }
-    };
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, [selectedId, layers]);
-
-  // ── Drag / resize ──────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!drag) return;
-    const onMove = (e: PointerEvent) => {
-      if (!canvasRef.current) return;
-      const rect = canvasRef.current.getBoundingClientRect();
-      const scaleX = 1920 / rect.width;
-      const scaleY = 1080 / rect.height;
-      const dx = (e.clientX - drag.sx) * scaleX;
-      const dy = (e.clientY - drag.sy) * scaleY;
-      setLayers(prev => prev.map(l => {
-        if (l.id !== drag.id) return l;
-        const MIN = 10;
-        switch (drag.mode) {
-          case 'move': return { ...l, x: drag.ix + dx, y: drag.iy + dy };
-          case 'se': return { ...l, w: Math.max(MIN, drag.iw + dx), h: Math.max(MIN, drag.ih + dy) };
-          case 'sw': return { ...l, x: drag.ix + dx, w: Math.max(MIN, drag.iw - dx), h: Math.max(MIN, drag.ih + dy) };
-          case 'ne': return { ...l, y: drag.iy + dy, w: Math.max(MIN, drag.iw + dx), h: Math.max(MIN, drag.ih - dy) };
-          case 'nw': return { ...l, x: drag.ix + dx, y: drag.iy + dy, w: Math.max(MIN, drag.iw - dx), h: Math.max(MIN, drag.ih - dy) };
-          default: return l;
-        }
-      }));
-    };
-    const onUp = () => setDrag(null);
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    return () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
-  }, [drag]);
-
-  // ── Save & close ───────────────────────────────────────────────────────
-  const handleSave = () => {
-    // Save ALL layers in their current ORDER (mixed z-order preserved).
-    // Image input entries are saved as position-only stubs (_isImageInput removed,
-    // kept as type:'image' with no src so they don't render but do hold position).
-    // On next open, we reconstruct the full order from this saved array.
-    const orderedForStorage: ComposerLayer[] = layers.map((l: any) => {
-      if (l._isImageInput) {
-        // Lightweight position stub — no src, no _isImageInput flag so
-        // imageInputIds filter on re-open recognises them via id match
-        return {
-          id: l.id, type: 'image' as const, label: l.label,
-          x: l.x, y: l.y, w: l.w, h: l.h,
-          opacity: l.opacity, visible: l.visible, locked: l.locked,
-          _orderStub: true, // marker so init knows this is an image-input stub
-        } as any;
-      }
-      return l; // internal layer — keep as-is
-    });
-    onUpdateLayers(orderedForStorage);
-    onClose();
-  };
-
-  // ── Render preview ─────────────────────────────────────────────────────
-  // Get a CSS background for a layer (used in layer list thumbnails)
-  const layerThumbStyle = (l: ComposerLayer & Record<string, any>): React.CSSProperties => {
-    if (l._isImageInput) return { background: '#db2777' };
-    if (l.type === 'paint') return { background: 'linear-gradient(135deg, #be185d, #7c3aed)' };
-    if (l.type === 'gradient') return {
-      background: `linear-gradient(${l.gradientAngle ?? 0}deg, ${l.gradientFrom || '#1e293b'}, ${l.gradientTo || '#0f172a'})`,
-    };
-    return { backgroundColor: l.fill || l.color || '#888' };
-  };
-
-  const allDisplayLayers = layers.filter(l => l.visible !== false);
-
-  return (
-    <div
-      className="fixed inset-0 z-[9999] bg-black/95 backdrop-blur-xl flex flex-col"
-      data-foldder-studio-canvas=""
-    >
-      {/* ── Top bar ─────────────────────────────────────────────────────── */}
-      <div
-        className="h-14 border-b border-white/5 flex items-center px-6 gap-2 flex-shrink-0"
-        onPointerDown={e => e.stopPropagation()}
-      >
-        <Layers className="text-cyan-400" size={16} />
-        <span className="text-[11px] font-black uppercase tracking-widest text-white">Composer Studio</span>
-        <div className="h-4 w-px bg-white/10 mx-2" />
-        {/* Shape buttons */}
-        <button onPointerDown={e => e.stopPropagation()} onClick={() => addShape('color', { x: 0, y: 0, w: 1920, h: 1080, color: '#1e293b', fill: undefined })}
-          className="text-[9px] font-black px-2.5 py-1.5 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30 transition-colors">
-          + Color
-        </button>
-        <button onPointerDown={e => e.stopPropagation()} onClick={() => addShape('gradient', { x: 0, y: 0, w: 1920, h: 1080, gradientFrom: '#1e3a5f', gradientTo: '#0f172a', gradientAngle: 135 })}
-          className="text-[9px] font-black px-2.5 py-1.5 rounded-lg bg-purple-500/20 text-purple-400 border border-purple-500/30 hover:bg-purple-500/30 transition-colors">
-          ↗ Gradient
-        </button>
-        <button onPointerDown={e => e.stopPropagation()} onClick={() => addShape('rect', { fill: '#3b82f6', radius: 0 })}
-          className="text-[9px] font-black px-2.5 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-500/30 transition-colors flex items-center gap-1">
-          <Square size={9} /> Rect
-        </button>
-        <button onPointerDown={e => e.stopPropagation()} onClick={() => addShape('circle', { fill: '#10b981' })}
-          className="text-[9px] font-black px-2.5 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 transition-colors flex items-center gap-1">
-          ○ Circle
-        </button>
-        <button onPointerDown={e => e.stopPropagation()} onClick={() => addShape('paint', { x: 0, y: 0, w: 1920, h: 1080, paintBrushSize: 12, paintColor: '#ffffff' })}
-          className="text-[9px] font-black px-2.5 py-1.5 rounded-lg bg-rose-500/20 text-rose-400 border border-rose-500/30 hover:bg-rose-500/30 transition-colors flex items-center gap-1">
-          <Paintbrush size={9} /> Paint
-        </button>
-        <div className="ml-auto flex items-center gap-3">
-          <button onPointerDown={e => e.stopPropagation()} onClick={handleSave}
-            className="bg-cyan-500 hover:bg-cyan-400 text-black px-6 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all">
-            Save & Close
-          </button>
-          <button onPointerDown={e => e.stopPropagation()} onClick={onClose} className="text-white/40 hover:text-white transition-colors">
-            <X size={18} />
-          </button>
-        </div>
-      </div>
-
-      <div className="flex flex-1 overflow-hidden">
-        {/* ── Canvas ──────────────────────────────────────────────────── */}
-        <div className="flex-1 flex items-center justify-center p-6 bg-[#080808]"
-          onPointerDown={() => setSelectedId(null)}
-        >
-          <div
-            ref={canvasRef}
-            className="relative bg-[#050505] border border-white/10 rounded-xl shadow-2xl overflow-hidden select-none"
-            style={{
-              width: 'min(calc(100vw - 400px), calc((100vh - 140px) * 16/9))',
-              aspectRatio: '16/9',
-              backgroundImage: 'radial-gradient(rgba(255,255,255,0.04) 1px, transparent 1px)',
-              backgroundSize: '24px 24px',
-            }}
-            onPointerDown={() => setSelectedId(null)}
-          >
-            {allDisplayLayers.filter(l => l.type !== 'paint').map((layer, idx) => {
-              const la = layer as any;
-              const isImg = la._isImageInput || la.type === 'image';
-              const imgSrc = la._src || la.src;
-              const isSel = selectedId === layer.id;
-              const lx = `${(layer.x / 1920) * 100}%`;
-              const ly = `${(layer.y / 1080) * 100}%`;
-              const lw = `${(layer.w / 1920) * 100}%`;
-              const lh = `${(layer.h / 1080) * 100}%`;
-
-              let innerStyle: React.CSSProperties = {};
-              if (layer.type === 'gradient') {
-                innerStyle = {
-                  background: `linear-gradient(${la.gradientAngle ?? 0}deg, ${la.gradientFrom || '#1e293b'}, ${la.gradientTo || '#0f172a'})`,
-                };
-              } else if (layer.type === 'circle') {
-                innerStyle = { backgroundColor: la.fill || '#fff', borderRadius: '50%' };
-              } else if (!isImg) {
-                innerStyle = {
-                  backgroundColor: la.fill || la.color || '#888',
-                  borderRadius: la.radius ? `${la.radius}px` : 0,
-                };
-              }
-
-              return (
-                <div
-                  key={`${layer.id}-${idx}`}
-                  className={`absolute ${isSel ? 'z-50' : ''} ${!layer.locked ? 'cursor-move' : 'cursor-default'}`}
-                  style={{ left: lx, top: ly, width: lw, height: lh, zIndex: idx, opacity: layer.opacity }}
-                  onPointerDown={e => {
-                    e.stopPropagation();
-                    if (!lockCanvasClick) setSelectedId(layer.id);
-                    if (!layer.locked && (selectedId === layer.id || !lockCanvasClick))
-                      setDrag({ id: layer.id, sx: e.clientX, sy: e.clientY, ix: layer.x, iy: layer.y, iw: layer.w, ih: layer.h, mode: 'move' });
-                  }}
-                >
-                  {isImg && imgSrc
-                    ? <img src={imgSrc} className="w-full h-full object-contain block pointer-events-none" alt="" />
-                    : <div className="w-full h-full pointer-events-none" style={innerStyle} />
-                  }
-                  {isSel && !layer.locked && (
-                    <>
-                      <div className="absolute inset-0 ring-2 ring-cyan-400 pointer-events-none" style={{ borderRadius: layer.type === 'circle' ? '50%' : (layer as any).radius ? `${(layer as any).radius}px` : 0 }} />
-                      {(['nw', 'ne', 'sw', 'se'] as const).map(pos => (
-                        <div key={pos}
-                          className="absolute w-3 h-3 bg-white border-2 border-cyan-400 rounded-sm z-10"
-                          style={{
-                            top: pos.startsWith('n') ? -6 : undefined,
-                            bottom: pos.startsWith('s') ? -6 : undefined,
-                            left: pos.endsWith('w') ? -6 : undefined,
-                            right: pos.endsWith('e') ? -6 : undefined,
-                            cursor: `${pos}-resize`,
-                          }}
-                          onPointerDown={e => {
-                            e.stopPropagation();
-                            setDrag({ id: layer.id, sx: e.clientX, sy: e.clientY, ix: layer.x, iy: layer.y, iw: layer.w, ih: layer.h, mode: pos });
-                          }}
-                        />
-                      ))}
-                    </>
-                  )}
-                </div>
-              );
-            })}
-            {/* Paint layers get their own interactive canvas overlay */}
-            {layers.filter(l => l.type === 'paint' && l.visible !== false).map(l => (
-              <PaintLayerCanvas
-                key={`paint-${l.id}`}
-                layer={l as any}
-                canvasContainerRef={canvasRef}
-                isSel={selectedId === l.id}
-                mode={selectedId === l.id ? paintMode : 'brush'}
-                onPaintSave={onPaintSave}
-              />
-            ))}
-          </div>
-        </div>
-
-        {/* ── Side panel ────────────────────────────────────────────── */}
-        <div
-          className="w-80 border-l border-white/5 flex flex-col bg-black/60 backdrop-blur-sm overflow-y-auto flex-shrink-0"
-          onPointerDown={e => e.stopPropagation()}  /* ← key fix: prevent outer div from clearing selection */
-        >
-          {/* Layer list */}
-          <div className="p-4 border-b border-white/5">
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-[8px] font-black text-white/30 uppercase tracking-widest">Layers</div>
-              <button
-                onClick={() => setLockCanvasClick(prev => !prev)}
-                title={lockCanvasClick ? 'Select by layer panel only' : 'Click canvas to select'}
-                className={`flex items-center gap-1.5 text-[7px] font-black px-2 py-1 rounded-lg border transition-all ${lockCanvasClick ? 'bg-cyan-500/20 border-cyan-500/40 text-cyan-400' : 'bg-white/5 border-white/10 text-white/30 hover:text-white/60'}`}
-              >
-                <svg width="8" height="8" viewBox="0 0 10 10" fill="none">
-                  <rect x="1" y="4" width="8" height="5" rx="1" stroke="currentColor" strokeWidth="1.2"/>
-                  <path d="M3 4V3a2 2 0 014 0v1" stroke="currentColor" strokeWidth="1.2"/>
-                </svg>
-                {lockCanvasClick ? 'Layer only' : 'Click select'}
-              </button>
-            </div>
-            <div className="space-y-1">
-              {[...layers].reverse().map(l => {
-                const la = l as any;
-                const isImgInput = la._isImageInput;
-                const isSel = selectedId === l.id;
-                return (
-                  <div key={l.id}
-                    onClick={() => setSelectedId(l.id)}
-                    draggable
-                    onDragStart={() => setDragLayerId(l.id)}
-                    onDragOver={e => { e.preventDefault(); setDragOverId(l.id); }}
-                    onDragLeave={() => setDragOverId(null)}
-                    onDrop={() => handleLayerDrop(l.id)}
-                    className={`flex items-center gap-2 px-2.5 py-2 rounded-xl border cursor-pointer transition-all group ${isSel ? 'bg-cyan-500/20 border-cyan-500/40 text-white' : 'bg-white/[0.03] border-white/5 text-white/50 hover:bg-white/5 hover:text-white/80'} ${dragOverId === l.id ? 'border-cyan-400/60 bg-cyan-500/10' : ''}`}
-                  >
-                    {/* Thumbnail */}
-                    <div className="w-5 h-5 rounded-md flex-shrink-0 border border-white/10 overflow-hidden flex items-center justify-center"
-                      style={layerThumbStyle(l as any)}>
-                      {isImgInput && <ImageIcon size={10} className="text-white/70" />}
-                    </div>
-                    <span className="text-[9px] font-semibold flex-1 truncate">{l.label}</span>
-                    {/* Move up/down */}
-                    <div className="flex flex-col opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={e => { e.stopPropagation(); moveUp(l.id); }} className="p-0.5 hover:text-white text-white/30">
-                        <ChevronUp size={8} />
-                      </button>
-                      <button onClick={e => { e.stopPropagation(); moveDown(l.id); }} className="p-0.5 hover:text-white text-white/30">
-                        <ChevronDown size={8} />
-                      </button>
-                    </div>
-                    {/* Visibility */}
-                    <button onClick={e => { e.stopPropagation(); updateLayer(l.id, { visible: !l.visible }); }} className="opacity-40 hover:opacity-100">
-                      {l.visible !== false ? <Eye size={9} /> : <EyeOff size={9} />}
-                    </button>
-                    {/* Delete (not for image inputs) */}
-                    {!isImgInput && (
-                      <button onClick={e => { e.stopPropagation(); deleteLayer(l.id); }} className="opacity-40 hover:opacity-100 hover:text-rose-400">
-                        <Trash2 size={9} />
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-              {layers.length === 0 && (
-                <div className="text-center py-4 text-[8px] text-white/20">No layers yet — add shapes above</div>
-              )}
-            </div>
-          </div>
-
-          {/* Properties panel */}
-          {selectedLayer && (
-            <div className="p-4 space-y-4" onPointerDown={e => e.stopPropagation()}>
-              <div className="text-[8px] font-black text-white/30 uppercase tracking-widest">Properties — {selectedLayer.type}</div>
-
-              {/* Paint layer tools */}
-              {selectedLayer.type === 'paint' && (
-                <>
-                  <div>
-                    <label className="text-[9px] text-white/50 mb-1 block">Brush color</label>
-                    <input type="color"
-                      value={(selectedLayer as any).paintColor || '#ffffff'}
-                      onChange={e => { updateLayer(selectedLayer.id, { paintColor: e.target.value }); setPaintMode('brush'); }}
-                      className="w-full h-9 rounded-lg cursor-pointer border border-white/10 bg-transparent"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[9px] text-white/50 block">Brush size {(selectedLayer as any).paintBrushSize || 12}px</label>
-                    <input type="range" min="1" max="80"
-                      value={(selectedLayer as any).paintBrushSize || 12}
-                      onChange={e => updateLayer(selectedLayer.id, { paintBrushSize: parseInt(e.target.value) })}
-                      className="w-full mt-1"
-                    />
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => setPaintMode('brush')}
-                      className={`flex-1 text-[9px] font-black py-1.5 rounded-lg border transition-all flex items-center justify-center gap-1 ${paintMode === 'brush' ? 'bg-rose-500/20 border-rose-500/40 text-rose-400' : 'bg-white/5 border-white/10 text-white/30 hover:text-white/60'}`}>
-                      <Paintbrush size={10} /> Pincel
-                    </button>
-                    <button
-                      onClick={() => setPaintMode('eraser')}
-                      className={`flex-1 text-[9px] font-black py-1.5 rounded-lg border transition-all flex items-center justify-center gap-1 ${paintMode === 'eraser' ? 'bg-zinc-500/20 border-zinc-500/40 text-zinc-300' : 'bg-white/5 border-white/10 text-white/30 hover:text-white/60'}`}>
-                      <Eraser size={10} /> Borrar
-                    </button>
-                  </div>
-                  <button
-                    onClick={() => {
-                      // Clear paint layer
-                      updateLayer(selectedLayer.id, { paintData: undefined });
-                    }}
-                    className="w-full text-[9px] font-black py-1.5 rounded-lg border border-rose-500/20 text-rose-400/60 hover:text-rose-400 hover:border-rose-500/40 transition-all">
-                    Limpiar capa
-                  </button>
-                  <p className="text-[7px] text-white/20 leading-relaxed">
-                    Selecciona esta capa y dibuja directamente sobre el canvas. Shift=50px en flechas.
-                  </p>
-                </>
-              )}
-
-              {/* Color (solid) */}
-              {(selectedLayer.type === 'rect' || selectedLayer.type === 'circle' || selectedLayer.type === 'color') && (
-                <div>
-                  <label className="text-[9px] text-white/50 mb-1 block">Color</label>
-                  <input type="color"
-                    value={(selectedLayer as any).fill || (selectedLayer as any).color || '#3b82f6'}
-                    onChange={e => updateLayer(selectedLayer.id, { fill: e.target.value, color: e.target.value })}
-                    className="w-full h-9 rounded-lg cursor-pointer border border-white/10 bg-transparent"
-                  />
-                </div>
-              )}
-
-              {/* Gradient */}
-              {selectedLayer.type === 'gradient' && (
-                <>
-                  <div>
-                    <label className="text-[9px] text-white/50 mb-1 block">From color</label>
-                    <input type="color"
-                      value={(selectedLayer as any).gradientFrom || '#1e293b'}
-                      onChange={e => updateLayer(selectedLayer.id, { gradientFrom: e.target.value })}
-                      className="w-full h-9 rounded-lg cursor-pointer border border-white/10 bg-transparent"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[9px] text-white/50 mb-1 block">To color</label>
-                    <input type="color"
-                      value={(selectedLayer as any).gradientTo || '#0f172a'}
-                      onChange={e => updateLayer(selectedLayer.id, { gradientTo: e.target.value })}
-                      className="w-full h-9 rounded-lg cursor-pointer border border-white/10 bg-transparent"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[9px] text-white/50 block">Angle {(selectedLayer as any).gradientAngle ?? 0}°</label>
-                    <input type="range" min="0" max="360"
-                      value={(selectedLayer as any).gradientAngle ?? 0}
-                      onChange={e => updateLayer(selectedLayer.id, { gradientAngle: parseInt(e.target.value) })}
-                      className="w-full mt-1"
-                    />
-                  </div>
-                </>
-              )}
-
-              {/* Opacity */}
-              <div>
-                <label className="text-[9px] text-white/50 block">Opacity {Math.round((selectedLayer.opacity ?? 1) * 100)}%</label>
-                <input type="range" min="0" max="1" step="0.01"
-                  value={selectedLayer.opacity ?? 1}
-                  onChange={e => updateLayer(selectedLayer.id, { opacity: parseFloat(e.target.value) })}
-                  className="w-full mt-1"
-                />
-              </div>
-
-              {/* Corner radius for rect */}
-              {selectedLayer.type === 'rect' && (
-                <div>
-                  <label className="text-[9px] text-white/50 block">Radius {(selectedLayer as any).radius ?? 0}px</label>
-                  <input type="range" min="0" max="300"
-                    value={(selectedLayer as any).radius ?? 0}
-                    onChange={e => updateLayer(selectedLayer.id, { radius: parseInt(e.target.value) })}
-                    className="w-full mt-1"
-                  />
-                </div>
-              )}
-
-              {/* Position & size */}
-              <div>
-                <label className="text-[9px] text-white/50 mb-2 block">Position & Size (px)</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {(['x', 'y', 'w', 'h'] as const).map(k => (
-                    <div key={k}>
-                      <label className="text-[8px] text-white/30 block mb-0.5">{k.toUpperCase()}</label>
-                      <input type="number"
-                        value={Math.round((selectedLayer as any)[k] ?? 0)}
-                        onChange={e => updateLayer(selectedLayer.id, { [k]: parseInt(e.target.value) || 0 })}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-[9px] text-white focus:outline-none focus:border-cyan-500/50"
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Footer hints */}
-      <div
-        className="h-8 border-t border-white/5 flex items-center justify-center gap-8 text-[7px] font-black text-white/15 uppercase tracking-widest flex-shrink-0"
-        onPointerDown={e => e.stopPropagation()}
-      >
-        <span>DRAG to move</span><span className="text-white/5">|</span>
-        <span>HANDLES to resize</span><span className="text-white/5">|</span>
-        <span>ARROWS to nudge (+SHIFT×10)</span><span className="text-white/5">|</span>
-        <span>DELETE to remove</span>
-      </div>
-    </div>
-  );
-};
-
-// --- IMAGE EXPORT NODE ---
-
-const loadCanvasImage = async (url: string): Promise<HTMLImageElement> => {
-  if (!url) throw new Error("Empty image URL");
-  
-  // If it's already a data URL, load it directly
-  if (url.startsWith('data:')) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error("Failed to load DataURL image"));
-      img.src = url;
-    });
-  }
-
-  try {
-    const blob = await fetchBlobViaSpacesProxy(url);
-    const objectUrl = URL.createObjectURL(blob);
-    
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        URL.revokeObjectURL(objectUrl);
-        resolve(img);
-      };
-      img.onerror = () => reject(new Error("Failed to decode image data"));
-      img.src = objectUrl;
-    });
-  } catch (err: any) {
-    throw new Error(`Connection failed: ${err.message}. Check CORS settings on source.`);
-  }
-};
-
-export const ImageExportNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const ImageExportNode = memo(function ImageExportNode({ id, data, selected }: NodeProps) {
   const nodes = useNodes();
   const edges = useEdges();
   const [format, setFormat] = useState<'png' | 'jpeg'>('png');
   const [isExporting, setIsExporting] = useState(false);
-  /** Solo compositor: preview generada por /api/spaces/compose */
-  const [composerPreviewUrl, setComposerPreviewUrl] = useState<string | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [detectedSize, setDetectedSize] = useState<{ w: number; h: number } | null>(null);
+  const [detectedSize, setDetectedSize] = useState<{ url: string; w: number; h: number } | null>(null);
 
   // Refs for synchronous form-based download (bypasses Chrome async security blocks)
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -2034,138 +769,44 @@ export const ImageExportNode = memo(({ id, data, selected }: NodeProps<any>) => 
   // Find the single source connected to this node
   const sourceEdge = edges.find(e => e.target === id);
   const sourceNode = sourceEdge ? nodes.find(n => n.id === sourceEdge.source) : null;
+  const sourceNodeDimensions = sourceNode?.data as { width?: number; height?: number } | undefined;
 
-  // Map handles to actual layer data
   const layers = useMemo(() => {
     if (!sourceNode) return [];
-
-    // Case 1: Source is a Composer
-    if (sourceNode.type === 'imageComposer') {
-      if (sourceNode.data.value) {
-        return [{
-          type: 'flattened',
-          value: sourceNode.data.value as string,
-          x: 0, y: 0, scale: 1, width: 1920, height: 1080
-        }];
-      }
-      // Fallback: reconstruct from edges
-      const composerEdges = edges.filter(e => e.target === sourceNode.id)
-        .sort((a: any, b: any) => (a.targetHandle || '').localeCompare(b.targetHandle || ''));
-      const layersConfig: Record<string, any> = sourceNode.data.layersConfig || {};
-      return composerEdges.map(edge => {
-        const node = nodes.find(n => n.id === edge.source);
-        const hId = edge.targetHandle || 'layer-0';
-        const config = (layersConfig as any)[hId] || { x: 0, y: 0, scale: 1 };
-        return {
-          type: node?.type,
-          value: (node?.data?.value || ((node?.data as any)?.urls && (node?.data as any)?.urls[(node?.data as any)?.selectedIndex || 0])) as string | undefined,
-          color: node?.data?.color as string | undefined,
-          width: node?.data?.width as number || 0,
-          height: node?.data?.height as number || 0,
-          x: config.x, y: config.y, scale: config.scale
-        };
-      }).filter(l => (l.value as string) || (l.color as string));
-    }
-
-    // Case 2: Direct image node (NanoBanana, urlImage, backgroundRemover, etc.)
     return [{
       type: sourceNode.type,
       value: sourceNode.data.value as string | undefined,
-      color: (sourceNode.data as any).color as string | undefined,
-      width: (sourceNode.data as any).width as number || 0,
-      height: (sourceNode.data as any).height as number || 0
-    }].filter(l => l.value || l.color);
-  }, [sourceNode, edges, nodes]);
-
-  /** Evita re-fetch en bucle: `layers` es un array nuevo cada render aunque el contenido sea igual */
-  const layersSignature = useMemo(() => JSON.stringify(layers), [layers]);
+      width: sourceNodeDimensions?.width || 0,
+      height: sourceNodeDimensions?.height || 0
+    }].filter(l => l.value);
+  }, [sourceNode, sourceNodeDimensions?.height, sourceNodeDimensions?.width]);
 
   // Native pixel size of the connected image (data URLs from Crop, http(s), blob: — all measured the same)
   const imageUrl = sourceNode?.data?.value as string | undefined;
+  const activeDetectedSize =
+    imageUrl && detectedSize?.url === imageUrl ? detectedSize : null;
   useEffect(() => {
-    if (!imageUrl || typeof imageUrl !== 'string') {
-      setDetectedSize(null);
-      return;
-    }
+    if (!imageUrl || typeof imageUrl !== 'string') return;
     const img = new Image();
     img.onload = () => {
       if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-        setDetectedSize({ w: img.naturalWidth, h: img.naturalHeight });
-      } else {
-        setDetectedSize(null);
+        setDetectedSize({ url: imageUrl, w: img.naturalWidth, h: img.naturalHeight });
       }
     };
     img.onerror = () => {
-      const w = Number((sourceNode?.data as any)?.width);
-      const h = Number((sourceNode?.data as any)?.height);
-      if (w > 0 && h > 0) setDetectedSize({ w, h });
-      else setDetectedSize(null);
+      const w = Number(sourceNodeDimensions?.width);
+      const h = Number(sourceNodeDimensions?.height);
+      if (w > 0 && h > 0) setDetectedSize({ url: imageUrl, w, h });
     };
     img.src = imageUrl;
-  }, [imageUrl, sourceNode?.id]);
+  }, [imageUrl, sourceNode?.id, sourceNodeDimensions?.height, sourceNodeDimensions?.width]);
 
   // Export canvas = tamaño real de la imagen (p. ej. recorte); si aún no se midió, datos del nodo o fallback
-  const exportW = detectedSize?.w || Number((sourceNode?.data as any)?.width) || 1920;
-  const exportH = detectedSize?.h || Number((sourceNode?.data as any)?.height) || 1080;
+  const exportW = activeDetectedSize?.w || Number(sourceNodeDimensions?.width) || 1920;
+  const exportH = activeDetectedSize?.h || Number(sourceNodeDimensions?.height) || 1080;
 
-  const isComposer = sourceNode?.type === 'imageComposer';
   const directImageSrc =
-    sourceNode && !isComposer && typeof sourceNode.data?.value === 'string' ? sourceNode.data.value : null;
-
-  useEffect(() => {
-    if (!isComposer) {
-      setComposerPreviewUrl((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return null;
-      });
-      return;
-    }
-    if (!layers.length) {
-      setComposerPreviewUrl((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return null;
-      });
-      return;
-    }
-
-    const ctrl = new AbortController();
-    const timer = window.setTimeout(() => {
-      setPreviewLoading(true);
-      const formData = new FormData();
-      formData.append('layers', JSON.stringify(layers));
-      formData.append('filename', `preview_${Date.now()}.${format === 'jpeg' ? 'jpg' : 'png'}`);
-      formData.append('format', format);
-      formData.append('width', String(exportW));
-      formData.append('height', String(exportH));
-      formData.append('previewWidth', String(exportW));
-      formData.append('previewHeight', String(exportH));
-
-      fetch('/api/spaces/compose', { method: 'POST', body: formData, signal: ctrl.signal })
-        .then((r) => r.blob())
-        .then((blob) => {
-          setComposerPreviewUrl((prev) => {
-            if (prev) URL.revokeObjectURL(prev);
-            return URL.createObjectURL(blob);
-          });
-        })
-        .catch((err) => {
-          if ((err as Error).name !== 'AbortError') console.error('[Export] preview', err);
-        })
-        .finally(() => setPreviewLoading(false));
-    }, 280);
-
-    return () => {
-      ctrl.abort();
-      clearTimeout(timer);
-    };
-  }, [isComposer, layersSignature, format, exportW, exportH, sourceNode?.id]);
-
-  useEffect(() => () => {
-    setComposerPreviewUrl((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return null;
-    });
-  }, []);
+    sourceNode && typeof sourceNode.data?.value === 'string' ? sourceNode.data.value : null;
 
   const handleExport = () => {
     if (!sourceNode) return alert("Connect an image first!");
@@ -2173,8 +814,6 @@ export const ImageExportNode = memo(({ id, data, selected }: NodeProps<any>) => 
 
     const extension = format === 'jpeg' ? 'jpg' : 'png';
     const filename = `AI_Space_Output_${Date.now()}.${extension}`;
-
-    console.log(`[Export] Submitting form for ${filename}, layers: ${layers.length}`);
 
     // Populate form inputs SYNCHRONOUSLY (before any awaits)
     layersInputRef.current.value = JSON.stringify(layers);
@@ -2185,34 +824,10 @@ export const ImageExportNode = memo(({ id, data, selected }: NodeProps<any>) => 
     formRef.current.submit();
 
     setIsExporting(true);
-
-    // Also fetch async for PREVIEW only (not download)
-    const formData = new FormData();
-    formData.append('layers', JSON.stringify(layers));
-    formData.append('filename', filename);
-    formData.append('format', format);
-    formData.append('width', String(exportW));
-    formData.append('height', String(exportH));
-    formData.append('previewWidth', String(exportW));
-    formData.append('previewHeight', String(exportH));
-
-    fetch('/api/spaces/compose', { method: 'POST', body: formData })
-      .then((r) => r.blob())
-      .then((blob) => {
-        setComposerPreviewUrl((prev) => {
-          if (prev) URL.revokeObjectURL(prev);
-          return URL.createObjectURL(blob);
-        });
-      })
-      .catch((err) => console.error('[Export] Preview fetch error:', err))
-      .finally(() => setTimeout(() => setIsExporting(false), 500));
+    window.setTimeout(() => setIsExporting(false), 500);
   };
 
-  const handleExportRef = useRef(handleExport);
-  handleExportRef.current = handleExport;
-  useRegisterAssistantNodeRun(id, async () => {
-    handleExportRef.current();
-  });
+  useRegisterAssistantNodeRun(id, handleExport);
 
 
 
@@ -2296,7 +911,7 @@ export const ImageExportNode = memo(({ id, data, selected }: NodeProps<any>) => 
             <span>
               {exportW}×{exportH} PX{detectedSize ? ' · tamaño real' : ' · estimado'}
             </span>
-            <span>COMPOSITION MODE</span>
+            <span>EXPORT READY</span>
           </div>
         </div>
 
@@ -2318,33 +933,6 @@ export const ImageExportNode = memo(({ id, data, selected }: NodeProps<any>) => 
                 alt="Export preview"
               />
             </div>
-          ) : isComposer && composerPreviewUrl ? (
-            <div
-              className="max-h-full max-w-full min-h-0 min-w-0"
-              style={{
-                aspectRatio: `${Math.max(1, exportW)} / ${Math.max(1, exportH)}`,
-              }}
-            >
-              <img
-                src={composerPreviewUrl}
-                className="block h-full w-full object-contain"
-                alt="Composed preview"
-              />
-            </div>
-          ) : isComposer && previewLoading ? (
-            <div className="flex flex-col items-center gap-2 text-rose-400">
-              <Loader2 size={28} className="animate-spin" />
-              <span className="text-[9px] font-black uppercase">Updating preview…</span>
-            </div>
-          ) : isComposer ? (
-            <div className="flex flex-col items-center gap-2 px-4 text-center text-rose-500/50">
-              <Layers size={32} />
-              <span className="text-[9px] font-black uppercase">
-                {layers.length
-                  ? `Compose ${layers.length} layer(s) — preview when ready`
-                  : 'Connect layers to composer'}
-              </span>
-            </div>
           ) : (
             <div className="flex flex-col items-center gap-2 text-gray-500">
               <ImageIcon size={32} />
@@ -2360,7 +948,7 @@ export const ImageExportNode = memo(({ id, data, selected }: NodeProps<any>) => 
 
 // --- UNIVERSAL MEDIA INPUT NODE ---
 
-export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const MediaInputNode = memo(function MediaInputNode({ id, data, selected }: NodeProps) {
   const nodeData = data as BaseNodeData & { 
     type?: 'video' | 'image' | 'audio' | 'pdf' | 'txt' | 'url',
     source?: 'upload' | 'url' | 'asset',
@@ -2381,6 +969,7 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const [mediaSize, setMediaSize] = useState<{ url: string; width: number; height: number } | null>(null);
   const isUploading = isUploadingLocal || nodeData.loading;
   const currentNode = nodes.find((node) => node.id === id);
+  const currentFrameNode = useCurrentNodeFrameSnapshot(currentNode);
 
   /** Tras cargar imagen/vídeo el nodo cambia de alto (p. ej. a aspect-video): encuadrar; duración alineada con `fitAnim` (nominal/2) en page. */
   const scheduleFitViewportToThisNode = useCallback((opts?: { force?: boolean }) => {
@@ -2403,7 +992,7 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
     if (mediaFitTimerRef.current) clearTimeout(mediaFitTimerRef.current);
   }, []);
 
-  const updateNodeData = (updates: any) => {
+  const updateNodeData = (updates: Record<string, unknown>) => {
     setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...updates } } : n)));
   };
 
@@ -2507,6 +1096,8 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const isVisual = nodeData.type === 'image' || nodeData.type === 'video';
   const hasSizedVisualMedia =
     hasMedia && isVisual && !!nodeData.value && mediaSize?.url === nodeData.value;
+  const visualMediaWidth = hasSizedVisualMedia ? mediaSize?.width ?? null : null;
+  const visualMediaHeight = hasSizedVisualMedia ? mediaSize?.height ?? null : null;
   /** Preview: vídeo 16:9; imagen conserva ratio dentro del ancho del nodo y tope de alto (cabecera + resizer ~520px). */
   const mediaPreviewFrameClass =
     hasMedia && isVisual
@@ -2534,19 +1125,19 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
   }, [hasMedia, isVisual, nodeData.type, nodeData.value]);
 
   useLayoutEffect(() => {
-    if (!hasSizedVisualMedia || !mediaSize) return;
+    if (!hasSizedVisualMedia || visualMediaWidth == null || visualMediaHeight == null) return;
     const chromeHeight = resolveNodeChromeHeight(frameRef.current, previewRef.current);
     const nextFrame = resolveAspectLockedNodeFrame({
-      node: currentNode,
-      contentWidth: mediaSize.width,
-      contentHeight: mediaSize.height,
+      node: currentFrameNode,
+      contentWidth: visualMediaWidth,
+      contentHeight: visualMediaHeight,
       minWidth: 280,
       maxWidth: 960,
       minHeight: 200,
       maxHeight: STUDIO_NODE_MAX_HEIGHT,
       chromeHeight,
     });
-    if (!nodeFrameNeedsSync(currentNode, nextFrame)) return;
+    if (!nodeFrameNeedsSync(currentFrameNode, nextFrame)) return;
     setNodes((nds) =>
       nds.map((node) =>
         node.id === id
@@ -2564,20 +1155,16 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
       scheduleFitViewportToThisNode();
     });
   }, [
-    currentNode?.height,
-    currentNode?.measured?.height,
-    currentNode?.measured?.width,
-    currentNode?.width,
+    currentFrameNode,
     hasMedia,
     hasSizedVisualMedia,
     id,
     isVisual,
-    mediaSize?.height,
-    mediaSize?.url,
-    mediaSize?.width,
     scheduleFitViewportToThisNode,
     setNodes,
     updateNodeInternals,
+    visualMediaHeight,
+    visualMediaWidth,
   ]);
 
   return (
@@ -2610,7 +1197,6 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
             {nodeData.source || 'upload'}
           </span>
         )}
-        {isVisual && hasMedia && <ViewerOpenButton nodeId={id} />}
       </div>
 
       {/* Full-bleed drop zone / preview */}
@@ -2854,7 +1440,7 @@ export const MediaInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
 });
 
 
-export const PromptNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const PromptNode = memo(function PromptNode({ id, data, selected }: NodeProps) {
   const nodeData = data as BaseNodeData;
   const { setNodes } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
@@ -2889,8 +1475,8 @@ export const PromptNode = memo(({ id, data, selected }: NodeProps<any>) => {
           placeholder="Describe your vision…"
           value={nodeData.value || ''}
           onChange={(e) =>
-            setNodes((nds: any) =>
-              nds.map((n: any) =>
+            setNodes((nds) =>
+              nds.map((n) =>
                 n.id === id ? { ...n, data: { ...n.data, value: e.target.value } } : n
               )
             )
@@ -2908,7 +1494,7 @@ export const PromptNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
 // --- LOGIC NODES ---
 
-export const ConcatenatorNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const ConcatenatorNode = memo(function ConcatenatorNode({ id, data, selected }: NodeProps) {
   const nodeData = data as BaseNodeData;
   const nodes = useNodes();
   const edges = useEdges();
@@ -2920,12 +1506,12 @@ export const ConcatenatorNode = memo(({ id, data, selected }: NodeProps<any>) =>
   const connectedEdges = useMemo(
     () =>
       edges
-        .filter((e: any) => e.target === id)
-        .sort((a: any, b: any) => (a.targetHandle || '').localeCompare(b.targetHandle || '')),
+        .filter((e) => e.target === id)
+        .sort((a, b) => (a.targetHandle || '').localeCompare(b.targetHandle || '')),
     [edges, id]
   );
 
-  const connectedHandleIds = new Set(connectedEdges.map((e: any) => e.targetHandle));
+  const connectedHandleIds = new Set(connectedEdges.map((e) => e.targetHandle));
   const visibleCount = Math.min(Math.max(connectedEdges.length + 1, 1), ALL_HANDLES.length);
 
   useEffect(() => {
@@ -2934,14 +1520,14 @@ export const ConcatenatorNode = memo(({ id, data, selected }: NodeProps<any>) =>
 
   // Dynamic logic: result is concatenation of all connected prompt values
   useEffect(() => {
-    const values = connectedEdges.map((edge: any) =>
+    const values = connectedEdges.map((edge) =>
       resolvePromptValueFromEdgeSource(edge, nodes)
     );
 
-    const result = values.filter((v: any) => v).join(' ').trim();
+    const result = values.filter((v): v is string => Boolean(v)).join(' ').trim();
     if (result !== (nodeData.value || '')) {
-      setNodes((nds: any) =>
-        nds.map((n: any) => (n.id === id ? { ...n, data: { ...n.data, value: result } } : n))
+      setNodes((nds) =>
+        nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, value: result } } : n))
       );
     }
   }, [connectedEdges, nodes, id, nodeData.value, setNodes]);
@@ -3015,7 +1601,7 @@ function formatListadoOutput(label: string | undefined, rawOptionValue: string):
   return `${name}: ${rawOptionValue}`;
 }
 
-export const ListadoNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const ListadoNode = memo(function ListadoNode({ id, data, selected }: NodeProps) {
   const nodeData = data as BaseNodeData & { selectedEdgeId?: string };
   const nodes = useNodes();
   const edges = useEdges();
@@ -3027,12 +1613,12 @@ export const ListadoNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const connectedEdges = useMemo(
     () =>
       edges
-        .filter((e: any) => e.target === id)
-        .sort((a: any, b: any) => (a.targetHandle || '').localeCompare(b.targetHandle || '')),
+        .filter((e) => e.target === id)
+        .sort((a, b) => (a.targetHandle || '').localeCompare(b.targetHandle || '')),
     [edges, id]
   );
 
-  const connectedHandleIds = new Set(connectedEdges.map((e: any) => e.targetHandle));
+  const connectedHandleIds = new Set(connectedEdges.map((e) => e.targetHandle));
   /** Una ranura vacía debajo de la última conexión (máx. 8). */
   const visibleCount = Math.min(Math.max(connectedEdges.length + 1, 1), ALL_HANDLES.length);
 
@@ -3041,7 +1627,7 @@ export const ListadoNode = memo(({ id, data, selected }: NodeProps<any>) => {
   }, [id, visibleCount, updateNodeInternals]);
 
   const options = useMemo(() => {
-    return connectedEdges.map((edge: any, i: number) => {
+    return connectedEdges.map((edge, i: number) => {
       const val = String(resolvePromptValueFromEdgeSource(edge, nodes) ?? '');
       const truncated = val.length > 72 ? `${val.slice(0, 72)}…` : val;
       const display = val.trim() ? truncated : `(vacío) · entrada ${i + 1}`;
@@ -3057,8 +1643,8 @@ export const ListadoNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   useEffect(() => {
     if (options.length === 0) {
-      setNodes((nds: any) =>
-        nds.map((n: any) => {
+      setNodes((nds) =>
+        nds.map((n) => {
           if (n.id !== id) return n;
           const d = n.data || {};
           if ((d.value || '') === '' && !d.selectedEdgeId) return n;
@@ -3074,8 +1660,8 @@ export const ListadoNode = memo(({ id, data, selected }: NodeProps<any>) => {
     const chosen = options.find((o) => o.edgeId === edgeId)!;
     const newVal = formatListadoOutput(nodeData.label, chosen.value);
     if (newVal !== (nodeData.value ?? '') || edgeId !== nodeData.selectedEdgeId) {
-      setNodes((nds: any) =>
-        nds.map((n: any) =>
+      setNodes((nds) =>
+        nds.map((n) =>
           n.id === id
             ? { ...n, data: { ...n.data, value: newVal, selectedEdgeId: edgeId } }
             : n
@@ -3129,8 +1715,8 @@ export const ListadoNode = memo(({ id, data, selected }: NodeProps<any>) => {
           onChange={(e) => {
             const nextId = e.target.value;
             const opt = options.find((o) => o.edgeId === nextId);
-            setNodes((nds: any) =>
-              nds.map((n: any) => {
+            setNodes((nds) =>
+              nds.map((n) => {
                 if (n.id !== id) return n;
                 const lbl = (n.data as BaseNodeData)?.label;
                 return {
@@ -3171,7 +1757,7 @@ export const ListadoNode = memo(({ id, data, selected }: NodeProps<any>) => {
   );
 });
 
-export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const EnhancerNode = memo(function EnhancerNode({ id, data, selected }: NodeProps) {
   const nodeData = data as BaseNodeData;
   const nodes = useNodes();
   const edges = useEdges();
@@ -3184,12 +1770,12 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   // All edges targeting this node, sorted by handle id
   const connectedEdges = useMemo(() =>
-    edges.filter((e: any) => e.target === id)
-         .sort((a: any, b: any) => (a.targetHandle || '').localeCompare(b.targetHandle || '')),
+    edges.filter((e) => e.target === id)
+         .sort((a, b) => (a.targetHandle || '').localeCompare(b.targetHandle || '')),
     [edges, id]
   );
 
-  const connectedHandleIds = new Set(connectedEdges.map((e: any) => e.targetHandle));
+  const connectedHandleIds = new Set(connectedEdges.map((e) => e.targetHandle));
   /** Misma lógica que Concatenator: al menos 1 ranura visible. */
   const visibleCount = Math.min(Math.max(connectedEdges.length + 1, 1), ALL_HANDLES.length);
 
@@ -3201,7 +1787,7 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const concatenated = useMemo(
     () =>
       connectedEdges
-        .map((edge: any) => resolvePromptValueFromEdgeSource(edge, nodes))
+        .map((edge) => resolvePromptValueFromEdgeSource(edge, nodes))
         .filter(Boolean)
         .join('\n\n'),
     [connectedEdges, nodes]
@@ -3223,8 +1809,8 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
           throw new Error(err.error || `HTTP ${res.status}`);
         }
         const json = await res.json();
-        setNodes((nds: any) =>
-          nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, value: json.enhanced } } : n)
+        setNodes((nds) =>
+          nds.map((n) => n.id === id ? { ...n, data: { ...n.data, value: json.enhanced } } : n)
         );
       });
     } catch (err) {
@@ -3234,9 +1820,7 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
     }
   }, [concatenated, nodeData.value, id, setNodes]);
 
-  const enhancerOnRunRef = useRef(handleEnhance);
-  enhancerOnRunRef.current = handleEnhance;
-  useRegisterAssistantNodeRun(id, () => enhancerOnRunRef.current());
+  useRegisterAssistantNodeRun(id, handleEnhance);
 
   return (
     <div className="custom-node tool-node" style={{ minWidth: 240 }}>
@@ -3328,7 +1912,7 @@ export const EnhancerNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
 
 
-export const GrokNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const GrokNode = memo(function GrokNode({ id, data, selected }: NodeProps) {
   const nodeData = data as BaseNodeData;
   const { setNodes } = useReactFlow();
   const nodes = useNodes();
@@ -3393,7 +1977,7 @@ export const GrokNode = memo(({ id, data, selected }: NodeProps<any>) => {
               const videoUrl = sJson.output?.[0];
               setResult(videoUrl ?? null);
               if (videoUrl) {
-                setNodes((nds: any) => nds.map((n: any) => {
+                setNodes((nds) => nds.map((n) => {
                   if (n.id !== id) return n;
                   const versions = captureCurrentOutput(n.data, videoUrl, 'graph-run');
                   return { ...n, data: { ...n.data, value: videoUrl, type: 'video', _assetVersions: versions } };
@@ -3414,9 +1998,7 @@ export const GrokNode = memo(({ id, data, selected }: NodeProps<any>) => {
     setStatus(ok ? 'success' : 'error');
   };
 
-  const grokOnRunRef = useRef(onRun);
-  grokOnRunRef.current = onRun;
-  useRegisterAssistantNodeRun(id, () => grokOnRunRef.current());
+  useRegisterAssistantNodeRun(id, onRun);
 
   return (
     <div className={`custom-node processor-node ${status === 'running' ? 'node-glow-running' : ''}`} style={{ minWidth: 300 }}>
@@ -3443,15 +2025,15 @@ export const GrokNode = memo(({ id, data, selected }: NodeProps<any>) => {
       </div>
       <div className="node-content">
         <div className="flex gap-2 mb-3">
-          <select className="node-input text-[10px]" value={nodeData.resolution || '720p'} onChange={(e) => setNodes((nds: any) => nds.map((n: any) => n.id === id ? {...n, data: {...n.data, resolution: e.target.value}} : n))}>
+          <select className="node-input text-[10px]" value={nodeData.resolution || '720p'} onChange={(e) => setNodes((nds) => nds.map((n) => n.id === id ? {...n, data: {...n.data, resolution: e.target.value}} : n))}>
             <option value="720p">720p</option>
             <option value="480p">480p</option>
           </select>
-          <select className="node-input text-[10px]" value={nodeData.aspect_ratio || '16:9'} onChange={(e) => setNodes((nds: any) => nds.map((n: any) => n.id === id ? {...n, data: {...n.data, aspect_ratio: e.target.value}} : n))}>
+          <select className="node-input text-[10px]" value={nodeData.aspect_ratio || '16:9'} onChange={(e) => setNodes((nds) => nds.map((n) => n.id === id ? {...n, data: {...n.data, aspect_ratio: e.target.value}} : n))}>
             <option value="16:9">16:9</option>
             <option value="9:16">9:16</option>
           </select>
-          <select className="node-input text-[10px]" value={nodeData.duration || 5} onChange={(e) => setNodes((nds: any) => nds.map((n: any) => n.id === id ? {...n, data: {...n.data, duration: Number(e.target.value)}} : n))}>
+          <select className="node-input text-[10px]" value={nodeData.duration || 5} onChange={(e) => setNodes((nds) => nds.map((n) => n.id === id ? {...n, data: {...n.data, duration: Number(e.target.value)}} : n))}>
             <option value={5}>5s</option>
             <option value={10}>10s</option>
           </select>
@@ -3473,20 +2055,6 @@ const NB_MODELS = [
   { id: 'flash31', label: 'Flash 3.1', badge: 'SPEED+', color: 'text-cyan-400', borderColor: 'border-cyan-500/40', bg: 'bg-cyan-500/10' },
   { id: 'pro3',    label: 'Pro 3',     badge: 'PRO',     color: 'text-violet-400', borderColor: 'border-violet-500/40', bg: 'bg-violet-500/10' },
   { id: 'flash25', label: 'Flash 2.5', badge: 'FAST',    color: 'text-emerald-400', borderColor: 'border-emerald-500/40', bg: 'bg-emerald-500/10' },
-] as const;
-
-const ASPECT_RATIOS = [
-  { value: '1:1',  label: '1:1',  icon: '⬛', category: 'standard' },
-  { value: '16:9', label: '16:9', icon: '▬', category: 'standard' },
-  { value: '9:16', label: '9:16', icon: '▮', category: 'standard' },
-  { value: '3:2',  label: '3:2',  icon: '▬', category: 'standard' },
-  { value: '4:3',  label: '4:3',  icon: '▬', category: 'standard' },
-  { value: '2:3',  label: '2:3',  icon: '▮', category: 'standard' },
-  { value: '3:4',  label: '3:4',  icon: '▮', category: 'standard' },
-  { value: '4:1',  label: '4:1',  icon: '━', category: 'extreme' },
-  { value: '1:4',  label: '1:4',  icon: '┃', category: 'extreme' },
-  { value: '8:1',  label: '8:1',  icon: '━', category: 'extreme' },
-  { value: '1:8',  label: '1:8',  icon: '┃', category: 'extreme' },
 ] as const;
 
 const REF_SLOTS = [
@@ -3764,13 +2332,13 @@ const NanaBananaPaintCanvas = memo(({
     if (ctx) ctx.clearRect(0, 0, natW, natH);
   }, [natW, natH]);
 
-  const getXY = (e: PointerEvent, canvas: HTMLCanvasElement) => {
+  const getXY = useCallback((e: PointerEvent, canvas: HTMLCanvasElement) => {
     const r = canvas.getBoundingClientRect();
     return {
       x: (e.clientX - r.left) * (natW / r.width),
       y: (e.clientY - r.top)  * (natH / r.height),
     };
-  };
+  }, [natH, natW]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -3812,7 +2380,7 @@ const NanaBananaPaintCanvas = memo(({
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerup', onUp);
     };
-  }, [active, color, brushSize, natW, natH, bounds.w, onSave]);
+  }, [active, color, brushSize, natW, natH, bounds.w, getXY, onSave]);
 
   return (
     <canvas
@@ -4382,8 +2950,8 @@ const NanoBananaStudio = memo(({
         try {
           try {
             await runAnalyzeBlock();
-          } catch (e: any) {
-            console.warn('[analyze-areas] AI call failed, using fallback:', e.message);
+          } catch (e: unknown) {
+            console.warn('[analyze-areas] AI call failed, using fallback:', e instanceof Error ? e.message : String(e));
             const validChangesFb = changes.filter((c) => c.description.trim());
             fullPrompt = [
               'REFERENCIA 1: imagen base. Mantén todo lo que no se indica cambiar, conservando composición donde aplique.',
@@ -4490,7 +3058,7 @@ const NanoBananaStudio = memo(({
           genFinishedOk = true;
         });
         if (!ok) setGenStatus('error');
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.error('[NanoBananaStudio] onGenerate (studio pipeline):', e);
         setGenStatus('error');
       } finally {
@@ -4585,7 +3153,7 @@ const NanoBananaStudio = memo(({
         genFinishedOkLegacy = true;
       });
       if (!ok) setGenStatus('error');
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error('[NanoBananaStudio] onGenerate:', e);
       setGenStatus('error');
     } finally {
@@ -4680,7 +3248,7 @@ const NanoBananaStudio = memo(({
         genFinishedOk = true;
       });
       if (!ok) setGenStatus('error');
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error('[NanoBananaStudio] onGenerateFromCall:', e);
       setGenStatus('error');
     } finally {
@@ -5424,7 +3992,7 @@ const NanoBananaStudio = memo(({
 NanoBananaStudio.displayName = 'NanoBananaStudio';
 
 
-export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const NanoBananaNode = memo(function NanoBananaNode({ id, data, selected }: NodeProps) {
   const nodeData = data as BaseNodeData & {
     aspect_ratio?: string;
     resolution?: string;
@@ -5442,6 +4010,7 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const [showFullSize, setShowFullSize] = useState(false);
   const [showStudio, setShowStudio] = useState(false);
   const currentNode = nodes.find((node) => node.id === id);
+  const currentFrameNode = useCurrentNodeFrameSnapshot(currentNode);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   /** Al abrir Studio desde PhotoRoom «Modificar imagen con IA»: id del nodo PhotoRoom para fitView + reabrir su Studio. */
@@ -5479,7 +4048,7 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
         return null;
       }
     };
-  }, [brainConnected, brainCanvasCtx?.assetsMetadata]);
+  }, [brainConnected, brainCanvasCtx?.assetsMetadata, id]);
 
   const refreshNanoHandleGeometry = useCallback(() => {
     const run = () => updateNodeInternals(id);
@@ -5500,17 +4069,6 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
   }, [refreshNanoHandleGeometry, brainConnected]);
 
   useEffect(() => {
-    const onViewerDl = (ev: Event) => {
-      const nid = (ev as CustomEvent<{ nodeId?: string }>).detail?.nodeId;
-      if (nid !== id) return;
-      brainTelemetry.track({
-        kind: "CONTENT_EXPORTED",
-        artifactType: "image",
-        exportFormat: "viewer_download",
-        custom: { surface: "spaces_viewer" },
-      });
-      void brainTelemetry.flushTelemetry("manual");
-    };
     const onWired = (ev: Event) => {
       const nid = (ev as CustomEvent<{ nodeId?: string }>).detail?.nodeId;
       if (nid !== id) return;
@@ -5521,10 +4079,8 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
         custom: { surface: "downstream_wired" },
       });
     };
-    window.addEventListener("foldder-spaces-viewer-download", onViewerDl as EventListener);
     window.addEventListener("foldder-nano-banana-output-wired", onWired as EventListener);
     return () => {
-      window.removeEventListener("foldder-spaces-viewer-download", onViewerDl as EventListener);
       window.removeEventListener("foldder-nano-banana-output-wired", onWired as EventListener);
     };
   }, [id, brainTelemetry]);
@@ -5553,8 +4109,8 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
       if (parent && isPrBundle && !alreadyCollapsed) {
         const collapsed = applyCanvasGroupCollapse(parentId, graphNodes, graphEdges);
         if (collapsed) {
-          setNodes(collapsed.nodes as any);
-          setEdges(collapsed.edges as any);
+          setNodes(collapsed.nodes);
+          setEdges(collapsed.edges);
         }
       }
     }
@@ -5603,8 +4159,8 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   const onGenerationHistoryChange = useCallback(
     (action: React.SetStateAction<string[]>) => {
-      setNodes((nds: any) =>
-        nds.map((n: any) => {
+      setNodes((nds) =>
+        nds.map((n) => {
           if (n.id !== id) return n;
           const prev = Array.isArray(n.data.generationHistory) ? n.data.generationHistory : [];
           const next = typeof action === "function" ? (action as (p: string[]) => string[])(prev) : action;
@@ -5636,8 +4192,8 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const isPro = selectedModel === 'pro3';
   const isFlash25 = selectedModel === 'flash25';
 
-  const updateData = (key: string, val: any) =>
-    setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n));
+  const updateData = (key: string, val: unknown) =>
+    setNodes((nds) => nds.map((n) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n));
 
   // Collect all connected reference images
   const getRefImages = () => {
@@ -5707,7 +4263,6 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
         setResult(out);
         setNodes(nds => nds.map(n => {
           if (n.id !== id) return n;
-          const nextKey = typeof json.key === 'string' ? json.key : undefined;
           const oldVal = typeof n.data?.value === 'string' && n.data.value ? n.data.value : null;
           const h = Array.isArray(n.data.generationHistory) ? [...n.data.generationHistory] : [];
           if (oldVal && oldVal !== out && !h.includes(oldVal)) h.push(oldVal);
@@ -5762,9 +4317,7 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
     }
   };
 
-  const onRunRef = useRef(onRun);
-  onRunRef.current = onRun;
-  useRegisterAssistantNodeRun(id, () => onRunRef.current());
+  useRegisterAssistantNodeRun(id, onRun);
 
   // Preview of connected ref slot 0 (the base image)
   const refImgPreview = (() => {
@@ -5789,7 +4342,7 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
   useLayoutEffect(() => {
     const chromeHeight = resolveNodeChromeHeight(frameRef.current, previewRef.current);
     const nextFrame = resolveAspectLockedNodeFrame({
-      node: currentNode,
+      node: currentFrameNode,
       contentWidth: nanoAspect.width,
       contentHeight: nanoAspect.height,
       minWidth: 240,
@@ -5798,9 +4351,9 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
       maxHeight: STUDIO_NODE_MAX_HEIGHT,
       chromeHeight,
     });
-    if (!nodeFrameNeedsSync(currentNode, nextFrame)) return;
-    setNodes((nds: any) =>
-      nds.map((node: any) =>
+    if (!nodeFrameNeedsSync(currentFrameNode, nextFrame)) return;
+    setNodes((nds) =>
+      nds.map((node) =>
         node.id === id
           ? {
               ...node,
@@ -5813,10 +4366,7 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
     );
     requestAnimationFrame(() => updateNodeInternals(id));
   }, [
-    currentNode?.width,
-    currentNode?.height,
-    currentNode?.measured?.width,
-    currentNode?.measured?.height,
+    currentFrameNode,
     id,
     nanoAspect.height,
     nanoAspect.width,
@@ -5891,10 +4441,6 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
             {nbResLabel}
           </span>
         </div>
-        <ViewerOpenButton
-          nodeId={id}
-          disabled={!outputImage}
-        />
       </div>
 
       {/* ── Main image area: preview encaja sin recortar (object-contain); la imagen generada sigue con su resolución real ── */}
@@ -6055,7 +4601,7 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
       {/* ── NanoBanana Studio ── */}
       {showStudio && (() => {
-        const promptEdge = edges.find((e: any) => e.target === id && e.targetHandle === 'prompt');
+        const promptEdge = edges.find((e) => e.target === id && e.targetHandle === 'prompt');
         const promptVal = promptEdge
           ? String(resolvePromptValueFromEdgeSource(promptEdge, nodes) ?? '')
           : '';
@@ -6097,7 +4643,7 @@ export const NanoBananaNode = memo(({ id, data, selected }: NodeProps<any>) => {
                 custom: { surface: "studio_output_committed" },
               });
               setResult(url);
-              setNodes((nds: any) => nds.map((n: any) => {
+              setNodes((nds) => nds.map((n) => {
                 if (n.id !== id) return n;
                 const data: Record<string, unknown> = { ...n.data, value: url, type: 'image' };
                 if (s3Key) data.s3Key = s3Key;
@@ -6154,7 +4700,7 @@ const FONT_WEIGHTS = [
   { label: 'Black',   value: '900' },
 ];
 
-export const TextOverlayNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const TextOverlayNode = memo(function TextOverlayNode({ id, data, selected }: NodeProps) {
   const nodeData = data as BaseNodeData & {
     text?: string;
     fontFamily?: string;
@@ -6178,8 +4724,8 @@ export const TextOverlayNode = memo(({ id, data, selected }: NodeProps<any>) => 
   const canvasW    = nodeData.canvasW   ?? 1920;
   const canvasH    = nodeData.canvasH   ?? 400;
 
-  const updateData = (key: string, val: any) =>
-    setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n));
+  const updateData = (key: string, val: unknown) =>
+    setNodes((nds) => nds.map((n) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n));
 
   // Render text on canvas and push to output
   const renderText = useCallback(() => {
@@ -6222,7 +4768,7 @@ export const TextOverlayNode = memo(({ id, data, selected }: NodeProps<any>) => 
     }
 
     // Push to output
-    setNodes((nds: any) => nds.map((n: any) =>
+    setNodes((nds) => nds.map((n) =>
       n.id === id ? { ...n, data: { ...n.data, value: dataUrl, type: 'image' } } : n
     ));
   }, [text, fontFamily, fontSize, color, fontWeight, textAlign, canvasW, canvasH, id, setNodes]);
@@ -6385,37 +4931,26 @@ export const TextOverlayNode = memo(({ id, data, selected }: NodeProps<any>) => 
 });
 
 
-export const BackgroundRemoverNode = memo(({ id, data, selected }: NodeProps<any>) => {
-  const nodeData = data as BaseNodeData & { 
-    expansion?: number,
-    feather?: number,
-
-    threshold?: number,
-    result_rgba?: string,
-    result_mask?: string,
-    bbox?: number[]
-  };
+export const BackgroundRemoverNode = memo(function BackgroundRemoverNode({ id, data, selected }: NodeProps) {
+  const nodeData = data as BackgroundRemoverNodeData;
   const nodes = useNodes();
   const edges = useEdges();
   const { setNodes } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
   const [status, setStatus] = useState('idle');
-  const [previewMode, setPreviewMode] = useState<'original' | 'mask' | 'cutout'>('cutout');
+  const [previewMode, setPreviewMode] = useState<MattePreviewMode>('cutout');
   const [isStudioOpen, setIsStudioOpen] = useState(false);
   const currentNode = nodes.find((node) => node.id === id);
+  const currentFrameNode = useCurrentNodeFrameSnapshot(currentNode);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
-  const [aspectImageSize, setAspectImageSize] = useState<{ width: number; height: number } | null>(null);
+  const [aspectImageSize, setAspectImageSize] = useState<{ url: string; width: number; height: number } | null>(null);
 
-  useEffect(() => {
-    if (nodeData.threshold === undefined) {
-      updateNestedData('threshold', 0.9);
-    }
-  }, []);
-
-  const updateNestedData = (key: string, val: any) => {
-    setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n));
+  const updateNestedData = (key: string, val: unknown) => {
+    setNodes((nds) => nds.map((n) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n));
   };
+
+  const threshold = nodeData.threshold ?? 0.9;
 
   const onRun = async () => {
     console.log("[BackgroundRemover] onRun triggered");
@@ -6457,14 +4992,14 @@ export const BackgroundRemoverNode = memo(({ id, data, selected }: NodeProps<any
           image: media,
           expansion: nodeData.expansion ?? 0,
           feather: nodeData.feather ?? 0.6,
-          threshold: nodeData.threshold ?? 0.9
+          threshold
         })
       });
 
       const json = await res.json();
       if (json.error) throw new Error(json.error);
 
-      setNodes((nds: any) => nds.map((n: any) => n.id === id ? {
+      setNodes((nds) => nds.map((n) => n.id === id ? {
         ...n,
         data: {
           ...n.data,
@@ -6482,27 +5017,23 @@ export const BackgroundRemoverNode = memo(({ id, data, selected }: NodeProps<any
     setStatus(ok ? 'success' : 'idle');
   };
 
-  const matteOnRunRef = useRef(onRun);
-  matteOnRunRef.current = onRun;
-  useRegisterAssistantNodeRun(id, () => matteOnRunRef.current());
+  useRegisterAssistantNodeRun(id, onRun);
 
   const sourceEdge = edges.find(e => e.target === id && e.targetHandle === 'media');
   const sourceNode = nodes.find(n => n.id === sourceEdge?.source);
   const originalPreview = sourceNode?.data.value as string | undefined;
   const aspectImageUrl = originalPreview || nodeData.result_rgba || nodeData.result_mask || null;
+  const activeAspectImageSize =
+    aspectImageUrl && aspectImageSize?.url === aspectImageUrl ? aspectImageSize : null;
+  const aspectContentWidth = activeAspectImageSize?.width ?? null;
+  const aspectContentHeight = activeAspectImageSize?.height ?? null;
 
   useEffect(() => {
-    if (!aspectImageUrl) {
-      setAspectImageSize(null);
-      return;
-    }
+    if (!aspectImageUrl) return;
     let cancelled = false;
     loadImageDimensions(aspectImageUrl)
       .then(({ width, height }) => {
-        if (!cancelled) setAspectImageSize({ width, height });
-      })
-      .catch(() => {
-        if (!cancelled) setAspectImageSize(null);
+        if (!cancelled) setAspectImageSize({ url: aspectImageUrl, width, height });
       });
     return () => {
       cancelled = true;
@@ -6510,21 +5041,21 @@ export const BackgroundRemoverNode = memo(({ id, data, selected }: NodeProps<any
   }, [aspectImageUrl]);
 
   useLayoutEffect(() => {
-    if (!aspectImageSize) return;
+    if (aspectContentWidth == null || aspectContentHeight == null) return;
     const chromeHeight = resolveNodeChromeHeight(frameRef.current, previewRef.current);
     const nextFrame = resolveAspectLockedNodeFrame({
-      node: currentNode,
-      contentWidth: aspectImageSize.width,
-      contentHeight: aspectImageSize.height,
+      node: currentFrameNode,
+      contentWidth: aspectContentWidth,
+      contentHeight: aspectContentHeight,
       minWidth: 320,
       maxWidth: 700,
       minHeight: 320,
       maxHeight: STUDIO_NODE_MAX_HEIGHT,
       chromeHeight,
     });
-    if (!nodeFrameNeedsSync(currentNode, nextFrame)) return;
-    setNodes((nds: any) =>
-      nds.map((node: any) =>
+    if (!nodeFrameNeedsSync(currentFrameNode, nextFrame)) return;
+    setNodes((nds) =>
+      nds.map((node) =>
         node.id === id
           ? {
               ...node,
@@ -6537,12 +5068,9 @@ export const BackgroundRemoverNode = memo(({ id, data, selected }: NodeProps<any
     );
     requestAnimationFrame(() => updateNodeInternals(id));
   }, [
-    aspectImageSize?.height,
-    aspectImageSize?.width,
-    currentNode?.width,
-    currentNode?.height,
-    currentNode?.measured?.width,
-    currentNode?.measured?.height,
+    aspectContentHeight,
+    aspectContentWidth,
+    currentFrameNode,
     id,
     setNodes,
     updateNodeInternals,
@@ -6633,11 +5161,11 @@ export const BackgroundRemoverNode = memo(({ id, data, selected }: NodeProps<any
                <div className="space-y-2">
                   <div className="flex justify-between items-center">
                      <span className="text-[9px] font-black uppercase tracking-widest text-gray-500">Threshold (Precision)</span>
-                     <span className="text-[10px] font-mono text-pink-500 font-black bg-pink-500/10 px-2 py-0.5 rounded">{(nodeData.threshold ?? 0.9).toFixed(2)}</span>
+                     <span className="text-[10px] font-mono text-pink-500 font-black bg-pink-500/10 px-2 py-0.5 rounded">{threshold.toFixed(2)}</span>
                   </div>
                   <input 
                     type="range" min="0" max="1" step="0.01"
-                    value={nodeData.threshold ?? 0.9}
+                    value={threshold}
                     onChange={(e) => updateNestedData('threshold', parseFloat(e.target.value))}
                     className="node-slider nodrag accent-pink-500"
                   />
@@ -6705,12 +5233,12 @@ export const BackgroundRemoverNode = memo(({ id, data, selected }: NodeProps<any
 });
 
 interface MatteStudioOverlayProps {
-  nodeData: any;
-  previewMode: string;
-  setPreviewMode: (mode: any) => void;
+  nodeData: BackgroundRemoverNodeData;
+  previewMode: MattePreviewMode;
+  setPreviewMode: React.Dispatch<React.SetStateAction<MattePreviewMode>>;
   onRun: () => void;
   status: string;
-  updateNestedData: (key: string, val: any) => void;
+  updateNestedData: (key: string, val: unknown) => void;
   onClose: () => void;
   getPreviewImage: () => string | undefined;
 }
@@ -6853,7 +5381,7 @@ const MatteStudioOverlay = ({
 
 
 
-export const SpaceNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const SpaceNode = memo(function SpaceNode({ id, data, selected }: NodeProps) {
   const nodeData = data as BaseNodeData & { 
     outputType?: string, 
     inputType?: string,
@@ -7015,7 +5543,7 @@ export const SpaceNode = memo(({ id, data, selected }: NodeProps<any>) => {
 });
 
 
-export const SpaceInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const SpaceInputNode = memo(function SpaceInputNode({ id, data, selected }: NodeProps) {
   const nodeData = data as BaseNodeData & { inputType?: string };
   
   const getHandleClass = () => {
@@ -7077,14 +5605,14 @@ export const SpaceInputNode = memo(({ id, data, selected }: NodeProps<any>) => {
   );
 });
 
-export const SpaceOutputNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const SpaceOutputNode = memo(function SpaceOutputNode({ id, data, selected }: NodeProps) {
   const nodeData = data as BaseNodeData & { outputType?: string };
   const nodes = useNodes();
   const edges = useEdges();
 
   // Find what's connected to the 'in' handle
-  const inputEdge = edges.find((e: any) => e.target === id && e.targetHandle === 'in');
-  const sourceNode = inputEdge ? nodes.find((n: any) => n.id === inputEdge.source) : null;
+  const inputEdge = edges.find((e) => e.target === id && e.targetHandle === 'in');
+  const sourceNode = inputEdge ? nodes.find((n) => n.id === inputEdge.source) : null;
   const sourceValue: string | undefined = typeof sourceNode?.data?.value === 'string' ? sourceNode.data.value : undefined;
   // Resolve output type: NODE_REGISTRY is most reliable, fallback to data fields
   const nodeType = sourceNode?.type as string | undefined;
@@ -7163,7 +5691,7 @@ export const SpaceOutputNode = memo(({ id, data, selected }: NodeProps<any>) => 
 
 
 
-export const MediaDescriberNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const MediaDescriberNode = memo(function MediaDescriberNode({ id, data, selected }: NodeProps) {
   const nodeData = data as BaseNodeData;
   const nodes = useNodes();
   const edges = useEdges();
@@ -7188,54 +5716,7 @@ export const MediaDescriberNode = memo(({ id, data, selected }: NodeProps<any>) 
         finalMediaUrl = sd?.value;
         finalMediaType = (sd.outputType || sd.type || 'image') as string;
       } else {
-        finalMediaType =
-          inputNode.type === 'imageComposer' ? 'image' : ((inputNode.data as { type?: string })?.type || 'image');
-      }
-
-      if (inputNode.type === 'imageComposer' && !finalMediaUrl) {
-        const composerEdges = edges.filter(e => e.target === inputNode.id)
-          .sort((a: any, b: any) => (a.targetHandle || '').localeCompare(b.targetHandle || ''));
-
-        const layersConfig: Record<string, any> = inputNode.data.layersConfig || {};
-
-        const layers = composerEdges.map(edge => {
-          const node = nodes.find(n => n.id === edge.source);
-          const hId = edge.targetHandle || 'layer-0';
-          const config = layersConfig[hId] || { x: 0, y: 0, scale: 1 };
-
-          return {
-            type: node?.type,
-            value: (node?.data?.value || ((node?.data as any)?.urls && (node?.data as any)?.urls[(node?.data as any)?.selectedIndex || 0])) as string | undefined,
-            color: node?.data?.color as string | undefined,
-            width: node?.data?.width as number || 0,
-            height: node?.data?.height as number || 0,
-            x: config.x,
-            y: config.y,
-            scale: config.scale
-          };
-        }).filter(l => l.value || l.color);
-
-        if (layers.length === 0) throw new Error("Composer has no layers attached.");
-
-        const formData = new FormData();
-        formData.append('layers', JSON.stringify(layers));
-        formData.append('format', 'jpeg'); // JPEG is smaller for passing to OpenAI
-        formData.append('width', '1920');
-        formData.append('height', '1080');
-        formData.append('previewWidth', '1920');
-        formData.append('previewHeight', '1080');
-
-        const composeRes = await fetch('/api/spaces/compose', { method: 'POST', body: formData });
-        if (!composeRes.ok) throw new Error("Failed to flatten composer image.");
-
-        const blob = await composeRes.blob();
-
-        finalMediaUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
+        finalMediaType = ((inputNode.data as { type?: string })?.type || 'image') as string;
       }
 
       if (!finalMediaUrl) throw new Error("No media URL available to describe.");
@@ -7253,7 +5734,7 @@ export const MediaDescriberNode = memo(({ id, data, selected }: NodeProps<any>) 
 
       if (json.description) {
         setDescription(json.description);
-        setNodes((nds: any) => nds.map((n: any) => (n.id === id ? { ...n, data: { ...n.data, value: json.description } } : n)));
+        setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, value: json.description } } : n)));
       } else {
         throw new Error(json.error || "Failed to analyze");
       }
@@ -7262,9 +5743,7 @@ export const MediaDescriberNode = memo(({ id, data, selected }: NodeProps<any>) 
     if (!ok) console.error("Describe error");
   };
 
-  const onRunRef = useRef(onRun);
-  onRunRef.current = onRun;
-  useRegisterAssistantNodeRun(id, () => onRunRef.current());
+  useRegisterAssistantNodeRun(id, onRun);
 
   return (
     <div className={`custom-node describer-node ${status === 'running' ? 'node-glow-running' : ''}`} style={{ minWidth: 300 }}>
@@ -8427,7 +6906,7 @@ const GeminiVideoStudio = memo(function GeminiVideoStudio({
 });
 GeminiVideoStudio.displayName = 'GeminiVideoStudio';
 
-export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const GeminiVideoNode = memo(function GeminiVideoNode({ id, data, selected }: NodeProps) {
   const nodeData = data as BaseNodeData & {
     videoModel?: 'veo31' | 'seedance2';
     videoFormat?: string;
@@ -8455,6 +6934,7 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
   const [result, setResult] = useState<string | null>(nodeData.value || null);
   const [showStudio, setShowStudio] = useState(false);
   const currentNode = nodes.find((node) => node.id === id);
+  const currentFrameNode = useCurrentNodeFrameSnapshot(currentNode);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
 
@@ -8465,8 +6945,8 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
     if (!openVideoStudioFromPresenter) return;
     const timer = window.setTimeout(() => {
       setShowStudio(true);
-      setNodes((nds: any) =>
-        nds.map((n: any) =>
+      setNodes((nds) =>
+        nds.map((n) =>
           n.id === id ? { ...n, data: { ...n.data, _foldderOpenVideoStudio: undefined } } : n,
         ),
       );
@@ -8518,8 +6998,8 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
     if (fmtMatch && durMatch && resMatch) {
       return;
     }
-    setNodes((nds: any) =>
-      nds.map((n: any) => {
+    setNodes((nds) =>
+      nds.map((n) => {
         if (n.id !== id) return n;
         return {
           ...n,
@@ -8564,7 +7044,7 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
   useLayoutEffect(() => {
     const chromeHeight = resolveNodeChromeHeight(frameRef.current, previewRef.current);
     const nextFrame = resolveAspectLockedNodeFrame({
-      node: currentNode,
+      node: currentFrameNode,
       contentWidth: videoAspect.width,
       contentHeight: videoAspect.height,
       minWidth: 280,
@@ -8573,9 +7053,9 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
       maxHeight: STUDIO_NODE_MAX_HEIGHT,
       chromeHeight,
     });
-    if (!nodeFrameNeedsSync(currentNode, nextFrame)) return;
-    setNodes((nds: any) =>
-      nds.map((node: any) =>
+    if (!nodeFrameNeedsSync(currentFrameNode, nextFrame)) return;
+    setNodes((nds) =>
+      nds.map((node) =>
         node.id === id
           ? {
               ...node,
@@ -8588,10 +7068,7 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
     );
     requestAnimationFrame(() => updateNodeInternals(id));
   }, [
-    currentNode?.width,
-    currentNode?.height,
-    currentNode?.measured?.width,
-    currentNode?.measured?.height,
+    currentFrameNode,
     id,
     setNodes,
     updateNodeInternals,
@@ -8665,14 +7142,14 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
     const nodes = getNodes();
     
     // Find inputs
-    const promptEdge = edges.find((e: any) => e.target === id && e.targetHandle === 'prompt');
-    const firstFrameEdge = edges.find((e: any) => e.target === id && e.targetHandle === 'firstFrame');
-    const lastFrameEdge = edges.find((e: any) => e.target === id && e.targetHandle === 'lastFrame');
-    const negativePromptEdge = edges.find((e: any) => e.target === id && e.targetHandle === 'negativePrompt');
+    const promptEdge = edges.find((e) => e.target === id && e.targetHandle === 'prompt');
+    const firstFrameEdge = edges.find((e) => e.target === id && e.targetHandle === 'firstFrame');
+    const lastFrameEdge = edges.find((e) => e.target === id && e.targetHandle === 'lastFrame');
+    const negativePromptEdge = edges.find((e) => e.target === id && e.targetHandle === 'negativePrompt');
 
-    const findSourceValue = (edge: any) => {
+    const findSourceValue = (edge: typeof promptEdge) => {
       if (!edge) return null;
-      const v = resolvePromptValueFromEdgeSource(edge, nodes as Node[]);
+      const v = resolvePromptValueFromEdgeSource(edge, nodes);
       return v || null;
     };
 
@@ -8765,12 +7242,10 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
     }
   };
 
-  const videoGenOnRunRef = useRef(onRun);
-  videoGenOnRunRef.current = onRun;
-  useRegisterAssistantNodeRun(id, () => videoGenOnRunRef.current());
+  useRegisterAssistantNodeRun(id, onRun);
 
-  const updateData = (key: string, val: any) => {
-    setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n));
+  const updateData = (key: string, val: unknown) => {
+    setNodes((nds) => nds.map((n) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n));
   };
 
   return (
@@ -8822,7 +7297,6 @@ export const GeminiVideoNode = memo(({ id, data, selected }: NodeProps<any>) => 
         >
           {nodeData.videoModel === 'seedance2' ? 'SEEDANCE 2' : 'VEO 3.1'}
         </div>
-        <ViewerOpenButton nodeId={id} disabled={!displayVideo} />
       </div>
 
       <div
@@ -8941,7 +7415,7 @@ const PAINT_RATIOS = [
   { label: '9:16', value: '9:16', w: 1080, h: 1920 },
 ];
 
-export const PainterNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const PainterNode = memo(function PainterNode({ id, data, selected }: NodeProps) {
   const { setNodes } = useReactFlow();
   const nodes = useNodes();
   const edges = useEdges();
@@ -8999,14 +7473,14 @@ export const PainterNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const bgHex = bgColor === 'white' ? '#ffffff' : '#111111';
   const color = PAINT_COLORS.find(c => c.id === colorId)?.hex || '#111111';
 
-  const updateData = useCallback((key: string, val: any) =>
-    setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n))
+  const updateData = useCallback((key: string, val: unknown) =>
+    setNodes((nds) => nds.map((n) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n))
   , [id, setNodes]);
 
   const saveToNode = useCallback(() => {
     if (!canvasRef.current) return;
     const url = canvasRef.current.toDataURL('image/png');
-    setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, value: url, type: 'image' } } : n));
+    setNodes((nds) => nds.map((n) => n.id === id ? { ...n, data: { ...n.data, value: url, type: 'image' } } : n));
   }, [id, setNodes]);
 
   // Init canvas — saved `data.value` wins; else optional upstream Base image; else flat fill
@@ -9121,7 +7595,7 @@ export const PainterNode = memo(({ id, data, selected }: NodeProps<any>) => {
     ctx.moveTo(x, y);
   };
 
-  const onPointerUp = (e: React.PointerEvent) => {
+  const onPointerUp = () => {
     if (!isDrawingRef.current) return;
     const ctx = canvasRef.current?.getContext('2d');
     if (ctx) { ctx.closePath(); ctx.globalCompositeOperation = 'source-over'; }
@@ -9384,7 +7858,7 @@ async function resolveImageUrlForCanvasCrop(src: string): Promise<string> {
 }
 
 // --- CROP NODE ---
-export const CropNode = memo(({ id, data, selected }: NodeProps<any>) => {
+export const CropNode = memo(function CropNode({ id, data, selected }: NodeProps) {
   const { setNodes } = useReactFlow();
   const edges = useEdges();
   const nodes = useNodes();
@@ -9395,13 +7869,13 @@ export const CropNode = memo(({ id, data, selected }: NodeProps<any>) => {
   };
   
   const [aspectRatio, setAspectRatio] = useState(nodeData.aspectRatio || 'free'); 
-  const [crop, setCrop] = useState(nodeData.cropConfig || { x: 10, y: 10, w: 80, h: 80 }); 
+  const [crop, setCrop] = useState<CropRect>(nodeData.cropConfig || { x: 10, y: 10, w: 80, h: 80 }); 
   
   const previewRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   
   const [draggingAction, setDraggingAction] = useState<'move' | 'nw' | 'ne' | 'sw' | 'se' | null>(null);
-  const [dragStartInfo, setDragStartInfo] = useState<{ startX: number, startY: number, initialCrop: any } | null>(null);
+  const [dragStartInfo, setDragStartInfo] = useState<{ startX: number, startY: number, initialCrop: CropRect } | null>(null);
   const latestCropRef = useRef(crop);
   useEffect(() => {
     latestCropRef.current = crop;
@@ -9409,15 +7883,15 @@ export const CropNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   const inputEdge = edges.find(e => e.target === id && e.targetHandle === 'image');
   const inputNode = nodes.find(n => n.id === inputEdge?.source);
-  const sourceHandle = (inputEdge as any)?.sourceHandle;
+  const sourceHandle = inputEdge?.sourceHandle;
   const rawValue = sourceHandle 
     ? (inputNode?.data[sourceHandle] || inputNode?.data[`result_${sourceHandle}`] || inputNode?.data.value)
     : inputNode?.data?.value;
     
   const sourceImage = typeof rawValue === 'string' ? rawValue : undefined;
 
-  const updateData = (key: string, val: any) => {
-    setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n));
+  const updateData = (key: string, val: unknown) => {
+    setNodes((nds) => nds.map((n) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n));
   };
   
   const commitCropRect = useCallback(
@@ -9487,8 +7961,8 @@ export const CropNode = memo(({ id, data, selected }: NodeProps<any>) => {
             return;
           }
 
-          setNodes((nds: any) =>
-            nds.map((n: any) =>
+          setNodes((nds) =>
+            nds.map((n) =>
               n.id === id
                 ? {
                     ...n,
@@ -9517,15 +7991,13 @@ export const CropNode = memo(({ id, data, selected }: NodeProps<any>) => {
     [sourceImage, id, setNodes, aspectRatio],
   );
 
-  const commitCropRectRef = useRef(commitCropRect);
-  commitCropRectRef.current = commitCropRect;
   useEffect(() => {
     if (!sourceImage) return;
     const t = window.setTimeout(() => {
-      commitCropRectRef.current(latestCropRef.current);
+      commitCropRect(latestCropRef.current);
     }, 150);
     return () => clearTimeout(t);
-  }, [sourceImage]);
+  }, [commitCropRect, sourceImage]);
 
   const handlePointerDown = (e: React.PointerEvent, action: 'move' | 'nw' | 'ne' | 'sw' | 'se') => {
     e.preventDefault();
@@ -9687,620 +8159,6 @@ export const CropNode = memo(({ id, data, selected }: NodeProps<any>) => {
         <span className="handle-label text-cyan-500">Cropped Out</span>
         <FoldderDataHandle type="source" position={Position.Right} id="image" dataType="image" />
       </div>
-    </div>
-  );
-});
-
-// --- BEZIER MASK NODE ---
-export const BezierMaskNode = memo(({ id, data, selected }: NodeProps<any>) => {
-  const { setNodes } = useReactFlow();
-  const updateNodeInternals = useUpdateNodeInternals();
-  const edges = useEdges();
-  const nodes = useNodes();
-  
-  const nodeData = data as BaseNodeData & { 
-    points?: any[]; 
-    closed?: boolean;
-    invert?: boolean;
-    result_mask?: string;
-    result_rgba?: string;
-  };
-
-  const [points, setPoints] = useState<any[]>(nodeData.points || []);
-  const [closed, setClosed] = useState<boolean>(nodeData.closed || false);
-  const [invert, setInvert] = useState<boolean>(nodeData.invert || false);
-  const [mode, setMode] = useState<'draw' | 'edit'>('draw');
-  const [isStudioOpen, setIsStudioOpen] = useState(false);
-  const currentNode = nodes.find((node) => node.id === id);
-  const frameRef = useRef<HTMLDivElement | null>(null);
-  const previewRef = useRef<HTMLDivElement | null>(null);
-  const [aspectImageSize, setAspectImageSize] = useState<{ width: number; height: number } | null>(null);
-
-  useEffect(() => {
-    if (isStudioOpen) document.body.classList.add('nb-studio-open');
-    else document.body.classList.remove('nb-studio-open');
-    return () => document.body.classList.remove('nb-studio-open');
-  }, [isStudioOpen]);
-
-  const [previewMode, setPreviewMode] = useState<'original' | 'mask' | 'cutout'>('cutout');
-  
-  // Interaction State
-  const [activePointIndex, setActivePointIndex] = useState<number | null>(null);
-  const [activeHandle, setActiveHandle] = useState<'anchor' | 'in' | 'out' | null>(null);
-  
-  // Zoom/Pan State for Fullscreen Editor
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState(false);
-  const [panStart, setPanStart] = useState({ x: 0, y: 0, px: 0, py: 0 });
-  
-  const svgRef = useRef<SVGSVGElement>(null);
-
-  // Retrieve Source Image
-  const inputEdge = edges.find(e => e.target === id);
-  const inputNode = nodes.find(n => n.id === inputEdge?.source);
-  const rawValue = inputNode?.data?.value;
-  const sourceImage = typeof rawValue === 'string' ? rawValue : undefined;
-  const aspectImageUrl = sourceImage || nodeData.result_rgba || nodeData.result_mask || null;
-
-  const updateData = (key: string, val: any) => {
-    setNodes((nds: any) => nds.map((n: any) => n.id === id ? { ...n, data: { ...n.data, [key]: val } } : n));
-  };
-
-  useEffect(() => {
-    if (!aspectImageUrl) {
-      setAspectImageSize(null);
-      return;
-    }
-    let cancelled = false;
-    loadImageDimensions(aspectImageUrl)
-      .then(({ width, height }) => {
-        if (!cancelled) setAspectImageSize({ width, height });
-      })
-      .catch(() => {
-        if (!cancelled) setAspectImageSize(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [aspectImageUrl]);
-
-  useLayoutEffect(() => {
-    if (!aspectImageSize) return;
-    const chromeHeight = resolveNodeChromeHeight(frameRef.current, previewRef.current);
-    const nextFrame = resolveAspectLockedNodeFrame({
-      node: currentNode,
-      contentWidth: aspectImageSize.width,
-      contentHeight: aspectImageSize.height,
-      minWidth: 360,
-      maxWidth: 960,
-      minHeight: 400,
-      maxHeight: STUDIO_NODE_MAX_HEIGHT,
-      chromeHeight,
-    });
-    if (!nodeFrameNeedsSync(currentNode, nextFrame)) return;
-    setNodes((nds: any) =>
-      nds.map((node: any) =>
-        node.id === id
-          ? {
-              ...node,
-              width: nextFrame.width,
-              height: nextFrame.height,
-              style: { ...node.style, width: nextFrame.width, height: nextFrame.height },
-            }
-          : node,
-      ),
-    );
-    requestAnimationFrame(() => updateNodeInternals(id));
-  }, [
-    aspectImageSize?.height,
-    aspectImageSize?.width,
-    currentNode?.width,
-    currentNode?.height,
-    currentNode?.measured?.width,
-    currentNode?.measured?.height,
-    id,
-    setNodes,
-    updateNodeInternals,
-  ]);
-
-  // Convert client coords to 0-100% relative to SVG, accounting for zoom/pan
-  const getCoords = (e: React.PointerEvent) => {
-    if (!svgRef.current) return { x: 0, y: 0 };
-    const rect = svgRef.current.getBoundingClientRect();
-    // Coords in SVG space (in pixels)
-    const svgX = (e.clientX - rect.left);
-    const svgY = (e.clientY - rect.top);
-    // Convert to 0-100 (unzoomed)
-    const x = ((svgX / zoom - pan.x / zoom) / (rect.width / zoom)) * 100;
-    const y = ((svgY / zoom - pan.y / zoom) / (rect.height / zoom)) * 100;
-    return { x, y };
-  };
-
-  const handlePointerDown = (e: React.PointerEvent) => {
-    e.stopPropagation();
-    
-    // Middle mouse or Alt+click = pan
-    if (e.button === 1 || (e.button === 0 && e.altKey)) {
-      setIsPanning(true);
-      setPanStart({ x: e.clientX, y: e.clientY, px: pan.x, py: pan.y });
-      return;
-    }
-
-    if (closed && mode === 'draw') return;
-    const { x, y } = getCoords(e);
-
-    if (mode === 'draw') {
-      if (points.length > 2) {
-        const first = points[0];
-        const dist = Math.hypot(first.anchor.x - x, first.anchor.y - y);
-        if (dist < 3 / zoom) {
-          const newPoints = [...points];
-          setClosed(true);
-          setPoints(newPoints);
-          updateData('points', newPoints);
-          updateData('closed', true);
-          generateMaskFromPoints(newPoints, true);
-          return;
-        }
-      }
-      const newPoint = { anchor: { x, y }, hIn: { x, y }, hOut: { x, y } };
-      const newPoints = [...points, newPoint];
-      setPoints(newPoints);
-      setActivePointIndex(newPoints.length - 1);
-      setActiveHandle('out');
-    }
-  };
-
-  const handlePointerMove = (e: React.PointerEvent) => {
-    e.stopPropagation();
-    
-    if (isPanning) {
-      const dx = e.clientX - panStart.x;
-      const dy = e.clientY - panStart.y;
-      setPan({ x: panStart.px + dx, y: panStart.py + dy });
-      return;
-    }
-
-    if (activePointIndex === null || activeHandle === null) return;
-    const { x, y } = getCoords(e);
-    const pts = [...points];
-    const pt = pts[activePointIndex];
-
-    if (activeHandle === 'anchor') {
-      const dx = x - pt.anchor.x;
-      const dy = y - pt.anchor.y;
-      pt.anchor = { x, y };
-      pt.hIn = { x: pt.hIn.x + dx, y: pt.hIn.y + dy };
-      pt.hOut = { x: pt.hOut.x + dx, y: pt.hOut.y + dy };
-    } else if (activeHandle === 'out') {
-      pt.hOut = { x, y };
-      const dx = x - pt.anchor.x;
-      const dy = y - pt.anchor.y;
-      pt.hIn = { x: pt.anchor.x - dx, y: pt.anchor.y - dy };
-    } else if (activeHandle === 'in') {
-      pt.hIn = { x, y };
-      const dx = x - pt.anchor.x;
-      const dy = y - pt.anchor.y;
-      pt.hOut = { x: pt.anchor.x - dx, y: pt.anchor.y - dy };
-    }
-    setPoints(pts);
-  };
-
-  const handlePointerUp = (e: React.PointerEvent) => {
-    e.stopPropagation();
-    if (isPanning) { setIsPanning(false); return; }
-    if (activePointIndex !== null) {
-      updateData('points', points);
-      setActivePointIndex(null);
-      setActiveHandle(null);
-    }
-  };
-
-  const deletePoint = (i: number) => {
-    const newPoints = points.filter((_, idx) => idx !== i);
-    if (closed && newPoints.length < 3) setClosed(false);
-    setPoints(newPoints);
-    updateData('points', newPoints);
-    if (newPoints.length < 3) { setClosed(false); updateData('closed', false); }
-  };
-
-  const handleWheel = (e: React.WheelEvent) => {
-    e.stopPropagation();
-    const delta = e.deltaY < 0 ? 1.15 : 0.87;
-    setZoom(z => Math.max(0.3, Math.min(10, z * delta)));
-  };
-
-  // Build SVG path data from points
-  const buildPath = (pts: any[], isClosed: boolean) => {
-    if (pts.length === 0) return '';
-    let d = `M ${pts[0].anchor.x} ${pts[0].anchor.y}`;
-    for (let i = 1; i < pts.length; i++) {
-      const prev = pts[i - 1], curr = pts[i];
-      d += ` C ${prev.hOut.x} ${prev.hOut.y}, ${curr.hIn.x} ${curr.hIn.y}, ${curr.anchor.x} ${curr.anchor.y}`;
-    }
-    if (isClosed && pts.length > 2) {
-      const prev = pts[pts.length - 1], curr = pts[0];
-      d += ` C ${prev.hOut.x} ${prev.hOut.y}, ${curr.hIn.x} ${curr.hIn.y}, ${curr.anchor.x} ${curr.anchor.y} Z`;
-    }
-    return d;
-  };
-  const pathD = buildPath(points, closed);
-
-  // Helper: draws the bezier path on a 2d context (W x H canvas, pts in 0-100% space)
-  const drawBezierPath = (ctx: CanvasRenderingContext2D, pts: any[], isClosed: boolean, W: number, H: number) => {
-    ctx.beginPath();
-    ctx.moveTo((pts[0].anchor.x / 100) * W, (pts[0].anchor.y / 100) * H);
-    for (let i = 1; i < pts.length; i++) {
-      const p = pts[i - 1], c = pts[i];
-      ctx.bezierCurveTo(
-        (p.hOut.x / 100) * W, (p.hOut.y / 100) * H,
-        (c.hIn.x / 100) * W, (c.hIn.y / 100) * H,
-        (c.anchor.x / 100) * W, (c.anchor.y / 100) * H
-      );
-    }
-    if (isClosed && pts.length > 2) {
-      const p = pts[pts.length - 1], c = pts[0];
-      ctx.bezierCurveTo(
-        (p.hOut.x / 100) * W, (p.hOut.y / 100) * H,
-        (c.hIn.x / 100) * W, (c.hIn.y / 100) * H,
-        (c.anchor.x / 100) * W, (c.anchor.y / 100) * H
-      );
-    }
-    ctx.closePath();
-  };
-
-  const generateMaskFromPoints = (pts: any[], isClosed: boolean) => {
-    if (!sourceImage || pts.length < 3) {
-      console.warn('[BezierMask] Cannot generate: sourceImage=', !!sourceImage, 'pts=', pts.length);
-      return;
-    }
-
-    const img = new Image();
-    // Do NOT set crossOrigin - it causes silent failures with blob/data URLs
-    
-    img.onerror = (e) => {
-      console.error('[BezierMask] Failed to load source image:', e);
-      alert('Bezier Mask: Error al cargar la imagen fuente. Intenta de nuevo.');
-    };
-
-    img.onload = () => {
-      try {
-        const W = img.naturalWidth || 1920;
-        const H = img.naturalHeight || 1080;
-        console.log('[BezierMask] Generating mask. Image size:', W, 'x', H, 'Points:', pts.length, 'Closed:', isClosed);
-
-        // --- MASK CANVAS (B/W) ---
-        const maskCanvas = document.createElement('canvas');
-        maskCanvas.width = W; maskCanvas.height = H;
-        const mCtx = maskCanvas.getContext('2d')!;
-        mCtx.fillStyle = invert ? '#ffffff' : '#000000';
-        mCtx.fillRect(0, 0, W, H);
-        drawBezierPath(mCtx, pts, isClosed, W, H);
-        mCtx.fillStyle = invert ? '#000000' : '#ffffff';
-        mCtx.fill();
-        const maskDataUrl = maskCanvas.toDataURL('image/png');
-
-        // --- RGBA CUTOUT using destination-in compositing (most reliable approach) ---
-        const rgbaCanvas = document.createElement('canvas');
-        rgbaCanvas.width = W; rgbaCanvas.height = H;
-        const rCtx = rgbaCanvas.getContext('2d')!;
-
-        if (invert) {
-          // Inverted: draw full image, then erase the bezier area
-          rCtx.drawImage(img, 0, 0);
-          rCtx.globalCompositeOperation = 'destination-out';
-          drawBezierPath(rCtx, pts, isClosed, W, H);
-          rCtx.fillStyle = 'black';
-          rCtx.fill();
-        } else {
-          // Normal: draw image, then use destination-in to keep only inside bezier area
-          rCtx.drawImage(img, 0, 0);
-          rCtx.globalCompositeOperation = 'destination-in';
-          drawBezierPath(rCtx, pts, isClosed, W, H);
-          rCtx.fillStyle = 'black'; // fill color doesn't matter, alpha does
-          rCtx.fill();
-        }
-
-        let rgbaDataUrl: string;
-        try {
-          rgbaDataUrl = rgbaCanvas.toDataURL('image/png');
-        } catch (corsErr) {
-          console.error('[BezierMask] Canvas tainted (CORS). Trying without transparency...', corsErr);
-          // Fallback: draw on white background if canvas is tainted
-          const fallback = document.createElement('canvas');
-          fallback.width = W; fallback.height = H;
-          const fCtx = fallback.getContext('2d')!;
-          fCtx.drawImage(img, 0, 0);
-          rgbaDataUrl = fallback.toDataURL('image/jpeg', 0.9);
-        }
-
-        console.log('[BezierMask] Generated RGBA. Length:', rgbaDataUrl.length);
-
-        setNodes((nds: any) => nds.map((n: any) => n.id === id ? {
-          ...n,
-          data: {
-            ...n.data,
-            mask: maskDataUrl,
-            result_mask: maskDataUrl,
-            rgba: rgbaDataUrl,
-            result_rgba: rgbaDataUrl,
-            value: rgbaDataUrl,
-            type: 'image'
-          }
-        } : n));
-      } catch (err) {
-        console.error('[BezierMask] Error generating mask:', err);
-        alert('Error al generar la máscara: ' + String(err));
-      }
-    };
-
-    img.src = sourceImage;
-  };
-
-  const generateMask = () => generateMaskFromPoints(points, closed);
-
-
-
-  const clearPath = () => {
-    setPoints([]);
-    setClosed(false);
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
-    updateData('points', []);
-    updateData('closed', false);
-    updateData('value', null);
-    updateData('result_mask', null);
-    updateData('result_rgba', null);
-  };
-
-  const getPreviewImage = () => {
-    switch (previewMode) {
-      case 'original': return sourceImage;
-      case 'mask': return nodeData.result_mask;
-      case 'cutout': return nodeData.result_rgba;
-      default: return sourceImage;
-    }
-  };
-
-  const svgTransform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
-  const hasMask = !!(nodeData.result_rgba);
-
-  return (
-    <div ref={frameRef} className={`custom-node mask-node group/node`} style={{ minWidth: 360 }}>
-            <FoldderNodeResizer minWidth={360} minHeight={400} maxWidth={960} maxHeight={STUDIO_NODE_MAX_HEIGHT} keepAspectRatio isVisible={selected} />
-<NodeLabel id={id} label={nodeData.label} defaultLabel="Bezier Mask" />
-      <div className="handle-wrapper handle-left">
-        <FoldderDataHandle type="target" position={Position.Left} id="image" dataType="image" />
-        <span className="handle-label">Media Input</span>
-      </div>
-      
-      <div className="node-header">
-        <NodeIcon type="bezierMask" selected={selected} size={16} />
-        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
-          Bezier Mask
-        </FoldderNodeHeaderTitle>
-      </div>
-      
-      <div className="flex min-h-0 flex-1 flex-col">
-        {/* PREVIEW AREA */}
-        <div ref={previewRef} className="relative group/preview min-h-[180px] flex-1 overflow-hidden bg-slate-100/50 flex items-center justify-center border-b border-slate-200/60">
-          <div className="absolute top-2 left-2 z-10 flex gap-1 bg-slate-50/50 p-1 rounded-lg backdrop-blur-md border border-slate-200/60">
-            {(['original', 'mask', 'cutout'] as const).map(m => (
-              <button
-                key={m}
-                onClick={() => setPreviewMode(m)}
-                className={`px-2 py-1 rounded-md text-[7px] font-black uppercase tracking-widest transition-all ${previewMode === m ? 'bg-cyan-500 text-black shadow-lg shadow-cyan-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
-              >
-                {m}
-              </button>
-            ))}
-          </div>
-
-          {getPreviewImage() ? (
-            <img
-              src={getPreviewImage()}
-              className={`w-full h-full object-contain ${previewMode === 'mask' ? 'invert brightness-150' : ''}`}
-              alt="Bezier Preview"
-              style={{ backgroundImage: previewMode === 'cutout' ? 'conic-gradient(#444 25%, #666 25%, #666 50%, #444 50%, #444 75%, #666 75%)' : undefined, backgroundSize: previewMode === 'cutout' ? '16px 16px' : undefined }}
-            />
-          ) : (
-            <div className="flex flex-col items-center gap-2 opacity-20">
-              <Scissors size={40} className="text-cyan-400" />
-              <span className="text-[10px] font-bold uppercase tracking-widest">
-                {sourceImage ? 'Open Studio to Draw Mask' : 'Awaiting Input'}
-              </span>
-            </div>
-          )}
-
-          <FoldderStudioModeCenterButton onClick={() => setIsStudioOpen(true)} />
-        </div>
-
-        {/* Point count & clear status */}
-        <div className="px-4 py-3 flex items-center justify-between border-b border-slate-200/60">
-          <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${hasMask ? 'bg-cyan-500 shadow-[0_0_6px_rgba(6,182,212,0.7)]' : 'bg-white/10'}`} />
-            <span className="text-[9px] font-black text-white/40 uppercase tracking-widest">
-              {hasMask ? `${points.length} pts · Mask Ready` : points.length > 0 ? `${points.length} pts · Open Studio` : 'No Path'}
-            </span>
-          </div>
-          {points.length > 0 && (
-            <button onClick={clearPath} className="text-[8px] text-rose-500 hover:text-rose-400 font-black uppercase tracking-widest transition-colors">
-              Clear Path
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* OUTPUT HANDLES - Same absolute style as BackgroundRemoverNode */}
-      <div className="flex flex-col gap-2 absolute right-[-14px] top-[40px] nodrag">
-        <div className="relative group/h mb-4">
-          <FoldderDataHandle type="source" position={Position.Right} id="mask" dataType="mask" className="!right-0 shadow-[0_0_10px_rgba(148,163,184,0.5)] cursor-crosshair" />
-          <span className="absolute left-6 top-1/2 -translate-y-1/2 text-[7px] font-black uppercase text-slate-400 bg-black/90 px-1 border border-slate-400/20 rounded opacity-0 group-hover/h:opacity-100 transition-opacity whitespace-nowrap">MASK</span>
-        </div>
-        <div className="relative group/h">
-          <FoldderDataHandle type="source" position={Position.Right} id="rgba" dataType="image" className="!right-0 shadow-[0_0_10px_rgba(6,182,212,0.5)] cursor-crosshair" />
-          <span className="absolute left-6 top-1/2 -translate-y-1/2 text-[7px] font-black uppercase text-cyan-400 bg-black/90 px-1 border border-cyan-400/20 rounded opacity-0 group-hover/h:opacity-100 transition-opacity whitespace-nowrap">RGBA</span>
-        </div>
-      </div>
-
-      {/* FULLSCREEN STUDIO MODAL */}
-      {isStudioOpen && createPortal(
-        <div
-          className="fixed inset-0 z-[99999] bg-[#0a0a0a]/95 backdrop-blur-xl flex flex-col"
-          data-foldder-studio-canvas=""
-          onWheel={handleWheel}
-        >
-          
-          {/* TOP BAR */}
-          <div className="h-14 bg-black/50 border-b border-white/10 flex items-center justify-between px-6 shrink-0">
-            <div className="flex items-center gap-3">
-              <Scissors size={18} className="text-cyan-500" />
-              <span className="text-[14px] font-black uppercase tracking-[3px] text-white">Bezier Editor</span>
-              <div className="ml-4 flex items-center gap-1 bg-white/5 border border-white/10 rounded-lg p-1">
-                <button 
-                  onClick={() => setMode('draw')}
-                  className={`px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all ${mode === 'draw' ? 'bg-cyan-500 text-black shadow-lg' : 'text-gray-400 hover:text-white'}`}
-                >
-                  <Scissors size={12} /> Draw
-                </button>
-                <button 
-                  onClick={() => setMode('edit')}
-                  className={`px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all ${mode === 'edit' ? 'bg-cyan-500 text-black shadow-lg' : 'text-gray-400 hover:text-white'}`}
-                >
-                  <Compass size={12} /> Edit
-                </button>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3">
-              {/* ZOOM CONTROLS */}
-              <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-lg p-1">
-                <button onClick={() => setZoom(z => Math.max(0.3, z / 1.3))} className="w-8 h-8 flex items-center justify-center rounded-md text-white/60 hover:text-white hover:bg-white/10 transition-all text-lg font-black">−</button>
-                <span className="text-[11px] font-mono text-cyan-400 px-2 min-w-[56px] text-center">{Math.round(zoom * 100)}%</span>
-                <button onClick={() => setZoom(z => Math.min(10, z * 1.3))} className="w-8 h-8 flex items-center justify-center rounded-md text-white/60 hover:text-white hover:bg-white/10 transition-all text-lg font-black">+</button>
-                <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} className="px-2 h-8 rounded-md text-[9px] text-white/40 hover:text-white hover:bg-white/10 transition-all font-black uppercase">RESET</button>
-              </div>
-
-              <div className="w-px h-6 bg-white/10" />
-
-              <label className="flex items-center gap-2 text-[11px] text-gray-400 font-bold cursor-pointer hover:text-white">
-                <input type="checkbox" checked={invert} onChange={(e) => { setInvert(e.target.checked); updateData('invert', e.target.checked); }} className="accent-cyan-500 w-4 h-4 cursor-pointer" />
-                Invert Mask
-              </label>
-
-              <button onClick={clearPath} className="text-[11px] text-rose-500 hover:text-rose-400 font-bold uppercase transition-colors px-2">Clear</button>
-
-              <button 
-                onClick={() => { generateMask(); setIsStudioOpen(false); }}
-                className="bg-cyan-500 hover:bg-cyan-400 text-black font-black text-[11px] px-6 py-2 rounded-lg uppercase tracking-widest shadow-[0_0_20px_rgba(6,182,212,0.3)] transition-all flex items-center gap-2 hover:scale-105 disabled:opacity-40"
-                disabled={!closed || points.length < 3}
-              >
-                <Check size={14} /> Apply Mask
-              </button>
-
-              <button onClick={() => setIsStudioOpen(false)} className="p-2 bg-white/5 hover:bg-white/10 text-white/50 hover:text-white rounded-lg transition-colors" title="Close">
-                <X size={20} />
-              </button>
-            </div>
-          </div>
-
-          {/* CANVAS AREA */}
-          <div
-            className="flex-1 overflow-hidden relative flex items-center justify-center cursor-crosshair"
-            style={{ cursor: isPanning ? 'grab' : mode === 'draw' ? 'crosshair' : 'default' }}
-          >
-            {/* Checkerboard background */}
-            <div className="absolute inset-0" style={{ backgroundImage: 'conic-gradient(#1a1a1a 25%, #111 25%, #111 50%, #1a1a1a 50%, #1a1a1a 75%, #111 75%)', backgroundSize: '32px 32px' }} />
-            
-            {/* HELP TEXT */}
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/50 text-white/40 text-[9px] font-bold uppercase tracking-widest px-4 py-1.5 rounded-full backdrop-blur-md border border-white/10 z-10 pointer-events-none">
-              {mode === 'draw' ? 'Click to add points · Click first point (red) to close path' : 'Drag anchors or handles · Right-click anchor to delete'}
-            </div>
-
-            {sourceImage ? (
-              <div
-                className="relative inline-block origin-top-left"
-                style={{ transform: svgTransform, willChange: 'transform' }}
-              >
-                <img
-                  src={sourceImage}
-                  alt="Reference"
-                  className="block pointer-events-none select-none"
-                  style={{ maxHeight: 'calc(100vh - 140px)', maxWidth: 'calc(100vw - 80px)', opacity: 0.65 }}
-                  draggable={false}
-                />
-                <svg
-                  ref={svgRef}
-                  className="absolute inset-0 w-full h-full"
-                  viewBox="0 0 100 100"
-                  preserveAspectRatio="none"
-                  onPointerDown={handlePointerDown}
-                  onPointerMove={handlePointerMove}
-                  onPointerUp={handlePointerUp}
-                  onPointerLeave={handlePointerUp}
-                >
-                  {/* PATH FILL */}
-                  <path d={pathD} fill={closed ? 'rgba(6,182,212,0.15)' : 'none'} stroke="#06b6d4" strokeWidth={0.3 / zoom} strokeLinecap="round" strokeLinejoin="round" />
-                  
-                  {/* POINTS & HANDLES */}
-                  {points.map((pt, i) => (
-                    <g key={i}>
-                      {/* Handle Lines */}
-                      <line x1={pt.anchor.x} y1={pt.anchor.y} x2={pt.hIn.x} y2={pt.hIn.y} stroke="rgba(255,255,255,0.3)" strokeWidth={0.15 / zoom} strokeDasharray={`${0.4/zoom} ${0.2/zoom}`} />
-                      <line x1={pt.anchor.x} y1={pt.anchor.y} x2={pt.hOut.x} y2={pt.hOut.y} stroke="rgba(255,255,255,0.3)" strokeWidth={0.15 / zoom} strokeDasharray={`${0.4/zoom} ${0.2/zoom}`} />
-                      
-                      {/* Bezier Handles */}
-                      {mode === 'edit' && (
-                        <>
-                          <circle cx={pt.hIn.x} cy={pt.hIn.y} r={0.8/zoom} fill="rgba(255,255,255,0.8)" stroke="#06b6d4" strokeWidth={0.2/zoom} className="cursor-pointer"
-                            onPointerDown={(e) => { e.stopPropagation(); setActivePointIndex(i); setActiveHandle('in'); }} />
-                          <circle cx={pt.hOut.x} cy={pt.hOut.y} r={0.8/zoom} fill="rgba(255,255,255,0.8)" stroke="#06b6d4" strokeWidth={0.2/zoom} className="cursor-pointer"
-                            onPointerDown={(e) => { e.stopPropagation(); setActivePointIndex(i); setActiveHandle('out'); }} />
-                        </>
-                      )}
-                      
-                      {/* ANCHOR POINT */}
-                      <rect
-                        x={pt.anchor.x - 1/zoom} y={pt.anchor.y - 1/zoom} width={2/zoom} height={2/zoom}
-                        fill={i === 0 && !closed ? '#f43f5e' : (activePointIndex === i ? '#ffffff' : '#06b6d4')}
-                        stroke={i === 0 && !closed ? '#f87171' : 'rgba(255,255,255,0.5)'}
-                        strokeWidth={0.2/zoom}
-                        className="cursor-pointer"
-                        onPointerDown={(e) => {
-                          e.stopPropagation();
-                          if (mode === 'draw' && i === 0 && points.length > 2) {
-                            const newPts = [...points];
-                            setClosed(true);
-                            updateData('closed', true);
-                            generateMaskFromPoints(newPts, true);
-                          } else {
-                            setActivePointIndex(i);
-                            setActiveHandle('anchor');
-                            setMode('edit');
-                          }
-                        }}
-                        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); deletePoint(i); }}
-                      />
-                    </g>
-                  ))}
-                </svg>
-              </div>
-            ) : (
-              <div className="relative flex flex-col items-center gap-4 opacity-40">
-                <Scissors size={64} className="text-cyan-500" strokeWidth={1} />
-                <p className="text-white font-bold uppercase tracking-widest text-sm">Connect an image to the node first</p>
-              </div>
-            )}
-
-            {/* Pan hint */}
-            <div className="absolute bottom-4 right-4 text-[9px] text-white/20 font-bold uppercase tracking-widest pointer-events-none">
-              Alt+Drag or Middle Click to Pan · Scroll to Zoom · Right-click anchor to delete
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
     </div>
   );
 });

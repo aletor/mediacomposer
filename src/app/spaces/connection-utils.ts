@@ -66,10 +66,6 @@ export function areNodesConnectable(
   if (!sourceHandleType && sourceMetadata.outputs?.[0]) sourceHandleType = sourceMetadata.outputs[0].type;
   if (!targetHandleType && targetMetadata.inputs?.[0]) targetHandleType = targetMetadata.inputs[0].type;
 
-  if (connection.targetHandle?.startsWith('layer-')) {
-    targetHandleType = 'image';
-  }
-
   if (
     (targetNode.type === 'concatenator' || targetNode.type === 'listado') &&
     connection.targetHandle?.startsWith('p')
@@ -110,9 +106,6 @@ const MULTI_SLOT_NODES: Record<string, Record<string, string[]>> = {
     prompt: [
       'p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9', 'p10', 'p11', 'p12', 'p13', 'p14', 'p15',
     ],
-  },
-  imageComposer: {
-    image: ['layer_0', 'layer_1', 'layer_2', 'layer_3', 'layer_4', 'layer_5', 'layer_6', 'layer_7'],
   },
   photoRoom: {
     image: ['in_0', 'in_1', 'in_2', 'in_3', 'in_4', 'in_5', 'in_6', 'in_7'],
@@ -278,9 +271,7 @@ export function findLibraryDropPlan(
 const DEFAULT_W: Record<string, number> = {
   mediaInput: 300,
   promptInput: 300,
-  background: 320,
   urlImage: 340,
-  imageComposer: 360,
   photoRoom: 280,
   imageExport: 320,
   grokProcessor: 320,

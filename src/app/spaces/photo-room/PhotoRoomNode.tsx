@@ -13,7 +13,7 @@ import {
   useUpdateNodeInternals,
   type NodeProps,
 } from "@xyflow/react";
-import { ImageIcon, Maximize2 } from "lucide-react";
+import { ImageIcon } from "lucide-react";
 import { FOLDDER_FIT_VIEW_EASE } from "@/lib/fit-view-ease";
 import { defaultDataForCanvasDropNode } from "@/lib/canvas-connect-end-drop";
 import { FoldderDataHandle } from "../FoldderDataHandle";
@@ -69,31 +69,6 @@ function FoldderNodeResizerLocal(props: React.ComponentProps<typeof NodeResizer>
         }
       }}
     />
-  );
-}
-
-function ViewerOpenLocal({ nodeId, disabled }: { nodeId: string; disabled: boolean }) {
-  return (
-    <button
-      type="button"
-      title="Open viewer"
-      disabled={disabled}
-      onClick={(e) => {
-        e.stopPropagation();
-        window.dispatchEvent(new CustomEvent("open-viewer-for-node", { detail: { nodeId } }));
-      }}
-      className={`nodrag flex shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors ${disabled ? "opacity-35" : ""}`}
-      style={{
-        padding: 3,
-        borderRadius: 6,
-        background: "rgba(255,255,255,0.12)",
-        border: "1px solid rgba(255,255,255,0.28)",
-        color: "#fff",
-        pointerEvents: disabled ? "none" : "auto",
-      }}
-    >
-      <Maximize2 size={9} />
-    </button>
   );
 }
 
@@ -663,7 +638,6 @@ export const PhotoRoomNode = memo(({ id, data, selected }: NodeProps<any>) => {
           PhotoRoom
         </FoldderNodeHeaderTitle>
         <div className="node-badge shrink-0">{visibleSlots.length} in</div>
-        <ViewerOpenLocal nodeId={id} disabled={!displayUrl} />
       </div>
 
       <div

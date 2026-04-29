@@ -125,66 +125,45 @@
   -webkit-user-select: text;
 }
 
-/* ── NodeResizer handles: más grandes, un poco fuera del nodo, flechas hacia fuera ── */
+/* ── NodeResizer: un solo handle abajo-derecha, más pequeño y con icono diagonal ── */
 .react-flow__resize-control.handle {
-  width: 22px !important;
-  height: 22px !important;
+  display: none !important;
+  width: 12px !important;
+  height: 12px !important;
+  position: absolute !important;
   background-color: rgba(30, 30, 30, 0.88) !important;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg stroke='%23ffffff' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M12 4v6M12 14v6M4 12h6M14 12h6'/%3E%3C/g%3E%3C/svg%3E") !important;
-  background-size: 16px 16px !important;
-  background-repeat: no-repeat !important;
-  background-position: center !important;
   border: 1px solid rgba(255, 255, 255, 0.45) !important;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35) !important;
-  border-radius: 4px !important;
+  border-radius: 3px !important;
+  cursor: nwse-resize !important;
   transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.react-flow__resize-control.handle::before {
+  content: "⤢";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 1;
+}
+.react-flow__resize-control.handle.bottom.right {
+  display: block !important;
 }
 .react-flow__resize-control.handle:hover {
   background-color: rgba(15, 15, 15, 0.95) !important;
   border-color: rgba(255, 255, 255, 0.65) !important;
 }
-/* Desplazar fuera del borde del nodo (base: translate -50% -50% en @xyflow/style.css) */
-.react-flow__resize-control.handle.top.left {
-  translate: calc(-50% - 8px) calc(-50% - 8px) !important;
-}
-.react-flow__resize-control.handle.top.right {
-  translate: calc(-50% + 8px) calc(-50% - 8px) !important;
-}
-.react-flow__resize-control.handle.bottom.left {
-  translate: calc(-50% - 8px) calc(-50% + 8px) !important;
-}
+/* Único handle: ligeramente fuera del borde inferior derecho */
 .react-flow__resize-control.handle.bottom.right {
-  translate: calc(-50% + 8px) calc(-50% + 8px) !important;
+  translate: calc(-50% + 5px) calc(-50% + 5px) !important;
 }
-.react-flow__resize-control.handle.left {
-  translate: calc(-50% - 8px) -50% !important;
-}
-.react-flow__resize-control.handle.right {
-  translate: calc(-50% + 8px) -50% !important;
-}
-.react-flow__resize-control.handle.top {
-  translate: -50% calc(-50% - 8px) !important;
-}
-.react-flow__resize-control.handle.bottom {
-  translate: -50% calc(-50% + 8px) !important;
-}
-/* Líneas de resize: zona de arrastre un poco fuera del borde del nodo */
+/* Sin líneas ni otros puntos de resize */
 .react-flow__resize-control.line {
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-}
-.react-flow__resize-control.line.top {
-  top: -7px !important;
-}
-.react-flow__resize-control.line.bottom {
-  top: calc(100% + 7px) !important;
-}
-.react-flow__resize-control.line.left {
-  left: -7px !important;
-}
-.react-flow__resize-control.line.right {
-  left: calc(100% + 7px) !important;
+  display: none !important;
 }
 
 .react-flow__node .custom-node:not(.canvas-group-frame):hover {

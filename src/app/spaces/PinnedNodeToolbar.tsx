@@ -8,12 +8,12 @@ import { NodeIcon } from './foldder-icons';
 export const MAX_PINNED_NODES = 5;
 export const PINNED_NODES_STORAGE_KEY = "foldder-pinned-node-types";
 
-/** Orden por defecto: prompt, nano, export, canvas (background), video (gemini) */
+/** Orden por defecto: prompt, nano, export, photoroom, video (gemini) */
 export const DEFAULT_PINNED_NODE_TYPES: string[] = [
   "promptInput",
   "nanoBanana",
   "imageExport",
-  "background",
+  "photoRoom",
   "geminiVideo",
 ];
 

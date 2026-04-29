@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 import { TOPBAR_GLYPH_BY_NODE_TYPE } from "./TopbarPinIcons";
 
 /** Iconos en la barra inferior — glyph dedicado + pie de etiqueta (icono predominante). */
@@ -153,6 +154,7 @@ function TopbarPinChip({
   const isAssets = type === "files";
   const isDesigner = type === "designer";
   const isPhotoRoom = type === "photoRoom";
+  const isCustomDockButton = isBrain || isAssets || isDesigner || isPhotoRoom;
   const brainOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const assetsOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -168,7 +170,9 @@ function TopbarPinChip({
       <button
         type="button"
         className={
-          isAssets
+          isBrain
+            ? `${chipClassName} !bg-transparent !border-[#6b7280] hover:!bg-transparent active:!bg-transparent focus:!bg-transparent hover:!border-[#6b7280] hover:ring-black/50`
+            : isAssets
             ? `${chipClassName} !bg-transparent !border-[#b081f1] hover:!bg-transparent active:!bg-transparent focus:!bg-transparent hover:!border-[#b081f1] hover:ring-black/50`
             : isDesigner
               ? `${chipClassName} !bg-transparent !border-[#fdb04b] hover:!bg-transparent active:!bg-transparent focus:!bg-transparent hover:!border-[#fdb04b] hover:ring-black/50`
@@ -176,7 +180,7 @@ function TopbarPinChip({
                 ? `${chipClassName} !bg-transparent !border-[#63d4fd] hover:!bg-transparent active:!bg-transparent focus:!bg-transparent hover:!border-[#63d4fd] hover:ring-black/50`
                 : chipClassName
         }
-        style={isAssets || isDesigner || isPhotoRoom ? { backgroundColor: "transparent" } : undefined}
+        style={isCustomDockButton ? { backgroundColor: "transparent" } : undefined}
         aria-label={
           isBrain
             ? `${title}. Clic para abrir studio (marca y conocimiento). Doble clic para añadir el nodo Brain al lienzo.`
@@ -238,7 +242,20 @@ function TopbarPinChip({
           onPinDoubleClick?.(nodeType);
         }}
       >
-        <Glyph size={iconSize} className={isAssets ? "shrink-0" : "shrink-0 text-white"} />
+        {isBrain ? (
+          <Image
+            src="/brain_icon.svg"
+            alt=""
+            width={Math.round(iconSize * 0.9)}
+            height={Math.round(iconSize * 0.9)}
+            className="mx-auto block shrink-0 object-contain"
+            aria-hidden
+            draggable={false}
+            unoptimized
+          />
+        ) : (
+          <Glyph size={iconSize} className={isAssets ? "shrink-0" : "shrink-0 text-white"} />
+        )}
         <span className={captionClassName}>{shortLabel}</span>
       </button>
       {!paletteDragActive && <PinHoverCard label={title} />}
@@ -256,13 +273,12 @@ export function TopbarPins({
 }: TopbarPinsProps) {
   const pinRowSidebarStyle = embedded && fullWidthRow;
   const rowRef = useRef<HTMLDivElement>(null);
-  const [remPx, setRemPx] = useState(16);
+  const [remPx] = useState(() => {
+    if (typeof window === "undefined") return 16;
+    const rootPx = parseFloat(getComputedStyle(document.documentElement).fontSize);
+    return !Number.isNaN(rootPx) && rootPx > 0 ? rootPx : 16;
+  });
   const [mouseX, setMouseX] = useState<number | null>(null);
-
-  useLayoutEffect(() => {
-    const r = parseFloat(getComputedStyle(document.documentElement).fontSize);
-    if (!Number.isNaN(r) && r > 0) setRemPx(r);
-  }, []);
 
   const pinCount = TOPBAR_FIXED_PIN_TYPES.length;
   const chipWpx = pinRowSidebarStyle ? CHIP_MIN_W_REM_SIDEBAR * remPx : CHIP_MIN_W_REM_DEFAULT * remPx;

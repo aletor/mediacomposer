@@ -288,7 +288,6 @@ export function useSpacesCanvasKeyboard(
         // ── Ingesta ──────────────────────────────────────────────────────
         case 'p': addNode('promptInput'); break;
         case 'm': addNode('mediaInput'); break;
-        case 'b': addNode('background'); break;
         case 'u': addNode('urlImage'); break;
         case '2': addNode('projectBrain'); break;
         case '3': addNode('projectAssets'); break;
@@ -318,14 +317,12 @@ export function useSpacesCanvasKeyboard(
         case 'i': addNode('spaceInput'); break;
         case 'o': addNode('spaceOutput'); break;
         // ── Composición ──────────────────────────────────────────────────
-        case 'c': addNode('imageComposer'); break;
         case 'l': addNode('designer'); break;
         case 'e': addNode('imageExport'); break;
         case 't': addNode('textOverlay'); break;
         case 'w': addNode('painter'); break;
 
         case 'x': addNode('crop'); break;
-        case 'z': addNode('bezierMask'); break;
         /** Presenter — `;` (g ya reservada para agrupar en el lienzo). */
         case ';': addNode('presenter'); break;
         // ── Canvas actions ───────────────────────────────────────────────
@@ -352,4 +349,3 @@ export function useSpacesCanvasKeyboard(
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refs estables; shortcuts vía ref
   }, []);
 }
-

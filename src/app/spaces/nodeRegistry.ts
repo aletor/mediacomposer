@@ -15,40 +15,11 @@ export interface NodeMetadata {
     label: string;
     type: HandleType;
   }[];
-  dataSchema: Record<string, any>;
+  dataSchema: Record<string, unknown>;
   preferredConnections?: Record<string, string>; // Maps output types to specific input handled IDs
 }
 
 export const NODE_REGISTRY: Record<string, NodeMetadata> = {
-  background: {
-    type: 'background',
-    label: 'Background / Canvas',
-    description: 'Creates a solid color canvas or base layer for compositions.',
-    inputs: [],
-    outputs: [
-      { id: 'image', label: 'Image Out', type: 'image' }
-    ],
-    dataSchema: {
-      width: 'number (default 1920)',
-      height: 'number (default 1080)',
-      color: 'string (hex color)'
-    }
-  },
-  imageComposer: {
-    type: 'imageComposer',
-    label: 'Image Composer',
-    description: 'Stacks multiple images or canvas layers together.',
-    inputs: [
-      { id: 'layer-n', label: 'Layer Input', type: 'image' }
-    ],
-    outputs: [
-      { id: 'image', label: 'Image Out', type: 'image' }
-    ],
-    dataSchema: {
-      layersConfig: 'Record<handleId, { x: number, y: number, scale: number }>',
-      selectedLayerId: 'string (id of the active layer for interaction)'
-    }
-  },
   photoRoom: {
     type: 'photoRoom',
     label: 'PhotoRoom',
@@ -356,25 +327,6 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
       cropConfig: '{ x: number, y: number, w: number, h: number } (Percentages 0-100)'
     }
   },
-  bezierMask: {
-    type: 'bezierMask',
-    label: 'Bezier Mask',
-    description: 'An interactive vector pen tool to draw bezier curves over an image. Creates precise custom shape masks with zoom, pan and point editing. Outputs both a B&W mask and an RGBA transparent cutout, identical to the Background Remover.',
-    inputs: [
-      { id: 'image', label: 'Reference Image', type: 'image', required: true }
-    ],
-    outputs: [
-      { id: 'mask', label: 'Mask', type: 'mask' },
-      { id: 'rgba', label: 'RGBA', type: 'image' }
-    ],
-    dataSchema: {
-      points: 'Array of bezier points',
-      closed: 'boolean',
-      invert: 'boolean',
-      result_mask: 'string (B&W mask data URL)',
-      result_rgba: 'string (RGBA transparent cutout data URL)'
-    }
-  },
   textOverlay: {
     type: 'textOverlay',
     label: 'Text Overlay',
@@ -487,7 +439,6 @@ export const ASSISTANT_NODE_DATA_HINTS: Record<string, string> = {
   pinterestSearch:
     "conectar promptInput (o salida prompt) al handle prompt — el texto es la búsqueda; pins[], selectedIndex, value (URL imagen); PINTEREST_ACCESS_TOKEN en servidor",
   imageExport: "format (png|jpeg), label",
-  imageComposer: "layersConfig, selectedLayerId",
   photoRoom:
     "studioObjects, studioLayoutGuides, studioArtboard (px); value/salida imagen; label; entradas in_0… por cable",
   space: "label, hasInput, hasOutput, value",
@@ -495,7 +446,6 @@ export const ASSISTANT_NODE_DATA_HINTS: Record<string, string> = {
   spaceOutput: "label",
   painter: "bgColor, strokeColor, brushSize, value",
   crop: "aspectRatio, cropConfig, value",
-  bezierMask: "points, closed, invert, result_mask, result_rgba",
   textOverlay: "text, fontFamily, fontSize, color, fontWeight, textAlign, canvasW, canvasH",
   backgroundRemover: "threshold, expansion, feather",
   projectBrain:

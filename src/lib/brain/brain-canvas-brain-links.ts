@@ -59,7 +59,6 @@ function toBrainNodeType(canvasType: string | undefined): BrainNodeType | "OTHER
     case "presentation":
       return "PRESENTATION_NODE";
     case "nanoBanana":
-    case "imageComposer":
       return "IMAGE_GENERATOR";
     case "videoNode":
     case "grokProcessor":

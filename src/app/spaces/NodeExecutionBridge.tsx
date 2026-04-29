@@ -5,10 +5,11 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useRef,
 } from "react";
 
-type RunFn = () => Promise<void>;
+type RunFn = () => void | Promise<void>;
 
 const Ctx = createContext<{
   register: (id: string, run: RunFn) => () => void;
@@ -61,10 +62,13 @@ export function useNodeExecutionRunner(): ((ids: string[]) => Promise<void>) | n
 }
 
 /** Registra la misma función que el botón Run del nodo (estable vía ref). */
-export function useRegisterAssistantNodeRun(id: string, run: () => Promise<void>) {
+export function useRegisterAssistantNodeRun(id: string, run: RunFn) {
   const register = useNodeExecutionRegister();
   const runRef = useRef(run);
-  runRef.current = run;
+
+  useLayoutEffect(() => {
+    runRef.current = run;
+  }, [run]);
 
   useEffect(() => {
     return register(id, () => runRef.current());

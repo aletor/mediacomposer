@@ -11,7 +11,7 @@ import {
   useUpdateNodeInternals,
   type NodeProps,
 } from "@xyflow/react";
-import { Video, Maximize2, Loader2 } from "lucide-react";
+import { Video } from "lucide-react";
 import { FOLDDER_FIT_VIEW_EASE } from "@/lib/fit-view-ease";
 import { FoldderDataHandle } from "./FoldderDataHandle";
 import { NodeIcon } from "./foldder-icons";
@@ -54,31 +54,6 @@ function FoldderNodeResizerLocal(props: React.ComponentProps<typeof NodeResizer>
         }
       }}
     />
-  );
-}
-
-function ViewerOpenLocal({ nodeId, disabled }: { nodeId: string; disabled?: boolean }) {
-  return (
-    <button
-      type="button"
-      title="Open viewer"
-      disabled={disabled}
-      onClick={(e) => {
-        e.stopPropagation();
-        window.dispatchEvent(new CustomEvent("open-viewer-for-node", { detail: { nodeId } }));
-      }}
-      className={`nodrag flex shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors ${disabled ? "opacity-35" : ""}`}
-      style={{
-        padding: 3,
-        borderRadius: 6,
-        background: "rgba(255,255,255,0.12)",
-        border: "1px solid rgba(255,255,255,0.28)",
-        color: "#fff",
-        pointerEvents: disabled ? "none" : "auto",
-      }}
-    >
-      <Maximize2 size={9} />
-    </button>
   );
 }
 
@@ -422,7 +397,6 @@ export const VfxGeneratorNode = memo(({ id, data, selected }: NodeProps<any>) =>
         <div className="node-badge max-w-[6rem] truncate" title="Beeble">
           BEEBLE
         </div>
-        <ViewerOpenLocal nodeId={id} disabled={!displayVideo} />
       </div>
 
       <div

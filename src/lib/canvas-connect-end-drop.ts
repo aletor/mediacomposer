@@ -79,7 +79,6 @@ export const HANDLE_DROP_MAP: Record<string, string> = {
   "image:target": "nanoBanana",
   "video:source": "imageExport",
   "video:target": "geminiVideo",
-  "mask:source": "imageComposer",
   "mask:target": "backgroundRemover",
   "url:source": "mediaDescriber",
   "url:target": "mediaInput",
@@ -115,9 +114,6 @@ export function resolveHandleMetaForCanvasDrop(
         return { type: "prompt", id: handleId };
       }
     }
-    if (/^layer_\d+$/.test(handleId)) {
-      return { type: "image", id: handleId };
-    }
     /** PhotoRoom: entradas reales `in_0`… en el DOM; el registro usa el id genérico `in-n`. */
     if (/^in_\d+$/.test(handleId) && nodeType === "photoRoom") {
       return { type: "image", id: handleId };
@@ -136,15 +132,6 @@ export function pickNewNodeTypeForCanvasDrop(
   }
 ): string | undefined {
   const { srcNodeType, fromHandleId, fromFlow } = opts;
-
-  if (
-    srcNodeType === "imageComposer" &&
-    fromFlow === "target" &&
-    fromHandleId &&
-    /^layer_\d+$/.test(fromHandleId)
-  ) {
-    return "urlImage";
-  }
 
   if (
     srcNodeType === "geminiVideo" &&

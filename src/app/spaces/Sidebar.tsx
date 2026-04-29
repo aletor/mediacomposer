@@ -67,7 +67,6 @@ function FoldderAppTileGlyph({ size = 25 }: { size?: number }) {
 }
 
 type SidebarProps = {
-  windowMode?: boolean;
   onLibraryDragStart?: (nodeType: string) => void;
   onLibraryDragEnd?: () => void;
   /** Doble clic en un mosaico: mismo comportamiento que doble clic en la barra inferior de accesos */
@@ -94,7 +93,6 @@ function SidebarLibraryNodeIcon({ type, size = 25 }: { type: string; size?: numb
 }
 
 const Sidebar = ({
-  windowMode = false,
   onLibraryDragStart,
   onLibraryDragEnd,
   onLibraryTileDoubleClick,
@@ -239,107 +237,6 @@ const Sidebar = ({
     );
   };
 
-  // ── WINDOW MODE: compact horizontal icon bar ───────────────────────────
-  if (windowMode) {
-    const allNodes: ({ type: string; label: string } | null)[] = [
-      { type: 'projectBrain',      label: 'Brain' },
-      { type: 'projectAssets',     label: 'Foldder' },
-      { type: 'mediaInput',        label: 'Asset' },
-      { type: 'promptInput',       label: 'Prompt' },
-      { type: 'background',        label: 'Canvas' },
-      { type: 'urlImage',          label: 'Web' },
-      { type: 'pinterestSearch',   label: 'Pin' },
-      null,
-      { type: 'backgroundRemover', label: 'Matting' },
-      { type: 'mediaDescriber',    label: 'Eye' },
-      { type: 'enhancer',          label: 'Enhance' },
-      { type: 'grokProcessor',     label: 'Grok' },
-      { type: 'nanoBanana',        label: 'Nano' },
-      { type: 'geminiVideo',       label: 'Video Gen' },
-      { type: 'vfxGenerator',      label: 'VFX' },
-      null,
-      { type: 'concatenator',      label: 'Concat' },
-      { type: 'listado',           label: 'Listado' },
-      { type: 'space',             label: 'Space' },
-      null,
-      { type: 'imageComposer',     label: 'Layout' },
-      { type: 'photoRoom',         label: 'PhotoRoom' },
-      { type: 'imageExport',       label: 'Export' },
-      { type: 'painter',           label: 'Painter' },
-      { type: 'textOverlay',       label: 'Text' },
-      { type: 'crop',              label: 'Crop' },
-      { type: 'designer',          label: 'Designer' },
-      { type: 'presenter',         label: 'Presenter' },
-    ];
-
-    return (
-      <>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 2,
-          overflowX: 'auto',
-          padding: '0 8px',
-          height: '100%',
-          scrollbarWidth: 'none',
-        }}
-        className="[&::-webkit-scrollbar]:hidden"
-      >
-        {allNodes.map((item, idx) => {
-          if (item === null) {
-            return (
-              <div
-                key={`sep-${idx}`}
-                style={{ width: 1, height: 24, flexShrink: 0, background: 'rgba(255,255,255,0.12)', marginInline: 4 }}
-              />
-            );
-          }
-          const isFoldderTile = item.type === 'projectAssets';
-          return (
-            <div
-              key={item.type}
-              draggable
-              onDragStart={(e) => onDragStart(e, item.type)}
-              onDragEnd={() => onLibraryDragEnd?.()}
-              onMouseEnter={(e) => onLibraryTileEnter(e, item.type)}
-              onMouseLeave={onLibraryTileLeave}
-              onDoubleClick={(e) => handleLibraryTileDoubleClick(e, item.type)}
-              aria-label={`${item.label}. Arrastra al lienzo. Doble clic para añadir.`}
-              style={{
-                flexShrink: 0,
-                width: 24,
-                height: 22,
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 0,
-                borderRadius: 6,
-                border: isFoldderTile ? '1px solid #b081f1' : '1px solid rgba(255,255,255,0.06)',
-                background: '#000000',
-                cursor: 'grab',
-                transition: 'all 0.15s',
-              }}
-              className={
-                isFoldderTile
-                  ? "relative !bg-transparent !border-0 hover:!bg-transparent hover:!border-transparent hover:!shadow-none active:scale-95"
-                  : "relative !bg-transparent !border-0 hover:!bg-transparent hover:!border-transparent hover:!shadow-none active:scale-95"
-              }
-            >
-              <SidebarLibraryNodeIcon type={item.type} size={24} />
-              <span style={{ fontSize: 7.4, fontWeight: 300, color: 'rgba(255,255,255,0.92)', letterSpacing: '0.03em', lineHeight: 1, textShadow: '0 1px 2px rgba(0,0,0,0.35)' }}>
-                {item.label}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-      {libraryTipPortal}
-      </>
-    );
-  }
-
   // ── NORMAL MODE: vertical sidebar panel ──────────────────────────────────
   return (
     <>
@@ -389,7 +286,6 @@ const Sidebar = ({
                   { type: 'projectAssets', label: 'Foldder' },
                   { type: 'mediaInput',  label: 'Asset' },
                   { type: 'promptInput', label: 'Prompt' },
-                  { type: 'background',  label: 'Canvas' },
                   { type: 'urlImage',    label: 'Web' },
                   { type: 'pinterestSearch', label: 'Pinterest' },
                 ].map(item => (
@@ -495,13 +391,11 @@ const Sidebar = ({
               </h3>
               <div className="mx-auto grid w-full max-w-[124px] grid-cols-2 gap-[1px]">
                 {[
-                  { type: 'imageComposer', label: 'Layout' },
                   { type: 'photoRoom',     label: 'PhotoRoom' },
                   { type: 'imageExport',   label: 'Export' },
                   { type: 'painter',       label: 'Painter' },
                   { type: 'textOverlay',   label: 'Text' },
                   { type: 'crop',          label: 'Crop' },
-                  { type: 'bezierMask',    label: 'Bezier' },
                   { type: 'designer',      label: 'Designer' },
                   { type: 'presenter',     label: 'Presenter' },
                 ].map(item => (

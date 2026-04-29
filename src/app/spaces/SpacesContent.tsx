@@ -35,6 +35,8 @@ import {
   normalizeNodeZIndexForXYFlow,
   normalizeNodesForPersistence,
   normalizeSpacesMapNodesForPersistence,
+  sanitizeLegacyRemovedNodesFromGraph,
+  sanitizeLegacyRemovedNodesFromSpacesMap,
   recomputeCanvasGroupFrames,
   removeEmptyCanvasGroups,
   filterEdgesForCollapsedCanvasGroups,
@@ -72,7 +74,6 @@ import { FOLDDER_FIT_VIEW_EASE } from "@/lib/fit-view-ease";
 import { enterFullscreen } from "@/lib/fullscreen";
 import "./spaces.css";
 import { NODE_REGISTRY } from "./nodeRegistry";
-import { FOLDDER_LOGO_BLUE } from "./handle-type-colors";
 import {
   FOLDDER_OPEN_GEMINI_VIDEO_WITH_IMAGE_EVENT,
   type FoldderOpenGeminiVideoDetail,
@@ -103,12 +104,10 @@ import {
   Loader2,
   X,
   Edit2,
-  Maximize,
   Maximize2,
   Minimize2,
   LayoutGrid,
   ChevronDown,
-  Download,
   ZoomIn,
   LogOut,
   MessageCircle,
@@ -157,7 +156,6 @@ import {
   useSpacesCanvasBackground,
   useSpacesCanvasUngroup,
   useSpacesFitViewToNodeIds,
-  useSpacesOutputViewer,
   useSpacesUndoRedo,
   type SpacesCanvasKeyboardShortcutsRef,
   useSpacesCanvasKeyboard,
@@ -417,26 +415,6 @@ export function SpacesContent() {
     setLibraryCompatibleIds([]);
   }, [setViewport]);
 
-  const {
-    windowMode,
-    setWindowMode,
-    viewerSourceNodeId,
-    setViewerSourceNodeId,
-    viewerHeight,
-    startViewerResize,
-    viewerTransform,
-    viewerAreaRef,
-    onViewerWheel,
-    onViewerPointerDown,
-    onViewerPointerMove,
-    onViewerPointerUp,
-    onViewerKeyDown,
-    finalMedia,
-    downloadViewerMedia,
-    closeViewer,
-    isPanningViewerRef,
-  } = useSpacesOutputViewer(nodes);
-
   /** `free`: grafo interactivo habitual. `cards`: un nodo a pantalla completa; ←/→ cambian la carta. */
   const [canvasViewMode, setCanvasViewMode] = useState<'free' | 'cards'>('free');
   const [cardsFocusIndex, setCardsFocusIndex] = useState(0);
@@ -538,7 +516,6 @@ export function SpacesContent() {
       listado:      { prompt: ['p0','p1','p2','p3','p4','p5','p6','p7'] },
       enhancer:     { prompt: ['p0','p1','p2','p3','p4','p5','p6','p7','p8','p9','p10','p11','p12','p13','p14','p15'] },
       vfxGenerator: { prompt: ['prompt'] },
-      imageComposer: { image: ['layer_0','layer_1','layer_2','layer_3','layer_4','layer_5','layer_6','layer_7'] },
       photoRoom: { image: ['in_0','in_1','in_2','in_3','in_4','in_5','in_6','in_7'] },
     };
     // Per-handle-type slot counters, reset per new node creation
@@ -1574,7 +1551,6 @@ export function SpacesContent() {
   const prevBrowserFullscreenRef = useRef<boolean | null>(null);
   useEffect(() => {
     if (!isAuthenticated) return;
-    if (windowMode) return;
     if (canvasViewMode === 'cards') return;
 
     if (prevBrowserFullscreenRef.current === null) {
@@ -1599,7 +1575,6 @@ export function SpacesContent() {
   }, [
     browserFullscreen,
     isAuthenticated,
-    windowMode,
     canvasViewMode,
     nodes.length,
     fitView,
@@ -1628,7 +1603,7 @@ export function SpacesContent() {
       } 
       
       // Logic / Utility Category
-      if (type.includes('composer') || type.includes('concatenator') || type.includes('listado') || type.includes('batch') || (type === 'space' && n.id !== 'in' && n.id !== 'out')) {
+      if (type.includes('concatenator') || type.includes('listado') || type.includes('batch') || (type === 'space' && n.id !== 'in' && n.id !== 'out')) {
         categoriesSet.add('logic');
       }
 
@@ -1648,7 +1623,15 @@ export function SpacesContent() {
       }
 
       // Canvas / Composition Category
-      if (type.includes('background') || type.includes('layer') || type.includes('export')) {
+      if (
+        type.includes('export') ||
+        type.includes('paint') ||
+        type.includes('crop') ||
+        type.includes('photo') ||
+        type.includes('design') ||
+        type.includes('present') ||
+        type.includes('textoverlay')
+      ) {
         categoriesSet.add('canvas');
       }
 
@@ -1964,10 +1947,6 @@ export function SpacesContent() {
       exitCardsViewMode();
       return true;
     }
-    if (windowMode) {
-      closeViewer();
-      return true;
-    }
     if (contextMenu) {
       setContextMenu(null);
       return true;
@@ -1988,7 +1967,6 @@ export function SpacesContent() {
     projectDeleteInProgress,
     canvasViewMode,
     exitCardsViewMode,
-    windowMode,
     contextMenu,
     activeSpaceId,
     goToRootCanvas,
@@ -2151,10 +2129,14 @@ export function SpacesContent() {
     try {
       // Apilado XY Flow: persistir `node.zIndex`, no `style.zIndex` (evita hijos detrás del marco al recargar).
       const normalizedNodes = normalizeNodesForPersistence(nodes as Node[]);
+      const sanitizedGraph = sanitizeLegacyRemovedNodesFromGraph(
+        normalizedNodes as Node[],
+        edges as Edge[],
+      );
       // Propagación completa (padres/hijos, spaceInput, etiquetas de nested spaces) — mismo criterio que al navegar
       const { newMap: syncedSpaces } = syncCurrentSpaceState(
-        normalizedNodes,
-        edges,
+        sanitizedGraph.nodes,
+        sanitizedGraph.edges,
         spacesMap,
         activeSpaceId
       );
@@ -2170,8 +2152,6 @@ export function SpacesContent() {
         navigationStack,
         activeSpaceId,
         sidebarLockedCollapsed,
-        windowMode,
-        viewerSourceNodeId,
       };
 
       const projectToSave = {
@@ -2344,7 +2324,6 @@ export function SpacesContent() {
       setMetadata({});
       setVisualReferenceAnalysisDirty(false);
       setCurrentName(trimmed);
-      closeViewer();
       setCardsFocusIndex(0);
       setCanvasViewMode('free');
     });
@@ -2427,6 +2406,9 @@ export function SpacesContent() {
       } catch (e) {
         console.error('[loadProject] hydrate S3 URLs:', e);
       }
+      spaces = sanitizeLegacyRemovedNodesFromSpacesMap(
+        spaces as Record<string, { nodes?: Node[]; edges?: Edge[] }>
+      );
 
       const stripLegacyFinal = (ns: any[]) =>
         ns.filter((n: any) => n.id !== FINAL_NODE_ID && n.type !== 'finalOutput');
@@ -2442,8 +2424,6 @@ export function SpacesContent() {
             navigationStack?: string[];
             activeSpaceId?: string;
             sidebarLockedCollapsed?: boolean;
-            windowMode?: boolean;
-            viewerSourceNodeId?: string | null;
           }
         | undefined;
 
@@ -2463,11 +2443,12 @@ export function SpacesContent() {
         return { ...n, data: rest };
       });
       const nextEdges = stripEdgesToFinal([...(targetSpace?.edges || [])]);
+      const sanitizedActiveGraph = sanitizeLegacyRemovedNodesFromGraph(nextNodes as Node[], nextEdges as Edge[]);
 
       setProjectLoadingStage("Montando nodos y conexiones en el lienzo…");
-      setNodes(nextNodes);
-      setEdges(nextEdges);
-      scheduleNodeInternalsRefresh(nextNodes.map((n: any) => String(n.id)));
+      setNodes(sanitizedActiveGraph.nodes);
+      setEdges(sanitizedActiveGraph.edges);
+      scheduleNodeInternalsRefresh(sanitizedActiveGraph.nodes.map((n: any) => String(n.id)));
       scheduleEdgeGeometryRefresh();
       setActiveProjectId(project.id);
       setActiveSpaceId(targetSpaceId);
@@ -2490,16 +2471,10 @@ export function SpacesContent() {
       if (typeof ui?.sidebarLockedCollapsed === 'boolean') {
         setSidebarLockedCollapsed(ui.sidebarLockedCollapsed);
       }
-      if (typeof ui?.windowMode === 'boolean') {
-        setWindowMode(ui.windowMode);
-      }
-      if (ui?.viewerSourceNodeId === null || typeof ui?.viewerSourceNodeId === 'string') {
-        setViewerSourceNodeId(ui.viewerSourceNodeId);
-      }
 
       const ci = ui?.cardsFocusIndex;
-      if (typeof ci === 'number' && Number.isFinite(ci) && nextNodes.length > 0) {
-        setCardsFocusIndex(Math.min(Math.max(0, Math.floor(ci)), Math.max(0, nextNodes.length - 1)));
+      if (typeof ci === 'number' && Number.isFinite(ci) && sanitizedActiveGraph.nodes.length > 0) {
+        setCardsFocusIndex(Math.min(Math.max(0, Math.floor(ci)), Math.max(0, sanitizedActiveGraph.nodes.length - 1)));
       } else {
         setCardsFocusIndex(0);
       }
@@ -2558,9 +2533,12 @@ export function SpacesContent() {
     setIsSaving(true);
     try {
       const project = await fetchProjectDetailById(projectMeta.id);
+      const sanitizedSpaces = sanitizeLegacyRemovedNodesFromSpacesMap(
+        (project.spaces || {}) as Record<string, { nodes?: Node[]; edges?: Edge[] }>
+      );
       const copyToSave = {
         name: `${project.name} (Copy)`,
-        spaces: project.spaces,
+        spaces: sanitizedSpaces,
         rootSpaceId: project.rootSpaceId,
         metadata: project.metadata
       };
@@ -2648,9 +2626,14 @@ export function SpacesContent() {
       });
     }
 
-    setNodes(validatedNodes);
-    setEdges(Array.isArray(data.edges) ? data.edges : []);
-    scheduleNodeInternalsRefresh(validatedNodes.map((n: any) => String(n.id)));
+    const sanitized = sanitizeLegacyRemovedNodesFromGraph(
+      validatedNodes as Node[],
+      (Array.isArray(data.edges) ? data.edges : []) as Edge[],
+    );
+
+    setNodes(sanitized.nodes);
+    setEdges(sanitized.edges);
+    scheduleNodeInternalsRefresh(sanitized.nodes.map((n: any) => String(n.id)));
     scheduleEdgeGeometryRefresh();
 
     setTimeout(() => {
@@ -3789,175 +3772,7 @@ export function SpacesContent() {
         }}
       />
 
-      {/* ── WINDOW VIEWER PANEL ─────────────────────────────────────────────── */}
-      {windowMode && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 0, left: 0, right: 0,
-            height: viewerHeight,
-            zIndex: 9998,
-            background: 'rgba(5,5,10,0.72)',
-            backdropFilter: 'blur(24px)',
-            WebkitBackdropFilter: 'blur(24px)',
-            display: 'flex',
-            flexDirection: 'column',
-            userSelect: 'none',
-          }}
-        >
-
-          {/* ─ Viewer action buttons (bottom-right) ─ */}
-          <div style={{
-            position: 'absolute', bottom: 32, right: 12, zIndex: 20,
-            display: 'flex', gap: 6, alignItems: 'center',
-          }}>
-            {finalMedia.value && (
-              <button
-                onClick={downloadViewerMedia}
-                title={`Download ${finalMedia.type}`}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 5,
-                  padding: '5px 10px',
-                  background: 'rgba(255,255,255,0.07)',
-                  backdropFilter: 'blur(8px)',
-                  border: '1px solid rgba(255,255,255,0.12)',
-                  borderRadius: 8,
-                  color: 'rgba(255,255,255,0.8)',
-                  fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
-                  textTransform: 'uppercase', cursor: 'pointer',
-                }}
-                className="hover:bg-white/15 transition-all"
-              >
-                <Download size={11} />
-                <span>{finalMedia.type === 'video' ? 'Video' : 'Imagen'}</span>
-              </button>
-            )}
-            <button
-              onClick={closeViewer}
-              title="Close viewer"
-              style={{
-                display: 'flex', alignItems: 'center', gap: 5,
-                padding: '5px 10px',
-                background: 'rgba(255,255,255,0.05)',
-                backdropFilter: 'blur(8px)',
-                border: '1px solid rgba(255,255,255,0.08)',
-                borderRadius: 8,
-                color: 'rgba(255,255,255,0.5)',
-                fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
-                textTransform: 'uppercase', cursor: 'pointer',
-              }}
-              className="hover:bg-white/12 hover:text-white/80 transition-all"
-            >
-              <X size={11} />
-              <span>Cerrar</span>
-            </button>
-          </div>
-
-          {/* ─ Connection circle at bottom center of viewer ─ */}
-          <div style={{
-            position: 'absolute', bottom: 20, left: '50%', transform: 'translateX(-50%)',
-            zIndex: 20,
-            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
-            pointerEvents: 'none',
-          }}>
-            <div style={{
-              width: 14, height: 14, borderRadius: '50%',
-              background: finalMedia.value
-                ? FOLDDER_LOGO_BLUE
-                : 'rgba(255,255,255,0.15)',
-              border: `2px solid ${finalMedia.value ? FOLDDER_LOGO_BLUE : 'rgba(255,255,255,0.2)'}`,
-              boxShadow: finalMedia.value ? '0 0 10px rgba(108,92,231,0.55)' : 'none',
-            }} />
-          </div>
-
-          {/* Media display area — pan/zoom/fit */}
-          <div
-            ref={viewerAreaRef}
-            tabIndex={0}
-            onWheel={onViewerWheel}
-            onPointerDown={onViewerPointerDown}
-            onPointerMove={onViewerPointerMove}
-            onPointerUp={onViewerPointerUp}
-            onKeyDown={onViewerKeyDown}
-            className="flex-1 overflow-hidden relative outline-none"
-            style={{ cursor: isPanningViewerRef.current ? 'grabbing' : 'grab' }}
-          >
-            {finalMedia.value ? (
-              /* Transformable inner div */
-              <div
-                style={{
-                  position: 'absolute',
-                  top: 0, left: 0,
-                  width: '100%', height: '100%',
-                  transform: `translate(${viewerTransform.x}px, ${viewerTransform.y}px) scale(${viewerTransform.scale})`,
-                  transformOrigin: '0 0',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  willChange: 'transform',
-                }}
-              >
-                {finalMedia.type === 'video' ? (
-                  <video
-                    src={finalMedia.value}
-                    style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block' }}
-                    controls
-                    autoPlay
-                    loop
-                  />
-                ) : (
-                  <img
-                    src={finalMedia.value}
-                    style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block', userSelect: 'none', pointerEvents: 'none' }}
-                    alt="Final output"
-                    draggable={false}
-                  />
-                )}
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center h-full gap-3 opacity-30">
-                <Maximize size={48} strokeWidth={1} className="text-amber-400" />
-                <span className="text-amber-300 text-xs font-bold uppercase tracking-widest text-center px-6">No media on this node — generate or load image/video first, then open the viewer from the node header</span>
-              </div>
-            )}
-          </div>
-
-          {/* ─ Draggable resize handle — large hit area, thin visual ─ */}
-          <div
-            onPointerDown={startViewerResize}
-            style={{
-              position: 'absolute',
-              bottom: 0, left: 0, right: 0,
-              height: 24,               /* large pointer hit area */
-              cursor: 'ns-resize',
-              display: 'flex',
-              alignItems: 'flex-end',   /* align visual strip to bottom edge */
-              zIndex: 10,
-            }}
-          >
-            {/* Visual strip — only 8px tall */}
-            <div style={{
-              width: '100%',
-              height: 8,
-              background: 'rgba(251,191,36,0.08)',
-              borderTop: '1px solid rgba(251,191,36,0.25)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}>
-              {/* Grip dots */}
-              <div style={{ display: 'flex', gap: 3 }}>
-                {[0,1,2,3,4].map(i => (
-                  <div key={i} style={{ width: 3, height: 3, borderRadius: '50%', background: 'rgba(251,191,36,0.5)' }} />
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-
-      )}
-
-      {/* ── MAIN CANVAS AREA — always full height, viewer overlays on top ── */}
+      {/* ── MAIN CANVAS AREA ─────────────────────────────────────────────── */}
       <div
         className="flex flex-1"
         style={{ height: '100%' }}
@@ -3966,7 +3781,6 @@ export function SpacesContent() {
       {isAuthenticated && (
         <div data-foldder-sidebar style={{ position: 'fixed', top: 0, left: 0, height: '100vh', zIndex: 10003 }}>
           <Sidebar
-            windowMode={windowMode}
             onLibraryDragStart={handleLibraryDragStart}
             onLibraryDragEnd={handleLibraryDragEnd}
             onLibraryTileDoubleClick={addNodeFromTopbarPinDoubleClick}
@@ -4302,32 +4116,21 @@ export function SpacesContent() {
           </GraphContextMenuShell>
         )}
 
-        {windowMode && isAuthenticated && (
-          <AgentHUD
-            onGenerate={onGenerateAssistant}
-            isGenerating={isGeneratingAssistant}
-            windowMode
-            selectedNodeCount={nodes.filter((n) => n.selected).length}
-          />
-        )}
-
         {/* Action HUD — fila1: agente (izq.) + acciones (der.); fila2: accesos fijos inferiores. Oculto con body.nb-studio-open (Nano Banana Studio fullscreen). */}
         <div
           key="action-hud"
           data-foldder-top-hud
           className="pointer-events-none flex min-w-0 flex-col gap-2"
-          style={windowMode
-            ? { position: 'fixed', top: 8, left: 16, right: 16, zIndex: 100 }
-            : {
-                position: 'absolute',
-                top: 24,
-                left: isAuthenticated ? 84 : 24,
-                right: 24,
-                zIndex: 100,
-              }}
+          style={{
+            position: 'absolute',
+            top: 24,
+            left: isAuthenticated ? 84 : 24,
+            right: 24,
+            zIndex: 100,
+          }}
         >
           <div className="relative flex w-full min-w-0 max-w-full items-center gap-2 sm:gap-3">
-            {isAuthenticated && !windowMode && (
+            {isAuthenticated && (
               <>
                 <div className="pointer-events-auto relative z-[5] flex min-h-[40px] min-w-0 shrink-0 items-center gap-2 sm:gap-3 md:gap-4">
                   {/* +20% ancho respecto a 18rem / 20rem / 22rem */}
@@ -4375,7 +4178,7 @@ export function SpacesContent() {
             )}
             <div
               className={
-                isAuthenticated && !windowMode
+                isAuthenticated
                   ? 'pointer-events-auto relative z-[5] ml-auto flex min-w-0 shrink-0 items-center gap-2 sm:gap-3'
                   : 'pointer-events-auto flex w-full min-w-0 flex-1 items-center justify-between gap-3'
               }
@@ -4493,7 +4296,7 @@ export function SpacesContent() {
                   )}
                   <span className="hidden sm:inline">Nuevo proyecto</span>
                 </button>
-                {isAuthenticated && !windowMode && (
+                {isAuthenticated && (
                   <div className="ml-1 flex items-center gap-1.5">
                     <div
                       className="h-9 w-9 overflow-hidden rounded-full border border-white/30 bg-white/10 shadow-sm"
@@ -4559,7 +4362,7 @@ export function SpacesContent() {
         </div>
 
         {/* Barra inferior: Brain, Design, Present, Image, Video, VFX, Assets */}
-        {isAuthenticated && !windowMode && (
+        {isAuthenticated && (
           <div
             data-foldder-top-hud
             className="pointer-events-none absolute bottom-6 left-0 right-0 z-[120] flex items-end justify-center overflow-visible px-4"

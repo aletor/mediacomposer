@@ -7,7 +7,6 @@ import { Sparkles, Loader2, Star } from 'lucide-react';
 interface AgentHUDProps {
   onGenerate: (prompt: string) => Promise<void>;
   isGenerating?: boolean;
-  windowMode?: boolean;
   /** floating = esquina; sidebar = columna (legacy); topbar = una línea junto al topbar de pins */
   variant?: 'floating' | 'sidebar' | 'topbar';
   /** Nodos seleccionados en el lienzo; el asistente usa esto como contexto para "este nodo", cambios puntuales, etc. */
@@ -17,7 +16,6 @@ interface AgentHUDProps {
 export const AgentHUD = ({
   onGenerate,
   isGenerating = false,
-  windowMode = false,
   variant = 'floating',
   selectedNodeCount = 0,
 }: AgentHUDProps) => {
@@ -139,9 +137,7 @@ export const AgentHUD = ({
   return (
     <div
       className="flex flex-col gap-4 w-[240px] pointer-events-none"
-      style={windowMode
-        ? { position: 'fixed', top: 8, left: 8, zIndex: 10002 }
-        : { position: 'absolute', top: 24, left: 24, zIndex: 100 }}
+      style={{ position: 'absolute', top: 24, left: 24, zIndex: 100 }}
     >
       {renderBranding('floating')}
       <div className="pointer-events-auto">{assistantCard}</div>

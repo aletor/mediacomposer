@@ -69,12 +69,6 @@ const PAID_NODE_TYPES: Record<
     eurMin: 0.001,
     eurMax: 0.02,
   },
-  imageComposer: {
-    id: "compose",
-    name: "Composición de capas (servidor)",
-    eurMin: 0.001,
-    eurMax: 0.015,
-  },
 };
 
 function addType(

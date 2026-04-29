@@ -977,6 +977,21 @@ const LAYOUT_GUIDE_STROKE_WORLD = 0.58;
 const LAYOUT_GUIDE_DRAFT_STROKE_WORLD = 0.62;
 
 function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
+function signWithFallback(v: number, fallback = 1) {
+  if (v < 0) return -1;
+  if (v > 0) return 1;
+  return fallback < 0 ? -1 : 1;
+}
+function clampSignedMagnitude(v: number, minMagnitude: number, fallbackSign = 1) {
+  return signWithFallback(v, fallbackSign) * Math.max(minMagnitude, Math.abs(v));
+}
+function toggleFlipFromScale(current: boolean | undefined, scale: number) {
+  return scale < 0 ? !Boolean(current) : Boolean(current);
+}
+function mirrorOnlyScale(current: number | undefined, scale: number) {
+  const magnitude = Math.abs(current ?? 1);
+  return scale < 0 ? -magnitude : magnitude;
+}
 
 const ZERO_CORNER_RADIUS: RectangleCornerRadius = {
   topLeft: 0,
@@ -3224,6 +3239,26 @@ function deepCloneFreehandObject(o: FreehandObject, newId: () => string): Freeha
 
 function deepCloneFreehandObjectKeepIds(o: FreehandObject): FreehandObject {
   return deepCloneFreehandObject(o, () => o.id);
+}
+
+/**
+ * Duplicate batches must never keep the original vector-group id, otherwise
+ * cloned objects remain linked to the source group.
+ */
+function remapGroupIdsForClones<T extends FreehandObject>(
+  clones: T[],
+  newGroupId: () => string,
+): T[] {
+  const groupIdMap = new Map<string, string>();
+  return clones.map((clone) => {
+    if (!clone.groupId) return clone;
+    let nextGroupId = groupIdMap.get(clone.groupId);
+    if (!nextGroupId) {
+      nextGroupId = newGroupId();
+      groupIdMap.set(clone.groupId, nextGroupId);
+    }
+    return { ...clone, groupId: nextGroupId } as T;
+  });
 }
 
 export function flattenObjectsForGradientDefs(list: FreehandObject[]): FreehandObject[] {
@@ -11229,7 +11264,7 @@ export function FreehandStudioCanvas({
       setObjects((prev) => {
         const src = prev.find((o) => o.id === sourceId);
         if (!src || src.photoRoomInputSlot) return prev;
-        const copy = deepCloneFreehandObject(src, uid);
+        const copy = remapGroupIdsForClones([deepCloneFreehandObject(src, uid)], uid)[0];
         copyId = copy.id;
         const next = [...prev, copy];
         pushHistory(next, new Set([copy.id]));
@@ -13413,10 +13448,10 @@ export function FreehandStudioCanvas({
       srcPage !== designerActivePageId;
     const dx = crossPageDesignerPaste ? 0 : 24;
     const dy = crossPageDesignerPaste ? 0 : 24;
-    const dupes = clip.map((o) => {
-      const c = deepCloneFreehandObject(o, uid);
-      return translateFreehandObject(c, dx, dy);
-    });
+    const cloned = clip.map((o) => deepCloneFreehandObject(o, uid));
+    const dupes = remapGroupIdsForClones(cloned, uid).map((c) =>
+      translateFreehandObject(c, dx, dy),
+    );
     const next = [...objectsRef.current, ...dupes];
     const ns = new Set(dupes.map((d) => d.id));
     setObjects(next);
@@ -13567,8 +13602,12 @@ export function FreehandStudioCanvas({
     const objs = objectsRef.current;
     if (sel.size === 0) return;
     const { dx, dy } = duplicateStepRef.current;
-    const dupes = objs.filter((o) => sel.has(o.id) && !o.photoRoomInputSlot)
-      .map((o) => translateFreehandObject(deepCloneFreehandObject(o, uid), dx, dy));
+    const cloned = objs
+      .filter((o) => sel.has(o.id) && !o.photoRoomInputSlot)
+      .map((o) => deepCloneFreehandObject(o, uid));
+    const dupes = remapGroupIdsForClones(cloned, uid).map((o) =>
+      translateFreehandObject(o, dx, dy),
+    );
     if (dupes.length === 0) return;
     const next = [...objs, ...dupes];
     const ns = new Set(dupes.map((d) => d.id));
@@ -13716,8 +13755,11 @@ export function FreehandStudioCanvas({
     const objs = objectsRef.current;
     const maskSrc = objs.find((o) => o.id === Array.from(sel)[0]);
     if (!maskSrc || !isValidPasteInsideMask(maskSrc)) return;
-    const maskClone = deepCloneFreehandObject(maskSrc, uid) as ClipMaskShape;
-    const contentWorld = clip.map((o) => deepCloneFreehandObject(o, uid));
+    const maskClone = remapGroupIdsForClones([deepCloneFreehandObject(maskSrc, uid)], uid)[0] as ClipMaskShape;
+    const contentWorld = remapGroupIdsForClones(
+      clip.map((o) => deepCloneFreehandObject(o, uid)),
+      uid,
+    );
     const ub = clipContainerOuterBoundsFromMask(maskClone);
     const newId = uid();
     const container: ClippingContainerObject = {
@@ -16954,7 +16996,10 @@ export function FreehandStudioCanvas({
         const baseSel = selectedIds.has(obj.id) ? selectedIds : resolveSelection(obj.id, false);
         const toClone = objects.filter((o) => baseSel.has(o.id));
         if (toClone.length > 0) {
-          const clones = toClone.map((o) => deepCloneFreehandObject(o, uid));
+          const clones = remapGroupIdsForClones(
+            toClone.map((o) => deepCloneFreehandObject(o, uid)),
+            uid,
+          );
           const next = [...objects, ...clones];
           setObjects(next);
           const cloneSel = new Set(clones.map((c) => c.id));
@@ -17126,50 +17171,69 @@ export function FreehandStudioCanvas({
       const f0 = dragState.initialOrientedFrame;
       const h = dragState.handle!;
       const dLocal = worldDeltaToLocal(dCanvas, f0.angleDeg);
-      let nw = f0.w, nh = f0.h;
-      if (h.includes("e")) nw = Math.max(10, f0.w + dLocal.x);
-      if (h.includes("w")) nw = Math.max(10, f0.w - dLocal.x);
-      if (h.includes("s")) nh = Math.max(10, f0.h + dLocal.y);
-      if (h.includes("n")) nh = Math.max(10, f0.h - dLocal.y);
+      let signedW = f0.w;
+      let signedH = f0.h;
+      if (h.includes("e")) signedW = f0.w + dLocal.x;
+      if (h.includes("w")) signedW = f0.w - dLocal.x;
+      if (h.includes("s")) signedH = f0.h + dLocal.y;
+      if (h.includes("n")) signedH = f0.h - dLocal.y;
 
       if (isShiftHeld(e)) {
         const aspect = f0.w / f0.h;
-        if (h === "n" || h === "s") nw = Math.max(10, nh * aspect);
-        else if (h === "e" || h === "w") nh = Math.max(10, nw / aspect);
+        if (h === "n" || h === "s") {
+          signedW = clampSignedMagnitude(
+            signWithFallback(signedW) * Math.abs(signedH) * aspect,
+            10,
+            signedW,
+          );
+        } else if (h === "e" || h === "w") {
+          signedH = clampSignedMagnitude(
+            signWithFallback(signedH) * (Math.abs(signedW) / aspect),
+            10,
+            signedH,
+          );
+        }
         else {
-          const avgScale = ((nw / f0.w) + (nh / f0.h)) / 2;
-          nw = Math.max(10, f0.w * avgScale);
-          nh = Math.max(10, f0.h * avgScale);
+          const avgMagScale = ((Math.abs(signedW) / f0.w) + (Math.abs(signedH) / f0.h)) / 2;
+          signedW = clampSignedMagnitude(signWithFallback(signedW) * (f0.w * avgMagScale), 10, signedW);
+          signedH = clampSignedMagnitude(signWithFallback(signedH) * (f0.h * avgMagScale), 10, signedH);
         }
       } else {
         const snaps = dragState.resizeSnapshot;
         if (snaps && dragState.allBounds) {
           const ids = Array.from(dragState.allBounds.keys());
           if (ids.length > 0 && ids.every((id) => snaps.get(id)?.type === "image")) {
-            const u = (nw / f0.w + nh / f0.h) / 2;
-            nw = Math.max(10, f0.w * u);
-            nh = Math.max(10, f0.h * u);
+            const avgMagScale = ((Math.abs(signedW) / f0.w) + (Math.abs(signedH) / f0.h)) / 2;
+            signedW = clampSignedMagnitude(signWithFallback(signedW) * (f0.w * avgMagScale), 10, signedW);
+            signedH = clampSignedMagnitude(signWithFallback(signedH) * (f0.h * avgMagScale), 10, signedH);
           }
         }
       }
 
-      const dw = nw - f0.w, dh = nh - f0.h;
       const th = degToRad(f0.angleDeg);
       const ux = Math.cos(th), uy = Math.sin(th);
       const vx = -Math.sin(th), vy = Math.cos(th);
-      let tcx = 0, tcy = 0;
-      if (h.includes("e")) { tcx += (dw / 2) * ux; tcy += (dw / 2) * uy; }
-      if (h.includes("w")) { tcx -= (dw / 2) * ux; tcy -= (dw / 2) * uy; }
-      if (h.includes("s")) { tcx += (dh / 2) * vx; tcy += (dh / 2) * vy; }
-      if (h.includes("n")) { tcx -= (dh / 2) * vx; tcy -= (dh / 2) * vy; }
-      const ncx = f0.cx + tcx;
-      const ncy = f0.cy + tcy;
-      const sx = nw / f0.w, sy = nh / f0.h;
+      const centerLocalX = h.includes("e")
+        ? -f0.w / 2 + signedW / 2
+        : h.includes("w")
+          ? f0.w / 2 - signedW / 2
+          : 0;
+      const centerLocalY = h.includes("s")
+        ? -f0.h / 2 + signedH / 2
+        : h.includes("n")
+          ? f0.h / 2 - signedH / 2
+          : 0;
+      const ncx = f0.cx + centerLocalX * ux + centerLocalY * vx;
+      const ncy = f0.cy + centerLocalX * uy + centerLocalY * vy;
+      const sx = signedW / f0.w;
+      const sy = signedH / f0.h;
 
       setObjects((prev) => prev.map((o) => {
         if (!dragState.allBounds!.has(o.id)) return o;
         const src = dragState.resizeSnapshot?.get(o.id);
         if (!src) return o;
+        const nextFlipX = toggleFlipFromScale(src.flipX, sx);
+        const nextFlipY = toggleFlipFromScale(src.flipY, sy);
         const mapWorld = (p: Point) => {
           const L = worldToLocalOBB(p, f0.cx, f0.cy, f0.angleDeg);
           return localToWorldOBB({ x: L.x * sx, y: L.y * sy }, ncx, ncy, f0.angleDeg);
@@ -17177,11 +17241,19 @@ export function FreehandStudioCanvas({
         if (src.type === "path") {
           const pp = src as PathObject;
           if (pp.svgPathD && (!pp.points || pp.points.length < 2)) {
-            const newW = Math.max(4, src.width * sx);
-            const newH = Math.max(4, src.height * sy);
+            const newW = Math.max(4, Math.abs(src.width * sx));
+            const newH = Math.max(4, Math.abs(src.height * sy));
             const pivot = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
             const newC = mapWorld(pivot);
-            return { ...o, x: newC.x - newW / 2, y: newC.y - newH / 2, width: newW, height: newH };
+            return {
+              ...o,
+              x: newC.x - newW / 2,
+              y: newC.y - newH / 2,
+              width: newW,
+              height: newH,
+              flipX: nextFlipX,
+              flipY: nextFlipY,
+            };
           }
           const pts = pp.points.map((pt) => ({
             ...pt,
@@ -17198,11 +17270,19 @@ export function FreehandStudioCanvas({
         if (src.type === "text") {
           const t = src as TextObject;
           if (t.isTextFrame) {
-            const newW = Math.max(20, src.width * sx);
-            const newH = Math.max(20, src.height * sy);
+            const newW = Math.max(20, Math.abs(src.width * sx));
+            const newH = Math.max(20, Math.abs(src.height * sy));
             const pivot = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
             const newC = mapWorld(pivot);
-            return { ...o, x: newC.x - newW / 2, y: newC.y - newH / 2, width: newW, height: newH };
+            return {
+              ...o,
+              x: newC.x - newW / 2,
+              y: newC.y - newH / 2,
+              width: newW,
+              height: newH,
+              scaleX: mirrorOnlyScale(t.scaleX, sx),
+              scaleY: mirrorOnlyScale(t.scaleY, sy),
+            };
           }
           const { w: lw, h: lh } = textLayoutDims(t);
           const pivot = { x: src.x + lw / 2, y: src.y + lh / 2 };
@@ -17217,8 +17297,8 @@ export function FreehandStudioCanvas({
             scaleY: (t.scaleY ?? 1) * sy,
           };
         }
-        const newW = Math.max(4, src.width * sx);
-        const newH = Math.max(4, src.height * sy);
+        const newW = Math.max(4, Math.abs(src.width * sx));
+        const newH = Math.max(4, Math.abs(src.height * sy));
         const pivot = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
         const newC = mapWorld(pivot);
         if (src.type === "rect" && (src as RectObject).isImageFrame) {
@@ -17239,6 +17319,8 @@ export function FreehandStudioCanvas({
               y: newC.y - newH / 2,
               width: newW,
               height: newH,
+              flipX: nextFlipX,
+              flipY: nextFlipY,
               imageFrameContent: {
                 ...srcIfc,
                 ...fit,
@@ -17247,7 +17329,15 @@ export function FreehandStudioCanvas({
             };
           }
         }
-        return { ...o, x: newC.x - newW / 2, y: newC.y - newH / 2, width: newW, height: newH };
+        return {
+          ...o,
+          x: newC.x - newW / 2,
+          y: newC.y - newH / 2,
+          width: newW,
+          height: newH,
+          flipX: nextFlipX,
+          flipY: nextFlipY,
+        };
       }));
       return;
     }
@@ -17256,86 +17346,145 @@ export function FreehandStudioCanvas({
       const scale = canvasScaleFromPointer(viewport.zoom);
       const b = dragState.bounds;
       const h = dragState.handle!;
-      let nx = b.x, ny = b.y, nw = b.w, nh = b.h;
-      if (h.includes("e")) nw = Math.max(10, b.w + dx * scale);
-      if (h.includes("s")) nh = Math.max(10, b.h + dy * scale);
-      if (h.includes("w")) { nw = Math.max(10, b.w - dx * scale); nx = b.x + (b.w - nw); }
-      if (h.includes("n")) { nh = Math.max(10, b.h - dy * scale); ny = b.y + (b.h - nh); }
+      let signedW = b.w;
+      let signedH = b.h;
+      if (h.includes("e")) signedW = b.w + dx * scale;
+      if (h.includes("s")) signedH = b.h + dy * scale;
+      if (h.includes("w")) signedW = b.w - dx * scale;
+      if (h.includes("n")) signedH = b.h - dy * scale;
 
       if (isShiftHeld(e)) {
         const aspect = b.w / b.h;
-        if (h === "n" || h === "s") { nw = Math.max(10, nh * aspect); nx = b.x + (b.w - nw) / 2; }
-        else if (h === "e" || h === "w") { nh = Math.max(10, nw / aspect); ny = b.y + (b.h - nh) / 2; }
+        if (h === "n" || h === "s") {
+          signedW = clampSignedMagnitude(
+            signWithFallback(signedW) * Math.abs(signedH) * aspect,
+            10,
+            signedW,
+          );
+        } else if (h === "e" || h === "w") {
+          signedH = clampSignedMagnitude(
+            signWithFallback(signedH) * (Math.abs(signedW) / aspect),
+            10,
+            signedH,
+          );
+        }
         else {
-          const avgScale = ((nw / b.w) + (nh / b.h)) / 2;
-          nw = Math.max(10, b.w * avgScale); nh = Math.max(10, b.h * avgScale);
-          if (h.includes("w")) nx = b.x + b.w - nw;
-          if (h.includes("n")) ny = b.y + b.h - nh;
+          const avgMagScale = ((Math.abs(signedW) / b.w) + (Math.abs(signedH) / b.h)) / 2;
+          signedW = clampSignedMagnitude(signWithFallback(signedW) * (b.w * avgMagScale), 10, signedW);
+          signedH = clampSignedMagnitude(signWithFallback(signedH) * (b.h * avgMagScale), 10, signedH);
         }
       } else {
         const snaps = dragState.resizeSnapshot;
         if (snaps && dragState.allBounds) {
           const ids = Array.from(dragState.allBounds.keys());
           if (ids.length > 0 && ids.every((id) => snaps.get(id)?.type === "image")) {
-            const u = (nw / b.w + nh / b.h) / 2;
-            nw = Math.max(10, b.w * u);
-            nh = Math.max(10, b.h * u);
+            const avgMagScale = ((Math.abs(signedW) / b.w) + (Math.abs(signedH) / b.h)) / 2;
+            signedW = clampSignedMagnitude(signWithFallback(signedW) * (b.w * avgMagScale), 10, signedW);
+            signedH = clampSignedMagnitude(signWithFallback(signedH) * (b.h * avgMagScale), 10, signedH);
           }
         }
       }
 
-      if (snapEnabled && !isShiftHeld(e)) {
+      const bcx = b.x + b.w / 2;
+      const bcy = b.y + b.h / 2;
+      const pivotX = h.includes("e") ? b.x : h.includes("w") ? b.x + b.w : bcx;
+      const pivotY = h.includes("s") ? b.y : h.includes("n") ? b.y + b.h : bcy;
+      let ncx = h.includes("e")
+        ? pivotX + signedW / 2
+        : h.includes("w")
+          ? pivotX - signedW / 2
+          : bcx;
+      let ncy = h.includes("s")
+        ? pivotY + signedH / 2
+        : h.includes("n")
+          ? pivotY - signedH / 2
+          : bcy;
+      let rectX = ncx - Math.abs(signedW) / 2;
+      let rectY = ncy - Math.abs(signedH) / 2;
+      let rectW = Math.abs(signedW);
+      let rectH = Math.abs(signedH);
+
+      if (snapEnabled && !isShiftHeld(e) && signedW > 0 && signedH > 0) {
         const vg = layoutGuidesRef.current.filter((g) => g.orientation === "vertical").map((g) => g.position);
         const hg = layoutGuidesRef.current.filter((g) => g.orientation === "horizontal").map((g) => g.position);
-        const sn = snapAxisAlignedResizeToGuides({ x: nx, y: ny, w: nw, h: nh }, h, vg, hg, viewport.zoom);
-        nx = sn.rect.x;
-        ny = sn.rect.y;
-        nw = sn.rect.w;
-        nh = sn.rect.h;
+        const sn = snapAxisAlignedResizeToGuides({ x: rectX, y: rectY, w: rectW, h: rectH }, h, vg, hg, viewport.zoom);
+        rectX = sn.rect.x;
+        rectY = sn.rect.y;
+        rectW = sn.rect.w;
+        rectH = sn.rect.h;
+        signedW = rectW;
+        signedH = rectH;
+        ncx = rectX + rectW / 2;
+        ncy = rectY + rectH / 2;
         setSnapGuides(sn.guides);
       } else {
         setSnapGuides([]);
       }
 
-      const sx = nw / b.w, sy = nh / b.h;
+      const sx = signedW / b.w;
+      const sy = signedH / b.h;
       setObjects((prev) => prev.map((o) => {
-        const ob = dragState.allBounds!.get(o.id);
         const src = dragState.resizeSnapshot?.get(o.id);
-        if (!ob || !src) return o;
-        const newX = nx + (ob.x - b.x) * sx;
-        const newY = ny + (ob.y - b.y) * sy;
+        if (!src) return o;
+        const nextFlipX = toggleFlipFromScale(src.flipX, sx);
+        const nextFlipY = toggleFlipFromScale(src.flipY, sy);
+        const mapWorld = (p: Point) => ({
+          x: ncx + (p.x - bcx) * sx,
+          y: ncy + (p.y - bcy) * sy,
+        });
         if (src.type === "path") {
           const pp = src as PathObject;
           if (pp.svgPathD && (!pp.points || pp.points.length < 2)) {
-            return { ...o, x: newX, y: newY, width: ob.w * sx, height: ob.h * sy };
+            const newW = Math.max(4, Math.abs(src.width * sx));
+            const newH = Math.max(4, Math.abs(src.height * sy));
+            const pivot = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
+            const newC = mapWorld(pivot);
+            return {
+              ...o,
+              x: newC.x - newW / 2,
+              y: newC.y - newH / 2,
+              width: newW,
+              height: newH,
+              flipX: nextFlipX,
+              flipY: nextFlipY,
+            };
           }
           const pts = pp.points.map(pt => ({
             ...pt,
-            anchor: { x: nx + (pt.anchor.x - b.x) * sx, y: ny + (pt.anchor.y - b.y) * sy },
-            handleIn: { x: nx + (pt.handleIn.x - b.x) * sx, y: ny + (pt.handleIn.y - b.y) * sy },
-            handleOut: { x: nx + (pt.handleOut.x - b.x) * sx, y: ny + (pt.handleOut.y - b.y) * sy },
+            anchor: mapWorld(pt.anchor),
+            handleIn: mapWorld(pt.handleIn),
+            handleOut: mapWorld(pt.handleOut),
           }));
           const pb = getPathBoundsFromPoints(pts);
           return { ...o, x: pb.x, y: pb.y, width: pb.w, height: pb.h, points: pts };
         }
         if (src.type === "clippingContainer") {
-          const mapWorld = (p: Point) => ({
-            x: nx + (p.x - b.x) * sx,
-            y: ny + (p.y - b.y) * sy,
-          });
           return mapObjectPointsWithWorld(src, mapWorld) as ClippingContainerObject;
         }
         if (src.type === "text") {
           const tt = src as TextObject;
+          if (tt.isTextFrame) {
+            const nextW = Math.max(20, Math.abs(src.width * sx));
+            const nextH = Math.max(20, Math.abs(src.height * sy));
+            const pivot = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
+            const newC = mapWorld(pivot);
+            return {
+              ...o,
+              x: newC.x - nextW / 2,
+              y: newC.y - nextH / 2,
+              width: nextW,
+              height: nextH,
+              scaleX: mirrorOnlyScale(tt.scaleX, sx),
+              scaleY: mirrorOnlyScale(tt.scaleY, sy),
+            };
+          }
           const { w: lw, h: lh } = textLayoutDims(tt);
-          const vx = nx + (ob.x - b.x) * sx;
-          const vy = ny + (ob.y - b.y) * sy;
-          const vw = ob.w * sx, vh = ob.h * sy;
-          const tcx = vx + vw / 2, tcy = vy + vh / 2;
+          const pivot = { x: src.x + lw / 2, y: src.y + lh / 2 };
+          const newC = mapWorld(pivot);
           return {
             ...o,
-            x: tcx - lw / 2,
-            y: tcy - lh / 2,
+            x: newC.x - lw / 2,
+            y: newC.y - lh / 2,
             width: tt.width,
             height: tt.height,
             scaleX: (tt.scaleX ?? 1) * sx,
@@ -17345,8 +17494,10 @@ export function FreehandStudioCanvas({
         if (src.type === "rect" && (src as RectObject).isImageFrame) {
           const srcRect = src as RectObject;
           const srcIfc = srcRect.imageFrameContent;
-          const nextW = ob.w * sx;
-          const nextH = ob.h * sy;
+          const nextW = Math.max(4, Math.abs(src.width * sx));
+          const nextH = Math.max(4, Math.abs(src.height * sy));
+          const pivot = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
+          const newC = mapWorld(pivot);
           if (srcRect.imageFrameAutoFit !== false && srcIfc?.src) {
             const mode = srcIfc.fittingMode ?? "fill-proportional";
             const fit = computeFittingLayout(
@@ -17358,10 +17509,12 @@ export function FreehandStudioCanvas({
             );
             return {
               ...o,
-              x: newX,
-              y: newY,
+              x: newC.x - nextW / 2,
+              y: newC.y - nextH / 2,
               width: nextW,
               height: nextH,
+              flipX: nextFlipX,
+              flipY: nextFlipY,
               imageFrameContent: {
                 ...srcIfc,
                 ...fit,
@@ -17370,11 +17523,18 @@ export function FreehandStudioCanvas({
             };
           }
         }
+        const nextW = Math.max(4, Math.abs(src.width * sx));
+        const nextH = Math.max(4, Math.abs(src.height * sy));
+        const pivot = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
+        const newC = mapWorld(pivot);
         return {
           ...o,
-          x: newX, y: newY,
-          width: ob.w * sx,
-          height: ob.h * sy,
+          x: newC.x - nextW / 2,
+          y: newC.y - nextH / 2,
+          width: nextW,
+          height: nextH,
+          flipX: nextFlipX,
+          flipY: nextFlipY,
         };
       }));
       return;

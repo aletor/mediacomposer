@@ -12,8 +12,6 @@ import {
   NanoBananaNode,
   BackgroundRemoverNode,
   MediaDescriberNode,
-  BackgroundNode,
-  ImageComposerNode,
   ImageExportNode,
   UrlImageNode,
   PinterestSearchNode,
@@ -24,7 +22,6 @@ import {
   VfxGeneratorNode,
   PainterNode,
   CropNode,
-  BezierMaskNode,
   DesignerNode,
   ProjectBrainNode,
   ProjectAssetsNode,
@@ -37,7 +34,7 @@ import { CanvasGroupNode } from "./CanvasGroupNode";
 
 export const spacesInitialNodes: Node[] = [];
 
-export const spacesNodeTypes: Record<string, ComponentType<any>> = {
+export const spacesNodeTypes: Record<string, ComponentType<unknown>> = {
   mediaInput: MediaInputNode,
   promptInput: PromptNode,
   grokProcessor: GrokNode,
@@ -47,8 +44,6 @@ export const spacesNodeTypes: Record<string, ComponentType<any>> = {
   nanoBanana: NanoBananaNode,
   backgroundRemover: BackgroundRemoverNode,
   mediaDescriber: MediaDescriberNode,
-  background: BackgroundNode,
-  imageComposer: ImageComposerNode,
   imageExport: ImageExportNode,
   urlImage: UrlImageNode,
   pinterestSearch: PinterestSearchNode,
@@ -59,7 +54,6 @@ export const spacesNodeTypes: Record<string, ComponentType<any>> = {
   vfxGenerator: VfxGeneratorNode,
   painter: PainterNode,
   crop: CropNode,
-  bezierMask: BezierMaskNode,
   designer: DesignerNode,
   projectBrain: ProjectBrainNode,
   projectAssets: ProjectAssetsNode,

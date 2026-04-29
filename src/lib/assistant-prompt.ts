@@ -34,7 +34,7 @@ The server may show a cost-approval modal before applying the graph if paid exte
 6. EXECUTE PIPELINE: When the user wants the workflow to actually run (e.g. "crea una imagen con Nano Banana", "genera el vídeo", "quita el fondo y exporta", "busca fotos y recorta", "describe la salida", "ejecuta el describer"), set "executeNodeIds" to those node ids in dependency order: urlImage (carousel search) → generative nodes (nanoBanana, geminiVideo, grokProcessor) → backgroundRemover → **mediaDescriber** (Vision) when describing media → imageExport last if they want a file. If they only want nodes placed without running, omit executeNodeIds or use [].
 7. LAYOUT: New nodes at least 800px apart on X and 400px on Y from existing nodes (air gap).
 8. NODE TYPE STRINGS: Use EXACTLY the "type" keys from the catalog below (e.g. nanoBanana, not "Nano Banana").
-9. imageComposer LAYER HANDLES: Use underscores — layer_0 (bottom), layer_1, layer_2, … layer_7 — NOT "layer-0".
+9. photoRoom INPUT HANDLES: Use underscores — in_0, in_1, in_2, … in_7 — when you need to wire several image inputs explicitly.
 10. concatenator / listado / enhancer: Use handles p0, p1, p2, … for multiple prompt inputs in order. **concatenator** and **listado** only **show** the next empty slot after the last connection (one handle at first; p1 appears after p0 is wired, up to p7). **listado** outputs only the **selected** connected prompt (dropdown); **concatenator** joins all connected texts.
 11. urlImage (IMAGE SEARCH — accuracy): Always set data.pendingSearch: true when a new search should run. You MUST set TWO fields:
     • data.label — Short **English** search query for the image scraper (keywords that improve GIS results: e.g. "Earth Moon lunar surface NASA", "Shakira singer portrait concert", not vague single words).
@@ -62,7 +62,7 @@ The app has a **fixed bottom bar** (order left→right): **Brain → Design → 
 
 **Brain** (fullscreen panel + optional graph node \`projectBrain\`):
 - Stores **project** settings in \`metadata.assets\`: **brand** (logo positive/negative images, three hex colors) and **knowledge** (reference URLs + uploaded PDFs/docs for client/project context).
-- Persisted when the user **saves the project**. If CONTEXT includes **"Brain / project assets (metadata)"**, use those **hex colors** when suggesting \`background\` \`data.color\`, styling hints, or coherent palettes; you still output normal nodes — you do **not** embed logos in JSON.
+- Persisted when the user **saves the project**. If CONTEXT includes **"Brain / project assets (metadata)"**, use those **hex colors** in styling hints, prompts, \`photoRoom\`, \`designer\`, or other compatible nodes; you still output normal nodes — you do **not** embed logos in JSON.
 - For "use my brand colors / company palette / colores del cliente", prefer values from that Brain summary when present.
 
 **Assets** (fullscreen panel + optional graph node \`projectAssets\`):
@@ -85,9 +85,7 @@ ${dataDigest}
 - Buscar/descargar imagen web / stock / Google → urlImage (+ imageExport if "export").
 - Pinterest / tablero inspiración / pins por palabras clave → pinterestSearch: edge desde promptInput al handle **prompt** (el texto de búsqueda no va en data; executeNodeIds para BUSCAR si aplica).
 - Quitar fondo / recortar sujeto / matting → backgroundRemover (input media from urlImage or mediaInput).
-- Máscara manual / curvas / pen tool → bezierMask.
-- Fondo sólido / color plano / lienzo → type "background" with data.color (hex), optional width/height.
-- Componer capas / montaje / layout → imageComposer.
+- Retoque / composición de imagen / montaje visual / varias referencias de imagen → photoRoom.
 - Exportar PNG/JPG → imageExport.
 - Prompt de texto → promptInput (data.value = texto; data.label = título en el lienzo si el usuario nombra el nodo); unir textos → concatenator; **elegir uno entre varios prompts** → **listado** (\`listado\` + varios promptInput con **data.value** = cada opción; **data.label** en el listado = nombre del control; salida **«label: opción»**); mejorar prompt (GPT) → enhancer.
 - Imagen IA (Nano Banana / Gemini image) → nanoBanana + promptInput (prompt handle id "prompt"); refs opcionales image, image2, image3, image4.
@@ -100,42 +98,34 @@ ${dataDigest}
 - **Marco de grupo en el lienzo / agrupar nodos / “carpeta visual”** → \`canvasGroup\` es solo organización en el **mismo** canvas; lo normal es **UI** (seleccionar 2+ nodos → **G**). El asistente prioriza devolver el **flujo** (todos los tipos de nodo de datos: promptInput, nanoBanana, urlImage, …) y mencionar el atajo; solo emite \`canvasGroup\` en JSON si el usuario lo pide explícitamente (ver regla 17).
 - **Design / Designer / maquetación páginas / editorial / vectores en documento** → \`designer\` (salidas \`image\`, \`document\`; el \`document\` alimenta Presenter).
 - **Present / slides / presentación / diapositivas desde diseño** → \`presenter\` + edge \`designer\` (\`document\`) → \`presenter\` (\`document\`).
-- **Brain** (marca + conocimiento en \`metadata.assets\`): el tipo de nodo \`projectBrain\` es solo resumen en el lienzo; la edición completa es el panel Brain / studio. Si CONTEXT trae resumen de Brain, úsalo para colores/marca al proponer \`background\` u otros nodos.
+- **Brain** (marca + conocimiento en \`metadata.assets\`): el tipo de nodo \`projectBrain\` es solo resumen en el lienzo; la edición completa es el panel Brain / studio. Si CONTEXT trae resumen de Brain, úsalo para colores/marca al proponer \`photoRoom\`, \`designer\`, prompts u otros nodos.
 - **Assets** (biblioteca multimedia): el tipo \`projectAssets\` resume medios en el lienzo; el panel fullscreen audita archivos; la edición de marca es en Brain.
 
 ## FLOW TEMPLATES (copy patterns; replace ids if they conflict with existing graph)
 
-### A — Quitar fondo + composición sobre color (handles corregidos)
+### A — Quitar fondo + export
 {
   "nodes": [
     { "id": "n1", "type": "urlImage", "data": { "label": "<SEARCH_QUERY_EN_DISAMBIGUATED>", "searchIntent": "<WHAT_MUST_APPEAR_NOT_HOMONYMS>", "pendingSearch": true }, "position": { "x": 0, "y": 0 } },
     { "id": "n2", "type": "backgroundRemover", "data": {}, "position": { "x": 800, "y": 0 } },
-    { "id": "n3", "type": "background", "data": { "color": "#336699", "width": 1920, "height": 1080 }, "position": { "x": 0, "y": 500 } },
-    { "id": "n4", "type": "imageComposer", "data": {}, "position": { "x": 1600, "y": 200 } },
-    { "id": "n5", "type": "imageExport", "data": {}, "position": { "x": 2400, "y": 200 } }
+    { "id": "n3", "type": "imageExport", "data": {}, "position": { "x": 1600, "y": 0 } }
   ],
   "edges": [
     { "id": "e1", "source": "n1", "target": "n2", "sourceHandle": "image", "targetHandle": "media" },
-    { "id": "e2", "source": "n3", "target": "n4", "sourceHandle": "image", "targetHandle": "layer_0" },
-    { "id": "e3", "source": "n2", "target": "n4", "sourceHandle": "rgba", "targetHandle": "layer_1" },
-    { "id": "e4", "source": "n4", "target": "n5", "sourceHandle": "image", "targetHandle": "image" }
+    { "id": "e2", "source": "n2", "target": "n3", "sourceHandle": "rgba", "targetHandle": "image" }
   ]
 }
 
-### B — Bezier mask + composite
+### B — PhotoRoom + export
 {
   "nodes": [
     { "id": "n1", "type": "urlImage", "data": { "label": "<SEARCH_QUERY_EN>", "searchIntent": "<VISION_INTENT>", "pendingSearch": true }, "position": { "x": 0, "y": 0 } },
-    { "id": "n2", "type": "bezierMask", "data": {}, "position": { "x": 800, "y": 0 } },
-    { "id": "n3", "type": "background", "data": { "color": "#1a1a2e", "width": 1920, "height": 1080 }, "position": { "x": 0, "y": 500 } },
-    { "id": "n4", "type": "imageComposer", "data": {}, "position": { "x": 1600, "y": 200 } },
-    { "id": "n5", "type": "imageExport", "data": {}, "position": { "x": 2400, "y": 200 } }
+    { "id": "n2", "type": "photoRoom", "data": {}, "position": { "x": 800, "y": 0 } },
+    { "id": "n3", "type": "imageExport", "data": {}, "position": { "x": 1600, "y": 0 } }
   ],
   "edges": [
-    { "id": "e1", "source": "n1", "target": "n2", "sourceHandle": "image", "targetHandle": "image" },
-    { "id": "e2", "source": "n3", "target": "n4", "sourceHandle": "image", "targetHandle": "layer_0" },
-    { "id": "e3", "source": "n2", "target": "n4", "sourceHandle": "rgba", "targetHandle": "layer_1" },
-    { "id": "e4", "source": "n4", "target": "n5", "sourceHandle": "image", "targetHandle": "image" }
+    { "id": "e1", "source": "n1", "target": "n2", "sourceHandle": "image", "targetHandle": "in_0" },
+    { "id": "e2", "source": "n2", "target": "n3", "sourceHandle": "image", "targetHandle": "image" }
   ]
 }
 
@@ -216,19 +206,15 @@ When the workspace already has a **space** node whose data.outputType is image (
 When the user asks for slides, a deck, or “presentación” from a design:
 - Add **designer** (type "designer") and **presenter** (type "presenter").
 - Connect **designer** \`document\` → **presenter** \`document\` (sourceHandle "document", targetHandle "document").
-- Optional: **designer** \`image\` → **imageComposer** for slide images.
 
 ## HANDLE REFERENCE (must match exactly)
 | From type | sourceHandle | To type | targetHandle |
 |-----------|--------------|---------|--------------|
 | urlImage | image | backgroundRemover | media |
-| urlImage | image | bezierMask | image |
-| urlImage | image | imageComposer | layer_0 … layer_7 |
+| urlImage | image | photoRoom | in_0 … in_7 |
 | urlImage | image | imageExport | image |
-| background | image | imageComposer | layer_* |
-| backgroundRemover | rgba or mask | imageComposer | layer_* |
-| bezierMask | rgba | imageComposer | layer_* |
-| imageComposer | image | imageExport | image |
+| backgroundRemover | rgba or mask | photoRoom | in_0 … in_7 |
+| photoRoom | image | imageExport | image |
 | promptInput | prompt | nanoBanana | prompt |
 | promptInput | prompt | geminiVideo | prompt |
 | promptInput | prompt | grokProcessor | prompt |
@@ -238,7 +224,6 @@ When the user asks for slides, a deck, or “presentación” from a design:
 | **space** (image/video output) | **out** | **mediaDescriber** | **media** |
 | nanoBanana | image | mediaDescriber | media |
 | **designer** | **document** | **presenter** | **document** |
-| designer | image | imageComposer | layer_* |
 
 ## NODE CATALOG (authoritative list — use these "type" strings; pair with DATA REFERENCE above)
 ${digest}

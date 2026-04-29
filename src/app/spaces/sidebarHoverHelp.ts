@@ -52,14 +52,6 @@ export const SIDEBAR_HOVER_HELP: Record<string, { title: string; line: string }>
     title: 'Enhancer',
     line: 'Mejora y amplía tu prompt',
   },
-  background: {
-    title: 'Background / Canvas',
-    line: 'Crea lienzo base para composición',
-  },
-  imageComposer: {
-    title: 'Image Composer',
-    line: 'Combina imágenes en capas',
-  },
   photoRoom: {
     title: 'PhotoRoom',
     line: 'Retoque de imagen: varias entradas; salida imagen (Studio en evolución)',
@@ -71,10 +63,6 @@ export const SIDEBAR_HOVER_HELP: Record<string, { title: string; line: string }>
   crop: {
     title: 'Crop',
     line: 'Recorta y encuadra imagen',
-  },
-  bezierMask: {
-    title: 'Bezier Mask',
-    line: 'Crea máscara precisa con curvas',
   },
   backgroundRemover: {
     title: 'Background Remover',

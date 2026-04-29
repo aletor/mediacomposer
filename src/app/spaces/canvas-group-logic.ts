@@ -1,6 +1,8 @@
 import type { Edge, Node } from "@xyflow/react";
 import { NODE_REGISTRY } from "./nodeRegistry";
 
+const LEGACY_REMOVED_CANVAS_NODE_TYPES = new Set(["background", "imageComposer", "bezierMask"]);
+
 function parseStylePx(v: unknown): number | undefined {
   if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
   if (typeof v === "string") {
@@ -36,7 +38,7 @@ function layoutDimsForBounds(n: Node): { w: number; h: number } {
     if (t === "geminiVideo" || t === "vfxGenerator") {
       if (!hasW) w = sw ?? 380;
       if (!hasH) h = sh ?? 560;
-    } else if (t === "nanoBanana" || t === "imageComposer" || t === "photoRoom" || t === "grokProcessor") {
+    } else if (t === "nanoBanana" || t === "photoRoom" || t === "grokProcessor") {
       if (!hasW) w = sw ?? 400;
       if (!hasH) h = sh ?? 420;
     } else if (t === "promptInput" || t === "mediaInput") {
@@ -225,17 +227,18 @@ export function normalizeNodeZIndexForXYFlow(n: Node): Node {
 
   if (typeof sz !== "number") return n;
 
-  const { zIndex: _, ...rest } = st as { zIndex?: number };
-  const nextStyle = Object.keys(rest).length ? { ...rest } : undefined;
+  const nextStyle = { ...(st as { zIndex?: number }) };
+  delete nextStyle.zIndex;
+  const cleanedStyle = Object.keys(nextStyle).length ? nextStyle : undefined;
 
   if (sz > 0) {
     return {
       ...n,
       zIndex: Math.max(baseTop, sz),
-      style: nextStyle as Node["style"],
+      style: cleanedStyle as Node["style"],
     };
   }
-  return { ...n, style: nextStyle as Node["style"] };
+  return { ...n, style: cleanedStyle as Node["style"] };
 }
 
 /** Solo marcos de grupo: mismo saneado + quitar zIndex residual del style del marco. */
@@ -253,7 +256,9 @@ export function normalizeNodeForPersistence(n: Node): Node {
 }
 
 export function normalizeNodesForPersistence(nodes: Node[]): Node[] {
-  return nodes.map(normalizeNodeForPersistence);
+  return nodes
+    .filter((n) => !LEGACY_REMOVED_CANVAS_NODE_TYPES.has(String(n.type ?? "")))
+    .map(normalizeNodeForPersistence);
 }
 
 /** Todos los espacios del proyecto: mismo criterio de apilado al persistir en disco. */
@@ -263,9 +268,44 @@ export function normalizeSpacesMapNodesForPersistence(
   if (!spaces || typeof spaces !== "object") return {};
   const out: Record<string, unknown> = { ...spaces };
   for (const key of Object.keys(out)) {
-    const sp = out[key] as { nodes?: Node[] } | undefined;
+    const sp = out[key] as { nodes?: Node[]; edges?: Edge[] } | undefined;
     if (!sp || !Array.isArray(sp.nodes)) continue;
-    out[key] = { ...sp, nodes: normalizeNodesForPersistence(sp.nodes as Node[]) };
+    const normalizedNodes = normalizeNodesForPersistence(sp.nodes as Node[]);
+    const allowedNodeIds = new Set(normalizedNodes.map((n) => n.id));
+    const normalizedEdges = Array.isArray(sp.edges)
+      ? sp.edges.filter((e) => allowedNodeIds.has(e.source) && allowedNodeIds.has(e.target))
+      : sp.edges;
+    out[key] = { ...sp, nodes: normalizedNodes, edges: normalizedEdges };
+  }
+  return out;
+}
+
+export function sanitizeLegacyRemovedNodesFromGraph(
+  nodes: Node[],
+  edges: Edge[],
+): { nodes: Node[]; edges: Edge[] } {
+  const filteredNodes = nodes.filter((n) => !LEGACY_REMOVED_CANVAS_NODE_TYPES.has(String(n.type ?? "")));
+  const allowedNodeIds = new Set(filteredNodes.map((n) => n.id));
+  const filteredEdges = edges.filter((e) => allowedNodeIds.has(e.source) && allowedNodeIds.has(e.target));
+  return {
+    nodes: filteredNodes.map(normalizeNodeForPersistence),
+    edges: filteredEdges,
+  };
+}
+
+export function sanitizeLegacyRemovedNodesFromSpacesMap(
+  spaces: Record<string, { nodes?: Node[]; edges?: Edge[] } | undefined> | null | undefined,
+): Record<string, unknown> {
+  if (!spaces || typeof spaces !== "object") return {};
+  const out: Record<string, unknown> = { ...spaces };
+  for (const key of Object.keys(out)) {
+    const sp = out[key] as { nodes?: Node[]; edges?: Edge[] } | undefined;
+    if (!sp || !Array.isArray(sp.nodes)) continue;
+    const sanitized = sanitizeLegacyRemovedNodesFromGraph(
+      sp.nodes as Node[],
+      Array.isArray(sp.edges) ? (sp.edges as Edge[]) : [],
+    );
+    out[key] = { ...sp, nodes: sanitized.nodes, edges: sanitized.edges };
   }
   return out;
 }
@@ -536,7 +576,8 @@ export function applyCanvasGroupExpand(
 
   const newNodes = nodes.map((n) => {
     if (n.id === groupId) {
-      const { collapseBackup: _b, ...restData } = n.data as Record<string, unknown>;
+      const restData = { ...(n.data as Record<string, unknown>) };
+      delete restData.collapseBackup;
       return {
         ...n,
         data: {
@@ -547,7 +588,8 @@ export function applyCanvasGroupExpand(
       };
     }
     if (memberIds.has(n.id)) {
-      const { hidden: _h, ...rest } = n as Node & { hidden?: boolean };
+      const rest = { ...(n as Node & { hidden?: boolean }) };
+      delete rest.hidden;
       return { ...rest, hidden: false };
     }
     return n;
@@ -573,9 +615,6 @@ export function resolveHandleDataType(
     (nodeType === "listado" || nodeType === "concatenator" || nodeType === "enhancer")
   ) {
     return "prompt";
-  }
-  if (flow === "in" && handleId.startsWith("layer_") && nodeType === "imageComposer") {
-    return "image";
   }
   if (flow === "in" && /^in_\d+$/.test(handleId) && nodeType === "photoRoom") {
     return "image";
@@ -660,12 +699,16 @@ export function ungroupCanvasGroup(groupId: string, nodes: Node[]): { nodes: Nod
     .filter((n) => n.id !== groupId)
     .map((n) => {
       if (n.parentId !== groupId) return n;
-      const { parentId: _p, extent: _e, expandParent: _x, hidden: _h, ...rest } = n as Node & {
+      const rest = { ...(n as Node & {
         parentId?: string;
         extent?: string;
         expandParent?: boolean;
         hidden?: boolean;
-      };
+      }) };
+      delete rest.parentId;
+      delete rest.extent;
+      delete rest.expandParent;
+      delete rest.hidden;
       return {
         ...rest,
         hidden: false,
