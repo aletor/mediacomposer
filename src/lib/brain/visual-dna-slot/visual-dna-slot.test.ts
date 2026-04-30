@@ -3,6 +3,7 @@ import { defaultProjectAssets, normalizeProjectAssets, type ProjectAssetsMetadat
 import { buildBrainRuntimeContext } from "@/lib/brain/brain-runtime-context";
 import {
   appendKnowledgeImageVisualDnaSlots,
+  appendPendingCapsuleImageVisualDnaSlots,
   listKnowledgeImageRefsMissingVisualDnaSlot,
 } from "@/lib/brain/visual-dna-slot/slot-sync";
 import {
@@ -241,7 +242,7 @@ describe("VisualDnaSlot library", () => {
     expect(gen.ok).toBe(false);
   });
 
-  it("appendKnowledgeImageVisualDnaSlots incluye filas pending (post-subida local)", () => {
+  it("appendKnowledgeImageVisualDnaSlots no crea slots con filas pending", () => {
     const assets = baseKnowledgeImageAssets();
     const pendingA = { ...assets.strategy.visualReferenceAnalysis!.analyses[0], analysisStatus: "pending" as const };
     const withPending = normalizeProjectAssets({
@@ -255,7 +256,86 @@ describe("VisualDnaSlot library", () => {
       },
     });
     const { appended } = appendKnowledgeImageVisualDnaSlots(withPending);
+    expect(appended).toHaveLength(0);
+  });
+
+  it("appendPendingCapsuleImageVisualDnaSlots crea un placeholder visible para Looks visuales", () => {
+    const assets = normalizeProjectAssets({
+      ...defaultProjectAssets(),
+      knowledge: {
+        ...defaultProjectAssets().knowledge,
+        documents: [
+          {
+            id: "capsule-img-1",
+            name: "look.jpg",
+            size: 1200,
+            mime: "image/jpeg",
+            type: "image",
+            format: "image",
+            scope: "context",
+            brainSourceScope: "capsule",
+            status: "Subido",
+            s3Path: "knowledge-files/look.jpg",
+            uploadedAt: "2026-04-30T00:00:00.000Z",
+          },
+        ],
+      },
+    });
+    const { nextSlots, appended } = appendPendingCapsuleImageVisualDnaSlots(assets);
     expect(appended).toHaveLength(1);
+    expect(nextSlots[0]?.status).toBe("pending");
+    expect(nextSlots[0]?.sourceDocumentId).toBe("capsule-img-1");
+    expect(nextSlots[0]?.sourceS3Path).toBe("knowledge-files/look.jpg");
+  });
+
+  it("appendPendingCapsuleImageVisualDnaSlots no crea placeholders para imágenes de Proyecto", () => {
+    const assets = normalizeProjectAssets({
+      ...defaultProjectAssets(),
+      knowledge: {
+        ...defaultProjectAssets().knowledge,
+        documents: [
+          {
+            id: "project-img-1",
+            name: "project.jpg",
+            size: 1200,
+            mime: "image/jpeg",
+            type: "image",
+            format: "image",
+            scope: "context",
+            brainSourceScope: "project",
+            status: "Subido",
+            s3Path: "knowledge-files/project.jpg",
+            uploadedAt: "2026-04-30T00:00:00.000Z",
+          },
+        ],
+      },
+    });
+    expect(appendPendingCapsuleImageVisualDnaSlots(assets).appended).toHaveLength(0);
+  });
+
+  it("appendKnowledgeImageVisualDnaSlots no duplica una cápsula que ya tiene placeholder", () => {
+    const assets = normalizeProjectAssets({
+      ...baseKnowledgeImageAssets(),
+      knowledge: {
+        ...baseKnowledgeImageAssets().knowledge,
+        documents: [
+          {
+            ...baseKnowledgeImageAssets().knowledge.documents[0],
+            brainSourceScope: "capsule",
+            scope: "context",
+            s3Path: "knowledge-files/look.png",
+          },
+        ],
+      },
+    });
+    const withPlaceholder = normalizeProjectAssets({
+      ...assets,
+      strategy: {
+        ...assets.strategy,
+        visualDnaSlots: appendPendingCapsuleImageVisualDnaSlots(assets).nextSlots,
+      },
+    });
+    expect(appendKnowledgeImageVisualDnaSlots(withPlaceholder).appended).toHaveLength(0);
   });
 
   it("listKnowledgeImageRefsMissingVisualDnaSlot respeta slots existentes", () => {

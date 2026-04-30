@@ -3,7 +3,14 @@
 import { useCallback, useRef, useState, type CSSProperties } from "react";
 import { ChevronLeft, ChevronRight, ImageIcon, Loader2, RefreshCw, Trash2, AlertTriangle } from "lucide-react";
 import type { VisualDnaSlot } from "@/lib/brain/visual-dna-slot/types";
-import type { BrainVisualImageAnalysis } from "@/app/spaces/project-assets-metadata";
+import type { BrainVisualImageAnalysis, VisualCapsuleStatus } from "@/app/spaces/project-assets-metadata";
+
+type VisualCapsuleLibraryMeta = {
+  id: string;
+  status: VisualCapsuleStatus;
+  analysisStatus?: "analyzing" | "ready" | "incomplete" | "error";
+  lastError?: string;
+};
 
 export type VisualDnaSlotsLibraryProps = {
   slots: VisualDnaSlot[];
@@ -12,6 +19,8 @@ export type VisualDnaSlotsLibraryProps = {
   onDelete: (slotId: string) => void;
   onRename: (slotId: string, label: string) => void;
   analysisStatusBySourceDocumentId?: Readonly<Record<string, BrainVisualImageAnalysis["analysisStatus"] | undefined>>;
+  capsuleMetaBySourceDocumentId?: Readonly<Record<string, VisualCapsuleLibraryMeta | undefined>>;
+  onSetCapsuleStatus?: (capsuleId: string, status: VisualCapsuleStatus) => void;
   /** true = rail bajo la franja de ingesta (siempre visible). false = bloque ancho en otra sección. */
   belowIngest?: boolean;
 };
@@ -42,6 +51,8 @@ export function VisualDnaSlotsLibrary({
   onDelete,
   onRename,
   analysisStatusBySourceDocumentId,
+  capsuleMetaBySourceDocumentId,
+  onSetCapsuleStatus,
   belowIngest = false,
 }: VisualDnaSlotsLibraryProps) {
   const [openId, setOpenId] = useState<string | null>(null);
@@ -56,6 +67,10 @@ export function VisualDnaSlotsLibrary({
   }, []);
 
   const open = slots.find((s) => s.id === openId) ?? null;
+  const openAnalysisStatus = open?.sourceDocumentId
+    ? analysisStatusBySourceDocumentId?.[open.sourceDocumentId]
+    : undefined;
+  const openAnalysisReady = !openAnalysisStatus || openAnalysisStatus === "analyzed";
 
   return (
     <div
@@ -79,7 +94,7 @@ export function VisualDnaSlotsLibrary({
         <p className="rounded-[5px] border border-dashed border-violet-200 bg-white/80 px-3 py-2 text-[11px] text-zinc-600">
           {belowIngest
             ? "Tras subir, el pozo puede guardar la imagen en S3: hace falta sesión y API para URL firmada y visión. Cuando exista fila de análisis y URL de vista, verás aquí «fuente · sugerencias». Si no aparece, revisa la consola de red o «Reanalizar imágenes» en Referencias visuales."
-            : "Aún no hay slots. Se crean cuando hay una imagen en el pozo con URL o data URL, una fila de análisis visual (aunque siga en «pending») y aún no existe un slot para ese documento."}
+            : "Aún no hay slots. Se crean cuando una imagen del pozo ya tiene análisis visual completado y aún no existe una cápsula para ese documento."}
         </p>
       ) : (
         <div className="flex min-w-0 items-stretch gap-1">
@@ -102,6 +117,8 @@ export function VisualDnaSlotsLibrary({
             const analysisStatus = slot.sourceDocumentId
               ? analysisStatusBySourceDocumentId?.[slot.sourceDocumentId]
               : undefined;
+            const capsuleMeta = slot.sourceDocumentId ? capsuleMetaBySourceDocumentId?.[slot.sourceDocumentId] : undefined;
+            const analysisReady = !analysisStatus || analysisStatus === "analyzed";
             const statusDetail =
               busy
                 ? "Generando tablero ADN…"
@@ -119,16 +136,30 @@ export function VisualDnaSlotsLibrary({
                 key={slot.id}
                 className="flex w-[min(100%,calc(100vw-5.5rem))] shrink-0 snap-start flex-col rounded-[5px] border border-violet-200/80 bg-white p-2 shadow-sm sm:w-[280px]"
               >
-                <input
-                  key={`${slot.id}-${slot.label}`}
-                  defaultValue={slot.label}
-                  onBlur={(e) => {
-                    const v = e.target.value.trim();
+                <button
+                  type="button"
+                  title={`${slot.label} · doble click para renombrar`}
+                  onDoubleClick={() => {
+                    const v = window.prompt("Nombre del look visual", slot.label)?.trim();
                     if (v && v !== slot.label) onRename(slot.id, v);
                   }}
-                  className="mb-1.5 w-full truncate rounded-[4px] border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[11px] font-semibold text-zinc-900"
-                  aria-label="Etiqueta del slot"
-                />
+                  className="mb-1.5 flex w-full items-center gap-2 rounded-[4px] border border-zinc-200 bg-zinc-50 px-1.5 py-1 text-left"
+                  aria-label={`Preview del look visual ${slot.label}`}
+                >
+                  <span className="inline-flex h-8 w-8 shrink-0 overflow-hidden rounded-[4px] border border-zinc-200 bg-white">
+                    {src ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={src} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <span className="flex h-full w-full items-center justify-center">
+                        <ImageIcon className="h-4 w-4 text-zinc-400" aria-hidden />
+                      </span>
+                    )}
+                  </span>
+                  <span className="min-w-0 text-[9px] font-black uppercase tracking-[0.12em] text-violet-800">
+                    Cápsula visual
+                  </span>
+                </button>
                 <div className="grid min-h-[112px] grid-cols-2 gap-1.5">
                   <div className="relative min-h-0 overflow-hidden rounded-[4px] border border-zinc-200 bg-zinc-100">
                     <span className="absolute left-1 top-1 z-[1] rounded bg-black/60 px-1 py-0.5 text-[7px] font-black uppercase tracking-wide text-white">
@@ -175,6 +206,9 @@ export function VisualDnaSlotsLibrary({
                 <p className="mt-1 text-[8px] text-zinc-500">
                   {new Date(slot.createdAt).toLocaleString("es")} ·{" "}
                   <span className="font-semibold text-zinc-700">{slot.status}</span>
+                  {capsuleMeta ? (
+                    <span className="ml-1">· cápsula {capsuleMeta.status}</span>
+                  ) : null}
                   {slot.status === "stale" ? (
                     <span className="ml-1 inline-flex items-center gap-0.5 text-amber-700">
                       <AlertTriangle className="h-3 w-3" aria-hidden />
@@ -205,17 +239,46 @@ export function VisualDnaSlotsLibrary({
                   </button>
                   <button
                     type="button"
-                    disabled={busy}
+                    disabled={busy || !analysisReady}
+                    title={!analysisReady ? "Espera a que termine el análisis visual antes de generar el mosaico." : undefined}
                     onClick={() => onRegenerate(slot.id)}
                     className="inline-flex items-center gap-1 rounded-[4px] border border-zinc-300 bg-white px-2 py-1 text-[9px] font-black uppercase tracking-wide text-zinc-800 hover:bg-zinc-50 disabled:opacity-50"
                   >
                     {busy ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden /> : <RefreshCw className="h-3 w-3" aria-hidden />}
                     Regenerar
                   </button>
+                  {capsuleMeta && onSetCapsuleStatus && capsuleMeta.status !== "generative" && capsuleMeta.status !== "archived" ? (
+                    <button
+                      type="button"
+                      onClick={() => onSetCapsuleStatus(capsuleMeta.id, "generative")}
+                      className="rounded-[4px] border border-violet-200 bg-violet-50 px-2 py-1 text-[9px] font-black uppercase tracking-wide text-violet-900 hover:bg-violet-100"
+                    >
+                      Disponible para generar
+                    </button>
+                  ) : null}
+                  {capsuleMeta && onSetCapsuleStatus ? (
+                    capsuleMeta.status === "archived" ? (
+                      <button
+                        type="button"
+                        onClick={() => onSetCapsuleStatus(capsuleMeta.id, "reference")}
+                        className="rounded-[4px] border border-zinc-300 bg-white px-2 py-1 text-[9px] font-black uppercase tracking-wide text-zinc-800 hover:bg-zinc-50"
+                      >
+                        Restaurar
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => onSetCapsuleStatus(capsuleMeta.id, "archived")}
+                        className="rounded-[4px] border border-zinc-300 bg-white px-2 py-1 text-[9px] font-black uppercase tracking-wide text-zinc-800 hover:bg-zinc-50"
+                      >
+                        Archivar
+                      </button>
+                    )
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => {
-                      if (!confirm("¿Eliminar este ADN por imagen? No borra el documento del pozo.")) return;
+                      if (!confirm("¿Eliminar esta cápsula visual? Se retirará de Looks visuales y no volverá a recrearse automáticamente.")) return;
                       onDelete(slot.id);
                       if (openId === slot.id) setOpenId(null);
                     }}
@@ -348,7 +411,8 @@ export function VisualDnaSlotsLibrary({
               <div className="mt-3 flex flex-wrap gap-2 border-t border-zinc-100 pt-3">
                 <button
                   type="button"
-                  disabled={Boolean(busySlotIds[open.id])}
+                  disabled={Boolean(busySlotIds[open.id]) || !openAnalysisReady}
+                  title={!openAnalysisReady ? "Espera a que termine el análisis visual antes de regenerar." : undefined}
                   onClick={() => onRegenerate(open.id)}
                   className="inline-flex items-center gap-1 rounded-[4px] border border-zinc-300 bg-white px-3 py-1.5 text-[10px] font-black uppercase text-zinc-800 disabled:opacity-50"
                 >

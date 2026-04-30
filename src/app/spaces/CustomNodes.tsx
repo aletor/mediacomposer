@@ -1885,12 +1885,21 @@ export const GuionistaNode = memo(function GuionistaNode({ id, data, selected }:
   const generatedDerivatives = useMemo(() => {
     if (!sourceAssetIdForDerivatives) return [];
     return (assetsCtx?.generatedTextAssets?.items ?? [])
-      .filter((asset) => asset.id !== activeTextAsset?.id)
+      .filter((asset) => {
+        if (!activeTextAsset?.sourceAssetId || !activeTextAsset.platform) return asset.id !== activeTextAsset?.id;
+        return !(asset.sourceAssetId === activeTextAsset.sourceAssetId && asset.platform === activeTextAsset.platform);
+      })
       .filter((asset) => asset.sourceAssetId === sourceAssetIdForDerivatives)
-      .filter((asset, index, list) => list.findIndex((candidate) => candidate.id === asset.id) === index)
       .sort((a, b) => Date.parse(b.updatedAt || b.createdAt) - Date.parse(a.updatedAt || a.createdAt))
+      .filter((asset, index, list) => {
+        const key = asset.platform ? `${asset.sourceAssetId ?? ""}:${asset.platform}` : asset.id;
+        return list.findIndex((candidate) => {
+          const candidateKey = candidate.platform ? `${candidate.sourceAssetId ?? ""}:${candidate.platform}` : candidate.id;
+          return candidateKey === key;
+        }) === index;
+      })
       .slice(0, 8);
-  }, [activeTextAsset?.id, assetsCtx?.generatedTextAssets?.items, sourceAssetIdForDerivatives]);
+  }, [activeTextAsset, assetsCtx?.generatedTextAssets?.items, sourceAssetIdForDerivatives]);
   const socialDerivatives = generatedDerivatives.filter((asset) => asset.type === "post" && asset.platform);
 
   const incomingEdges = useMemo(() => edges.filter((edge) => edge.target === id), [edges, id]);
@@ -1970,73 +1979,67 @@ export const GuionistaNode = memo(function GuionistaNode({ id, data, selected }:
     const index = versions.findIndex((version) => version.id === nodeData.activeVersionId);
     return index >= 0 ? index + 1 : versions.length || (currentVersion ? 1 : 0);
   }, [currentVersion, nodeData.activeVersionId, nodeData.versions]);
+  const hasGeneratedText = Boolean(activeTextAsset || currentVersion?.markdown?.trim());
 
   return (
-    <div className="custom-node tool-node overflow-hidden rounded-[28px] border-white/14 bg-[#11131b]/92 shadow-[0_22px_70px_rgba(0,0,0,0.38)] backdrop-blur-xl" style={{ minWidth: 390 }}>
+    <div className="custom-node tool-node" style={{ minWidth: 275, width: 275 }}>
       <NodeLabel id={id} label={nodeData.label} defaultLabel="Guionista" />
 
-      <div className="node-content flex min-w-0 flex-col gap-0 p-0">
-        <div className="px-5 pb-4 pt-4">
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex min-w-0 items-center gap-3">
-              <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border ${activeVisualMeta.accent}`} aria-hidden>
-                <NodeIcon type="guionista" selected={selected} size={19} />
-              </span>
-              <div className="min-w-0">
-                <FoldderNodeHeaderTitle className="text-[13px] text-white/78" introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
-                  Guionista
-                </FoldderNodeHeaderTitle>
-              </div>
-            </div>
-            <span className={`shrink-0 rounded-xl border px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] ${activeVisualMeta.accent}`}>
-              {compactTypeLabel}
-            </span>
-          </div>
+      <div className="node-header">
+        <NodeIcon type="guionista" selected={selected} size={16} />
+        <FoldderNodeHeaderTitle introActive={!!(nodeData as { _foldderCanvasIntro?: boolean })._foldderCanvasIntro}>
+          GUIONISTA
+        </FoldderNodeHeaderTitle>
+        <div className="node-badge max-w-[118px] truncate">{compactTypeLabel}</div>
+      </div>
 
-          <div className="mt-5">
-            <h3 className="line-clamp-2 text-[23px] font-semibold leading-[1.1] tracking-[-0.03em] text-white">
+      <div className="node-content flex min-w-0 flex-col gap-3 px-3 pb-3 pt-2">
+        <div className="min-w-0">
+          <span className="node-label">{hasGeneratedText ? activeVisualMeta.label : "Guionista"}</span>
+          <div className="rounded-xl border border-slate-200/60 bg-slate-50/50 p-3 shadow-inner">
+            <h3 className="line-clamp-2 text-[16px] font-semibold leading-[1.12] tracking-[-0.025em] text-slate-900">
               {compactText.title}
             </h3>
-            <p className="mt-2 line-clamp-2 text-[13px] font-light leading-relaxed text-white/48">
+            <p className="mt-1.5 line-clamp-2 text-[11px] font-light leading-relaxed text-slate-600">
               {compactText.preview}
             </p>
-          </div>
 
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <span
-              className={`rounded-full border px-3 py-1.5 text-[10px] font-semibold ${
-                activeTextAsset
-                  ? "border-emerald-300/20 bg-emerald-300/10 text-emerald-100"
-                  : "border-white/10 bg-white/[0.06] text-white/50"
-              }`}
-            >
-              {activeTextAsset ? "Guardado" : "Borrador"}
-            </span>
-            {activeVersionIndex > 0 && (
-              <span className="rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5 text-[10px] font-semibold text-white/58">
-                V{activeVersionIndex}
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              <span
+                className={`rounded-full border px-2.5 py-1 text-[9px] font-semibold ${
+                  activeTextAsset
+                    ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-700"
+                    : "border-slate-300/70 bg-white/70 text-slate-500"
+                }`}
+              >
+                {activeTextAsset ? "Guardado" : "Borrador"}
               </span>
-            )}
-            <span className={`rounded-full border px-3 py-1.5 text-[10px] font-semibold ${brainConnected ? "border-sky-200/20 bg-sky-200/10 text-sky-100" : "border-white/10 bg-white/[0.06] text-white/50"}`}>
-              {brainConnected ? "Usando Brain" : "Sin Brain"}
-            </span>
-            {generatedDerivatives.length > 0 && (
-              <span className="rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5 text-[10px] font-semibold text-white/58">
-                {generatedDerivatives.length} piezas
+              {activeVersionIndex > 0 && (
+                <span className="rounded-full border border-slate-300/70 bg-white/70 px-2.5 py-1 text-[9px] font-semibold text-slate-600">
+                  V{activeVersionIndex}
+                </span>
+              )}
+              <span className={`rounded-full border px-2.5 py-1 text-[9px] font-semibold ${brainConnected ? "border-sky-400/20 bg-sky-400/10 text-sky-700" : "border-slate-300/70 bg-white/70 text-slate-500"}`}>
+                {brainConnected ? "Usando Brain" : "Sin Brain"}
               </span>
-            )}
+              {generatedDerivatives.length > 0 && (
+                <span className="rounded-full border border-slate-300/70 bg-white/70 px-2.5 py-1 text-[9px] font-semibold text-slate-600">
+                  {generatedDerivatives.length} piezas
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
         {generatedDerivatives.length > 0 && (
-          <div className="border-t border-white/8 px-5 py-4">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <p className="text-[12px] font-semibold text-white/76">Derivados</p>
-              <p className="text-[9px] font-black uppercase tracking-[0.22em] text-white/34">
+          <div className="min-w-0">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="m-0 text-[9px] font-medium uppercase tracking-wide text-slate-500">Derivados</p>
+              <p className="m-0 text-[8px] font-semibold uppercase tracking-[0.14em] text-slate-400">
                 {socialDerivatives.length ? `Social pack · ${socialDerivatives.length}` : `Piezas · ${generatedDerivatives.length}`}
               </p>
             </div>
-            <div className="grid gap-2">
+            <div className="grid gap-1.5 rounded-xl border border-slate-200/60 bg-slate-50/50 p-2 shadow-inner">
               {visibleDerivatives.map((asset) => {
                 const meta = resolveGuionistaAssetVisualMeta(asset.type, asset.platform);
                 return (
@@ -2051,58 +2054,46 @@ export const GuionistaNode = memo(function GuionistaNode({ id, data, selected }:
                       event.stopPropagation();
                       openAssetInThisNode(asset.id);
                     }}
-                    className="nodrag group flex items-center gap-3 rounded-2xl border border-white/9 bg-white/[0.045] px-3 py-2.5 text-left transition hover:border-white/18 hover:bg-white/[0.075]"
+                    className="nodrag group flex items-center gap-2 rounded-lg border border-slate-200/70 bg-white/70 px-2.5 py-2 text-left transition hover:border-slate-300 hover:bg-white"
                     title="Abrir en Guionista"
                   >
-                    <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border ${meta.accent}`}>
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200/80 bg-slate-900/5 text-slate-600">
                       {meta.icon}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="line-clamp-1 text-[12px] font-semibold leading-tight text-white/76">{asset.title}</p>
-                      <p className="mt-0.5 line-clamp-1 text-[9px] font-light text-white/35">{guionistaAssetPreview(asset)}</p>
+                      <p className="line-clamp-1 text-[10px] font-semibold leading-tight text-slate-800">{asset.title}</p>
+                      <p className="mt-0.5 line-clamp-1 text-[9px] font-light text-slate-500">{guionistaAssetPreview(asset)}</p>
                     </div>
-                    <ChevronRight className="h-4 w-4 shrink-0 text-white/32 transition group-hover:translate-x-0.5 group-hover:text-white/62" />
+                    <ChevronRight className="h-4 w-4 shrink-0 text-slate-400 transition group-hover:translate-x-0.5 group-hover:text-slate-700" />
                   </button>
                 );
               })}
+              {generatedDerivatives.length > 3 && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setGeneratedExpanded((value) => !value);
+                  }}
+                  className="nodrag rounded-full border border-slate-300/70 bg-white/70 px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.13em] text-slate-500 transition hover:bg-white hover:text-slate-800"
+                >
+                  {generatedExpanded ? "Ocultar" : `Ver ${generatedDerivatives.length - 3} más`}
+                </button>
+              )}
             </div>
-            {generatedDerivatives.length > 3 && (
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setGeneratedExpanded((value) => !value);
-                }}
-                className="nodrag mt-3 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.13em] text-white/42 transition hover:bg-white/10 hover:text-white"
-              >
-                {generatedExpanded ? "Ocultar" : `Ver ${generatedDerivatives.length - 3} más`}
-              </button>
-            )}
           </div>
         )}
 
-        <div className="flex items-center justify-end gap-2 border-t border-white/8 px-5 py-4">
-          {generatedDerivatives.length > 0 && (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                setGeneratedExpanded((value) => !value);
-              }}
-              className="nodrag rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-[11px] font-semibold text-white/48 transition hover:bg-white/10 hover:text-white"
-            >
-              {generatedExpanded ? "Ocultar" : "Mostrar"}
-            </button>
-          )}
+        <div className="flex items-center justify-end gap-2">
           <button
             type="button"
             onClick={(event) => {
               event.stopPropagation();
               openStudio();
             }}
-            className="nodrag flex items-center justify-center gap-2 rounded-xl border border-white/14 bg-white/[0.08] px-4 py-2.5 text-center text-[11px] font-bold uppercase tracking-wide text-white/76 shadow-sm transition hover:bg-white/[0.13] hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/50"
+            className="nodrag flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-slate-300/80 bg-white/90 px-3 py-2.5 text-center text-[11px] font-bold uppercase tracking-wide text-slate-800 shadow-sm transition hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/50"
           >
-            <BookOpen className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
+            <BookOpen className="h-4 w-4 shrink-0 text-slate-600" strokeWidth={2} aria-hidden />
             {currentVersion ? "Abrir" : "Empezar"}
           </button>
         </div>

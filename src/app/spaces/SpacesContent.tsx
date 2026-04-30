@@ -401,6 +401,12 @@ export function SpacesContent() {
   const [savedProjects, setSavedProjects] = useState<SavedProjectMeta[]>([]);
   const [spacesMap, setSpacesMap] = useState<Record<string, any>>({});
   const [metadata, setMetadata] = useState<any>({});
+  const metadataVersionRef = useRef(0);
+  const metadataIdentityRef = useRef(metadata);
+  if (metadataIdentityRef.current !== metadata) {
+    metadataVersionRef.current += 1;
+    metadataIdentityRef.current = metadata;
+  }
   /** True hasta el próximo guardado: análisis visual en memoria distinto del último persistido. */
   const [visualReferenceAnalysisDirty, setVisualReferenceAnalysisDirty] = useState(false);
   
@@ -3212,6 +3218,7 @@ export function SpacesContent() {
     nameToSave?: string,
     options?: { silentError?: boolean }
   ): Promise<boolean> => {
+    const metadataVersionAtSaveStart = metadataVersionRef.current;
     setIsSaving(true);
     try {
       // Apilado XY Flow: persistir `node.zIndex`, no `style.zIndex` (evita hijos detrás del marco al recargar).
@@ -3287,8 +3294,14 @@ export function SpacesContent() {
       } else {
         setSpacesMap(spacesToSave as Record<string, unknown>);
       }
-      setMetadata((savedProject.metadata || projectToSave.metadata) as Record<string, unknown>);
-      setVisualReferenceAnalysisDirty(false);
+      if (metadataVersionRef.current === metadataVersionAtSaveStart) {
+        setMetadata((savedProject.metadata || projectToSave.metadata) as Record<string, unknown>);
+        setVisualReferenceAnalysisDirty(false);
+      } else {
+        console.info(
+          "[FOLDDER save] Se ignora metadata antigua recibida del servidor porque hubo cambios locales durante el guardado.",
+        );
+      }
       return true;
     } catch (err) {
       console.error('Save error:', err);
@@ -3386,7 +3399,16 @@ export function SpacesContent() {
     brainAssetsAutosaveTimerRef.current = window.setTimeout(() => {
       brainAssetsAutosaveTimerRef.current = null;
       const g = autosaveGateRef.current;
-      if (g.openLoad || g.openNew || g.deleting || isSavingRef.current) return;
+      if (g.openLoad || g.openNew || g.deleting) return;
+      if (isSavingRef.current) {
+        brainAssetsAutosaveTimerRef.current = window.setTimeout(() => {
+          brainAssetsAutosaveTimerRef.current = null;
+          const retryGate = autosaveGateRef.current;
+          if (retryGate.openLoad || retryGate.openNew || retryGate.deleting || isSavingRef.current) return;
+          void saveProjectRef.current(undefined, { silentError: true });
+        }, 1500);
+        return;
+      }
       void saveProjectRef.current(undefined, { silentError: true });
     }, 5000);
   }, [metadata.assets, isAuthenticated, activeProjectId]);

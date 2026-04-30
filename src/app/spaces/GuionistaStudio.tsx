@@ -3,14 +3,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  BookOpen,
   Brain,
   Check,
   ChevronDown,
-  FileText,
   PenLine,
   Save,
-  SlidersHorizontal,
   Sparkles,
   X,
 } from "lucide-react";
@@ -84,7 +81,7 @@ type Props = {
 
 type SaveState = "idle" | "dirty" | "saving" | "saved";
 type StudioStage = "create" | "approaches" | "editor" | "social" | "derivative";
-type DetailPanel = "settings" | "brain" | "review" | "metadata" | "outputs";
+type DetailPanel = "settings" | "adaptations" | "review" | "brain";
 type DerivativeView = {
   action: string;
   version: GuionistaVersion;
@@ -402,7 +399,6 @@ function DerivativePreview({
 }
 
 function DetailDrawer({
-  open,
   activePanel,
   setActivePanel,
   settingsOpen,
@@ -414,7 +410,6 @@ function DetailDrawer({
   brainConnected,
   brainHints,
   savedMessage,
-  sourceAssetLabel,
   selectedText,
   commentDraft,
   setCommentDraft,
@@ -427,9 +422,9 @@ function DetailDrawer({
   onApplyAllComments,
   onResolveComment,
   onApplyGlobalNotes,
+  onQuickAction,
   loadingAction,
 }: {
-  open: boolean;
   activePanel: DetailPanel;
   setActivePanel: (panel: DetailPanel) => void;
   settingsOpen: boolean;
@@ -441,7 +436,6 @@ function DetailDrawer({
   brainConnected: boolean;
   brainHints: string[];
   savedMessage: string | null;
-  sourceAssetLabel?: string | null;
   selectedText: string;
   commentDraft: string;
   setCommentDraft: (value: string) => void;
@@ -454,36 +448,37 @@ function DetailDrawer({
   onApplyAllComments: () => void;
   onResolveComment: (commentId: string) => void;
   onApplyGlobalNotes: () => void;
+  onQuickAction: (action: string) => void;
   loadingAction: string | null;
 }) {
-  if (!open) return null;
   const panels: Array<{ id: DetailPanel; label: string }> = [
     { id: "settings", label: "Ajustes" },
-    { id: "brain", label: "Brain" },
+    { id: "adaptations", label: "Adaptaciones" },
     { id: "review", label: "Revisión" },
-    { id: "metadata", label: "Metadata" },
-    { id: "outputs", label: "Salidas" },
+    { id: "brain", label: "Brain" },
   ];
 
   return (
-    <aside className="min-h-0 rounded-[30px] border border-white/10 bg-black/22 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.28)] backdrop-blur-2xl">
-      <div className="flex flex-wrap gap-2">
+    <aside className="h-full min-h-0 w-[250px] shrink-0 overflow-hidden rounded-[26px] border border-white/10 bg-black/22 p-3 shadow-[0_24px_70px_rgba(0,0,0,0.28)] backdrop-blur-2xl">
+      <div className="grid grid-cols-4 gap-1">
         {panels.map((panel) => (
           <button
             key={panel.id}
             type="button"
             onClick={() => setActivePanel(panel.id)}
-            className={`rounded-full px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.13em] ${
+            className={`min-w-0 rounded-full px-1.5 py-1.5 text-[7.5px] font-semibold uppercase tracking-[0.08em] ${
               activePanel === panel.id ? "bg-white text-black" : "border border-white/10 bg-white/[0.05] text-white/48 hover:text-white"
             }`}
+            title={panel.label}
           >
             {panel.label}
           </button>
         ))}
       </div>
 
-      {activePanel === "settings" && (
-        <section className="mt-5">
+      <div className="mt-4 max-h-[calc(100vh-170px)] overflow-y-auto pr-1">
+        {activePanel === "settings" && (
+        <section>
           <button type="button" onClick={() => setSettingsOpen(!settingsOpen)} className="flex w-full items-center justify-between text-left">
             <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">Ajustes de escritura</span>
             <ChevronDown className={`h-4 w-4 transition ${settingsOpen ? "rotate-180" : ""}`} />
@@ -544,8 +539,31 @@ function DetailDrawer({
         </section>
       )}
 
+      {activePanel === "adaptations" && (
+        <section className="space-y-5">
+          <div>
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-white/34">Transformar</p>
+            <div className="flex flex-wrap gap-2">
+              {TRANSFORM_ACTIONS.map((action) => <ActionChip key={action} action={action} loadingAction={loadingAction} onClick={onQuickAction} />)}
+            </div>
+          </div>
+          <div>
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-white/34">Tono</p>
+            <div className="flex flex-wrap gap-2">
+              {TONE_ACTIONS.map((action) => <ActionChip key={action} action={action} loadingAction={loadingAction} onClick={onQuickAction} />)}
+            </div>
+          </div>
+          <div>
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-white/34">Crear derivados</p>
+            <div className="flex flex-wrap gap-2">
+              {DERIVATIVE_ACTIONS.map((action) => <ActionChip key={action} action={action} loadingAction={loadingAction} onClick={onQuickAction} />)}
+            </div>
+          </div>
+        </section>
+      )}
+
       {activePanel === "brain" && (
-        <section className="mt-5 text-[12px] font-light leading-relaxed text-white/60">
+        <section className="text-[12px] font-light leading-relaxed text-white/60">
           <button type="button" onClick={() => setBrainOpen(!brainOpen)} className="mb-4 flex w-full items-center justify-between text-left">
             <span className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
               <Brain className="h-4 w-4" /> Contexto Brain
@@ -566,24 +584,8 @@ function DetailDrawer({
         </section>
       )}
 
-      {activePanel === "metadata" && (
-        <section className="mt-5 text-[12px] font-light leading-relaxed text-white/58">
-          <div className="mb-3 flex items-center gap-2 text-white/75">
-            <BookOpen className="h-4 w-4" /> Generated Media
-          </div>
-          <p>Este texto se guarda en Foldder / Generated Media / Texts / Guionista.</p>
-          {sourceAssetLabel && (
-            <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-white/50">
-              Derivado de: <span className="text-white/72">{sourceAssetLabel}</span>
-            </p>
-          )}
-          <p className="mt-3 text-white/38">Generated Media se mantiene como navegador simple de assets: preview, desplegar y abrir en Guionista.</p>
-          {savedMessage && <p className="mt-4 rounded-2xl bg-emerald-300/12 px-3 py-2 text-emerald-100">{savedMessage}</p>}
-        </section>
-      )}
-
       {activePanel === "review" && (
-        <section className="mt-5 space-y-5 text-[12px] font-light leading-relaxed text-white/58">
+        <section className="space-y-5 text-[12px] font-light leading-relaxed text-white/58">
           <div>
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -686,15 +688,8 @@ function DetailDrawer({
         </section>
       )}
 
-      {activePanel === "outputs" && (
-        <section className="mt-5 text-[12px] font-light leading-relaxed text-white/58">
-          <div className="mb-3 flex items-center gap-2 text-white/75">
-            <FileText className="h-4 w-4" /> Text out / Prompt out
-          </div>
-          <p>Text out y Prompt out usan la versión activa.</p>
-          <p className="mt-3 text-white/38">Guionista no guarda borradores automáticamente como ADN de Brain.</p>
-        </section>
-      )}
+        {savedMessage && <p className="mt-4 rounded-2xl bg-emerald-300/12 px-3 py-2 text-[11px] text-emerald-100">{savedMessage}</p>}
+      </div>
     </aside>
   );
 }
@@ -716,7 +711,6 @@ export function GuionistaStudio({
   const [stage, setStage] = useState<StudioStage>(normalized.versions?.length ? "editor" : "create");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [brainOpen, setBrainOpen] = useState(false);
-  const [detailsOpen, setDetailsOpen] = useState(false);
   const [activePanel, setActivePanel] = useState<DetailPanel>("settings");
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
@@ -1185,6 +1179,13 @@ export function GuionistaStudio({
       setSaveState("saved");
     }
     for (const social of socialPack) {
+      const existingSocialAsset =
+        generatedTextAssets?.items.find(
+          (asset) =>
+            asset.type === "post" &&
+            asset.sourceAssetId === sourceAsset.id &&
+            asset.platform === social.platform,
+        ) ?? null;
       const version: GuionistaVersion = {
         id: social.id,
         label: social.platform,
@@ -1203,6 +1204,7 @@ export function GuionistaStudio({
       };
       onSaveAsset(
         buildGuionistaAssetFromVersion({
+          existing: existingSocialAsset,
           format: "post",
           title: social.title,
           version,
@@ -1231,7 +1233,7 @@ export function GuionistaStudio({
   };
 
   const documentTitle = current?.title || normalized.title || "Convierte pensamiento en narrativa";
-  const layoutColumns = detailsOpen ? "lg:grid-cols-[minmax(0,1fr)_330px]" : "lg:grid-cols-[minmax(0,1fr)]";
+  const layoutColumns = "lg:grid-cols-[minmax(0,1fr)_250px]";
 
   const shell = (
     <div className="fixed inset-0 z-[100090] flex flex-col bg-[#101114] text-white" role="dialog" aria-modal="true">
@@ -1254,17 +1256,9 @@ export function GuionistaStudio({
                 placeholder="Título del texto"
               />
               {sourceAssetLabel && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDetailsOpen(true);
-                    setActivePanel("metadata");
-                  }}
-                  className="mt-2 block max-w-[58vw] truncate text-left text-[11px] font-light text-white/38 transition hover:text-white/58"
-                  title={sourceAssetLabel}
-                >
+                <p className="mt-2 block max-w-[58vw] truncate text-left text-[11px] font-light text-white/38" title={sourceAssetLabel}>
                   Derivado de: {sourceAssetLabel}
-                </button>
+                </p>
               )}
             </div>
           </div>
@@ -1272,15 +1266,12 @@ export function GuionistaStudio({
             <span className={`hidden rounded-full border px-3 py-1.5 text-[11px] font-light md:inline-flex ${saveStateClass(saveState)}`}>
               {saveStateLabel(saveState, !!activeAsset, lastSavedRelative)}
             </span>
-            <BrainPill brainConnected={brainConnected} onClick={() => { setDetailsOpen(true); setActivePanel("brain"); setBrainOpen(true); }} />
+            <BrainPill brainConnected={brainConnected} onClick={() => { setActivePanel("brain"); setBrainOpen(true); }} />
             {current && (
               <button type="button" onClick={saveActiveAsset} className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-3.5 py-2 text-[11px] font-semibold uppercase tracking-[0.13em] text-white/68 transition hover:bg-white/10 hover:text-white">
                 <Save className="h-3.5 w-3.5" /> Guardar en Foldder
               </button>
             )}
-            <button type="button" onClick={() => setDetailsOpen((value) => !value)} className="rounded-full border border-white/10 bg-white/[0.06] p-2.5 text-white/58 transition hover:bg-white/10 hover:text-white" aria-label="Detalles de Guionista">
-              <SlidersHorizontal className="h-4 w-4" />
-            </button>
             <button type="button" onClick={onClose} className="rounded-full border border-white/10 bg-white/[0.06] p-2.5 text-white/65 transition hover:bg-white/12 hover:text-white" aria-label="Cerrar Guionista">
               <X className="h-4 w-4" />
             </button>
@@ -1386,27 +1377,6 @@ export function GuionistaStudio({
                   </span>
                 </div>
 
-                <div className="mt-6 space-y-4">
-                  <div>
-                    <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-white/34">Transformar</p>
-                    <div className="flex flex-wrap gap-2">
-                      {TRANSFORM_ACTIONS.map((action) => <ActionChip key={action} action={action} loadingAction={loadingAction} onClick={applyQuickAction} />)}
-                    </div>
-                  </div>
-                  <div>
-                    <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-white/34">Tono</p>
-                    <div className="flex flex-wrap gap-2">
-                      {TONE_ACTIONS.map((action) => <ActionChip key={action} action={action} loadingAction={loadingAction} onClick={applyQuickAction} />)}
-                    </div>
-                  </div>
-                  <div>
-                    <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-white/34">Crear derivados</p>
-                    <div className="flex flex-wrap gap-2">
-                      {DERIVATIVE_ACTIONS.map((action) => <ActionChip key={action} action={action} loadingAction={loadingAction} onClick={applyQuickAction} />)}
-                    </div>
-                  </div>
-                </div>
-
                 <div className="mt-7 flex flex-wrap items-center gap-3 border-y border-white/8 py-4">
                   <div className="mr-2 text-[12px] font-light text-white/52">
                     Versión actual: <span className="text-white/80">{versionLabel(Math.max(0, versions.findIndex((version) => version.id === current.id)), current)}</span>
@@ -1493,7 +1463,6 @@ export function GuionistaStudio({
           </section>
 
           <DetailDrawer
-            open={detailsOpen}
             activePanel={activePanel}
             setActivePanel={setActivePanel}
             settingsOpen={settingsOpen}
@@ -1505,7 +1474,6 @@ export function GuionistaStudio({
             brainConnected={brainConnected}
             brainHints={brainHints}
             savedMessage={savedMessage}
-            sourceAssetLabel={sourceAssetLabel}
             selectedText={selectedText}
             commentDraft={commentDraft}
             setCommentDraft={setCommentDraft}
@@ -1524,6 +1492,7 @@ export function GuionistaStudio({
             onApplyGlobalNotes={() => {
               void applyReview("global");
             }}
+            onQuickAction={applyQuickAction}
             loadingAction={loadingAction}
           />
         </div>

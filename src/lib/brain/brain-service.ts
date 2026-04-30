@@ -29,6 +29,10 @@ import {
 } from "./learning-candidate-schema";
 import { resolveLearningPendingAnchorNodeId } from "./brain-connected-signals-ui";
 import { normalizeBrainDecisionTrace, summarizeLearningCandidateTrace } from "./brain-decision-trace";
+import {
+  BRAIN_BRAND_LOCKED_MESSAGE,
+  resolveLearningCandidateBrainScope,
+} from "./brain-scope-policy";
 
 export type BrainNodeTelemetryDigestEntry = {
   nodeId: string;
@@ -502,6 +506,7 @@ export class BrainService implements LearningCandidateStore {
         ...(typeof opts?.brainVersion === "number" ? { brainVersion: opts.brainVersion } : {}),
         ...(opts?.sourceAnalysisId ? { sourceAnalysisId: opts.sourceAnalysisId } : {}),
         ...(opts?.createdFromAnalysisVersion ? { createdFromAnalysisVersion: opts.createdFromAnalysisVersion } : {}),
+        suggestedBrainScope: c.evidence.evidenceSource === "visual_reference" ? "capsule" : c.scope === "BRAND" ? "brand" : "project",
         status: "PENDING_REVIEW",
         candidate: {
           ...c,
@@ -646,7 +651,7 @@ export class BrainService implements LearningCandidateStore {
   async resolvePendingLearning(
     learningId: string,
     action: LearningResolutionAction,
-    meta?: { updatedBy?: string | null },
+    meta?: { updatedBy?: string | null; brandLocked?: boolean },
   ): Promise<LearningResolveResult> {
     const lid = learningId.trim();
     if (!lid || lid.length > MAX_LEARNING_ID_LEN) {
@@ -678,6 +683,9 @@ export class BrainService implements LearningCandidateStore {
     }
 
     if (action === "PROMOTE_TO_DNA") {
+      if (meta?.brandLocked === true && resolveLearningCandidateBrainScope(cur) === "brand") {
+        throw new BrainValidationError("BRAND_LOCKED", BRAIN_BRAND_LOCKED_MESSAGE);
+      }
       const staticRow = this.getOrInitStatic(pid, wid);
       const lockHit = checkPromoteRespectsLocks(cur.candidate, staticRow.dna);
       if (lockHit) throw new BrainValidationError(lockHit.code, lockHit.message);

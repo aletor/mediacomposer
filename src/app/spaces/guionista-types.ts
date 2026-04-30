@@ -290,7 +290,19 @@ export function upsertGuionistaTextAsset(
   assets: GuionistaGeneratedTextAssetsMetadata,
   asset: GuionistaTextAsset,
 ): GuionistaGeneratedTextAssetsMetadata {
-  const others = assets.items.filter((item) => item.id !== asset.id);
+  const isSocialDerivative = asset.type === "post" && Boolean(asset.sourceAssetId && asset.platform);
+  const others = assets.items.filter((item) => {
+    if (item.id === asset.id) return false;
+    if (
+      isSocialDerivative &&
+      item.type === "post" &&
+      item.sourceAssetId === asset.sourceAssetId &&
+      item.platform === asset.platform
+    ) {
+      return false;
+    }
+    return true;
+  });
   return { version: 1, items: [asset, ...others].slice(0, 250) };
 }
 

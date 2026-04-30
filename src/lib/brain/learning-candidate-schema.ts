@@ -152,6 +152,8 @@ export type StoredLearningCandidate = {
   decisionTraceId?: string;
   /** Snapshot ligero de la traza (complementa `candidate.evidence`; no la sustituye). */
   decisionTrace?: BrainDecisionTrace;
+  /** Destino sugerido en Brain Studio: no aplica automáticamente cambios. */
+  suggestedBrainScope?: "brand" | "project" | "capsule";
 };
 
 export interface LearningCandidateStore {

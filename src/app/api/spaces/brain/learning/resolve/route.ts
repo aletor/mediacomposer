@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
     if (!session?.user?.email) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    const body = (await req.json()) as { learningId?: string; action?: LearningResolutionAction };
+    const body = (await req.json()) as { learningId?: string; action?: LearningResolutionAction; brandLocked?: boolean };
     const learningId = body.learningId ?? "";
     const action = body.action;
     if (!action) {
@@ -19,6 +19,7 @@ export async function POST(req: NextRequest) {
     }
     const result = await defaultBrainService.resolvePendingLearning(learningId, action, {
       updatedBy: session.user?.email ?? undefined,
+      brandLocked: body.brandLocked === true,
     });
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {

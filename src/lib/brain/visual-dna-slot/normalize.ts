@@ -1,4 +1,4 @@
-import type { BrainVisualImageAnalysis } from "@/app/spaces/project-assets-metadata";
+import type { BrainVisualImageAnalysis, KnowledgeDocumentEntry } from "@/app/spaces/project-assets-metadata";
 import type { BrainVisualAssetRef } from "@/lib/brain/brain-visual-analysis";
 import { getBrainVersion } from "@/lib/brain/brain-meta";
 import type { BrainMeta } from "@/lib/brain/brain-creative-memory-types";
@@ -285,6 +285,48 @@ export function createVisualDnaSlotFromImage(input: {
     textures: { notes: texturesNotes },
     confidence: confidenceFromAnalysis(input.analysis),
     analysisOrigin: analysisOriginFromVision(input.analysis),
+  })!;
+}
+
+/**
+ * Crea un slot visible para una cápsula recién subida aunque su análisis visual
+ * todavía no haya terminado. No contiene ADN inferido ni dispara generación por sí solo:
+ * solo mantiene la imagen trazable en la biblioteca mientras llega la fila `analyzed`.
+ */
+export function createPendingVisualDnaSlotFromKnowledgeDocument(input: {
+  doc: KnowledgeDocumentEntry;
+  brainMeta?: BrainMeta | null;
+}): VisualDnaSlot {
+  const now = new Date().toISOString();
+  const sourceImageUrl =
+    input.doc.dataUrl?.trim() ||
+    (/^https:\/\//i.test(input.doc.originalSourceUrl?.trim() ?? "")
+      ? input.doc.originalSourceUrl?.trim()
+      : undefined);
+  return normalizeVisualDnaSlot({
+    id: newId(),
+    label: input.doc.name?.trim() || "Look visual",
+    sourceImageId: input.doc.id,
+    sourceDocumentId: input.doc.id,
+    ...(sourceImageUrl ? { sourceImageUrl } : {}),
+    ...(input.doc.s3Path?.trim() ? { sourceS3Path: input.doc.s3Path.trim() } : {}),
+    createdAt: now,
+    updatedAt: now,
+    brainVersion: getBrainVersion(input.brainMeta ?? undefined),
+    status: "pending" as const,
+    palette: { dominantColors: [] },
+    hero: {
+      description: "Preparando análisis visual…",
+    },
+    generalStyle: {
+      title: input.doc.name?.trim() || "Look visual",
+      summary: "Cápsula visual pendiente de análisis.",
+    },
+    people: {},
+    objects: {},
+    environments: {},
+    textures: {},
+    mosaic: {},
   })!;
 }
 

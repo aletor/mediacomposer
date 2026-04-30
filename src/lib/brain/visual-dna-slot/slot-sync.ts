@@ -1,7 +1,11 @@
 import type { ProjectAssetsMetadata } from "@/app/spaces/project-assets-metadata";
 import { collectVisualImageAssetRefs } from "@/lib/brain/brain-visual-analysis";
 import { analysisEligibleForKnowledgeVisualDnaSlot } from "./analysis-eligible";
-import { createVisualDnaSlotFromImage, normalizeVisualDnaSlots } from "./normalize";
+import {
+  createPendingVisualDnaSlotFromKnowledgeDocument,
+  createVisualDnaSlotFromImage,
+  normalizeVisualDnaSlots,
+} from "./normalize";
 import type { VisualDnaSlot } from "./types";
 
 /** IDs de documento cuyo slot se borró a mano; solo se conservan si el documento sigue en el pozo. */
@@ -66,6 +70,42 @@ export function appendKnowledgeImageVisualDnaSlots(assets: ProjectAssetsMetadata
         brainMeta: assets.brainMeta,
       }),
     );
+  }
+  return { nextSlots: [...existing, ...appended], appended };
+}
+
+function isKnowledgeImageDocument(doc: ProjectAssetsMetadata["knowledge"]["documents"][number]): boolean {
+  const mime = String(doc.mime || "").toLowerCase();
+  return doc.type === "image" || doc.format === "image" || mime.startsWith("image/");
+}
+
+function isCapsuleSourceDocument(doc: ProjectAssetsMetadata["knowledge"]["documents"][number]): boolean {
+  return doc.brainSourceScope === "capsule";
+}
+
+/**
+ * Looks visuales necesita feedback inmediato: la imagen debe aparecer como cápsula
+ * aunque el análisis remoto todavía esté en curso. Estos slots son placeholders
+ * seguros: quedan `pending` y el sync solo los genera cuando existe análisis `analyzed`.
+ */
+export function appendPendingCapsuleImageVisualDnaSlots(assets: ProjectAssetsMetadata): {
+  nextSlots: VisualDnaSlot[];
+  appended: VisualDnaSlot[];
+} {
+  const existing = normalizeVisualDnaSlots(assets.strategy.visualDnaSlots);
+  const byDoc = new Set(existing.map((s) => s.sourceDocumentId).filter(Boolean));
+  const docIds = new Set(assets.knowledge.documents.map((d) => d.id));
+  const suppressed = new Set(
+    normalizeVisualDnaSlotSuppressedSourceIds(assets.strategy.visualDnaSlotSuppressedSourceIds, docIds),
+  );
+  const appended: VisualDnaSlot[] = [];
+  for (const doc of assets.knowledge.documents) {
+    if (!isCapsuleSourceDocument(doc)) continue;
+    if (!isKnowledgeImageDocument(doc)) continue;
+    if (suppressed.has(doc.id)) continue;
+    if (byDoc.has(doc.id)) continue;
+    appended.push(createPendingVisualDnaSlotFromKnowledgeDocument({ doc, brainMeta: assets.brainMeta }));
+    byDoc.add(doc.id);
   }
   return { nextSlots: [...existing, ...appended], appended };
 }

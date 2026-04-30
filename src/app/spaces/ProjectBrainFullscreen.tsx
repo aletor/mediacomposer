@@ -4,7 +4,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom";
 import {
   BookOpen,
-  Bot,
   Brain,
   ChevronDown,
   ChevronUp,
@@ -16,21 +15,21 @@ import {
   Globe,
   ImageIcon,
   LayoutDashboard,
+  Lock,
   MessageSquareText,
   Network,
-  Palette,
   Plus,
   RefreshCw,
   Save,
   Send,
   Sparkles,
   Trash2,
+  Unlock,
   X,
   XIcon,
 } from "lucide-react";
 import {
   AUDIENCE_PERSONA_CATALOG,
-  MAX_KNOWLEDGE_DOC_BYTES,
   MAX_LOGO_BYTES,
   normalizeProjectAssets,
   defaultBrainVisualStyle,
@@ -43,6 +42,8 @@ import {
   type BrainVoiceExample,
   type KnowledgeDocumentEntry,
   type ProjectAssetsMetadata,
+  type VisualCapsule,
+  type VisualCapsuleStatus,
   type VisualImageClassification,
 } from "./project-assets-metadata";
 import { BRAIN_ADN_COMPLETENESS_TOOLTIP_ES, computeAdnScore } from "@/lib/brain/brain-adn-score";
@@ -104,13 +105,19 @@ import type { VisualReanalyzeDiagnosticRow } from "@/lib/brain/brain-visual-rean
 import { fetchBrainTelemetrySummaryByNodeId } from "@/lib/brain/fetch-brain-telemetry-summary";
 import { applyLearningCandidateToProjectAssets } from "@/lib/brain/brain-apply-learning-candidate";
 import { BrandSummarySourcesPanel, type BrandSummaryNavTab } from "./brand-summary-sources-panel";
-import { BrainStudioKnowledgeIngestStrip } from "./BrainStudioKnowledgeIngestStrip";
 import { BrandVisualDnaPanel } from "./BrandVisualDnaPanel";
 import type { BrandVisualDnaStoredBundle } from "@/lib/brain/brand-visual-dna/types";
 import { fireAndForgetDeleteS3Keys } from "@/lib/s3-delete-client";
+import {
+  BRAIN_BRAND_LOCKED_MESSAGE,
+  canWriteBrainScope,
+  getBrainScopeWriteBlockReason,
+  resolveLearningCandidateBrainScope,
+} from "@/lib/brain/brain-scope-policy";
 import { geminiGenerateWithServerProgress } from "@/lib/gemini-generate-stream-client";
 import {
   appendKnowledgeImageVisualDnaSlots,
+  appendPendingCapsuleImageVisualDnaSlots,
   normalizeVisualDnaSlotSuppressedSourceIds,
 } from "@/lib/brain/visual-dna-slot/slot-sync";
 import {
@@ -151,6 +158,197 @@ function dedupeVisualDnaSlotsBySourceDocument(slots: VisualDnaSlot[]): VisualDna
     byDoc.set(docId, prev ? pickNewestVisualDnaSlot(prev, s) : s);
   }
   return [...noDoc, ...Array.from(byDoc.values())];
+}
+
+function isKnowledgeImageDoc(doc: KnowledgeDocumentEntry): boolean {
+  const mime = String(doc.mime || "").toLowerCase();
+  return doc.type === "image" || doc.format === "image" || mime.startsWith("image/");
+}
+
+function getKnowledgeDocumentPreviewUrl(doc: KnowledgeDocumentEntry): string | null {
+  if (!isKnowledgeImageDoc(doc)) return null;
+  const dataUrl = doc.dataUrl?.trim();
+  if (dataUrl?.startsWith("data:image")) return dataUrl;
+  const sourceUrl = doc.originalSourceUrl?.trim();
+  if (sourceUrl && /^https:\/\//i.test(sourceUrl)) return sourceUrl;
+  return null;
+}
+
+function BrainSourcePreview({
+  src,
+  label,
+  className = "h-12 w-12",
+}: {
+  src: string | null | undefined;
+  label: string;
+  className?: string;
+}) {
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center justify-center overflow-hidden rounded-[5px] border border-zinc-200 bg-white shadow-sm ${className}`}
+      title={label}
+    >
+      {src ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={src} alt={label} className="h-full w-full object-cover" />
+      ) : (
+        <ImageIcon className="h-5 w-5 text-zinc-400" aria-hidden />
+      )}
+    </span>
+  );
+}
+
+function resolveBrainSourceScope(doc: KnowledgeDocumentEntry): NonNullable<KnowledgeDocumentEntry["brainSourceScope"]> {
+  if (doc.brainSourceScope === "brand" || doc.brainSourceScope === "project" || doc.brainSourceScope === "capsule") {
+    return doc.brainSourceScope;
+  }
+  return doc.scope === "context" ? "project" : "brand";
+}
+
+const VISUAL_DNA_SLOT_GENERATING_TIMEOUT_MS = 8 * 60 * 1000;
+const VISUAL_DNA_SYNC_AUTO_ALL = "__all__";
+
+function isVisualDnaSlotGeneratingStale(slot: VisualDnaSlot, now = Date.now()): boolean {
+  if (slot.status !== "generating") return false;
+  const t = Date.parse(slot.updatedAt || slot.createdAt || "");
+  return Number.isFinite(t) && now - t > VISUAL_DNA_SLOT_GENERATING_TIMEOUT_MS;
+}
+
+function mergeKnowledgeStrategyPreservingVisualPipelines(
+  incoming: ProjectAssetsMetadata["strategy"],
+  live: ProjectAssetsMetadata["strategy"],
+): ProjectAssetsMetadata["strategy"] {
+  return {
+    ...incoming,
+    visualReferenceAnalysis: live.visualReferenceAnalysis ?? incoming.visualReferenceAnalysis,
+    visualDnaSlots: live.visualDnaSlots ?? incoming.visualDnaSlots,
+    visualCapsules: live.visualCapsules ?? incoming.visualCapsules,
+    visualDnaSlotSuppressedSourceIds: live.visualDnaSlotSuppressedSourceIds ?? incoming.visualDnaSlotSuppressedSourceIds,
+  };
+}
+
+function compactBrainDocumentForKnowledgeAnalyze(doc: KnowledgeDocumentEntry): KnowledgeDocumentEntry {
+  return {
+    ...doc,
+    dataUrl: undefined,
+    originalSourceUrl: undefined,
+  };
+}
+
+function compactBrainDocumentForVisualRequest(doc: KnowledgeDocumentEntry): KnowledgeDocumentEntry {
+  const hasRemoteImage = Boolean(doc.s3Path?.trim() || doc.originalSourceUrl?.trim());
+  return {
+    ...doc,
+    ...(hasRemoteImage ? { dataUrl: undefined } : {}),
+  };
+}
+
+function compactStrategyForBrainApi(strategy: ProjectAssetsMetadata["strategy"]): ProjectAssetsMetadata["strategy"] {
+  const visualReferenceAnalysis = strategy.visualReferenceAnalysis
+    ? {
+        ...strategy.visualReferenceAnalysis,
+        dnaCollageImageDataUrl: undefined,
+        brandVisualDnaBundle: undefined,
+      }
+    : undefined;
+  return {
+    ...strategy,
+    visualReferenceAnalysis,
+    visualDnaSlots: undefined,
+    visualCapsules: undefined,
+  };
+}
+
+function compactAssetsForVisualRequest(assets: ProjectAssetsMetadata): ProjectAssetsMetadata {
+  return normalizeProjectAssets({
+    ...assets,
+    knowledge: {
+      ...assets.knowledge,
+      documents: assets.knowledge.documents.map(compactBrainDocumentForVisualRequest),
+    },
+    strategy: compactStrategyForBrainApi(assets.strategy),
+  });
+}
+
+function visualCapsuleFromDocAndSlot(params: {
+  doc: KnowledgeDocumentEntry;
+  analysis?: BrainVisualImageAnalysis;
+  slot?: VisualDnaSlot;
+  prev?: VisualCapsule;
+  status?: VisualCapsuleStatus;
+}): VisualCapsule {
+  const { doc, analysis, slot, prev } = params;
+  const now = new Date().toISOString();
+  const sourceImageUrl = slot?.sourceImageUrl?.trim() || doc.dataUrl?.trim() || doc.originalSourceUrl?.trim() || prev?.sourceImageUrl;
+  const title = prev?.title || slot?.label || doc.name || "Look visual";
+  const hasMosaic = Boolean(slot?.mosaic?.imageUrl?.trim() || slot?.mosaic?.s3Path?.trim());
+  const analysisStatus = (() => {
+    if (hasMosaic) return "ready";
+    if (slot?.status === "failed" || analysis?.analysisStatus === "failed" || doc.status === "Error") return "error";
+    if (slot?.status === "generating") return "analyzing";
+    if (!analysis || analysis.analysisStatus === "pending" || analysis.analysisStatus === "queued" || analysis.analysisStatus === "analyzing") {
+      return "analyzing";
+    }
+    return "incomplete";
+  })();
+  const palette = [
+    ...(slot?.palette?.dominantColors ?? []),
+    ...(prev?.palette?.map((p) => p.hex) ?? []),
+  ]
+    .filter(Boolean)
+    .filter((hex, idx, arr) => arr.findIndex((x) => x.toLowerCase() === hex.toLowerCase()) === idx)
+    .slice(0, 12)
+    .map((hex) => ({ hex }));
+  return {
+    id: prev?.id || `vc_${doc.id}`,
+    title,
+    sourceImageId: doc.id,
+    ...(sourceImageUrl ? { sourceImageUrl } : {}),
+    createdAt: prev?.createdAt || doc.uploadedAt || slot?.createdAt || now,
+    updatedAt: slot?.updatedAt || prev?.updatedAt || now,
+    status: params.status ?? prev?.status ?? "reference",
+    analysisStatus,
+    scope: "capsule",
+    summary: slot?.generalStyle?.summary || prev?.summary,
+    heroConclusion: slot?.hero?.conclusion || slot?.hero?.description || prev?.heroConclusion,
+    palette,
+    persons: prev?.persons ?? [],
+    environments: prev?.environments ?? [],
+    textures: prev?.textures ?? [],
+    objects: prev?.objects ?? [],
+    moodTags: slot?.generalStyle?.mood?.length ? slot.generalStyle.mood : prev?.moodTags,
+    visualTraits: slot?.generalStyle?.composition?.length ? slot.generalStyle.composition : prev?.visualTraits,
+    fidelityScore: typeof slot?.confidence === "number" ? slot.confidence : prev?.fidelityScore,
+    analysisProvider: slot?.mosaic?.provider ?? analysis?.visionProviderId ?? prev?.analysisProvider,
+    sourceAnalysisId: analysis?.id ?? prev?.sourceAnalysisId,
+    sourceVisualDnaSlotId: slot?.id ?? prev?.sourceVisualDnaSlotId,
+    mosaicImageUrl: slot?.mosaic?.imageUrl ?? prev?.mosaicImageUrl,
+    lastError: slot?.lastError ?? analysis?.failureReason ?? doc.errorMessage ?? prev?.lastError,
+  };
+}
+
+function reconcileVisualCapsulesFromAssets(assets: ProjectAssetsMetadata): VisualCapsule[] {
+  const existing = assets.strategy.visualCapsules ?? [];
+  const bySource = new Map(existing.map((c) => [c.sourceImageId, c] as const));
+  const analysisByDoc = new Map(
+    (assets.strategy.visualReferenceAnalysis?.analyses ?? [])
+      .filter((analysis) => analysis.sourceKind === "knowledge_document")
+      .map((analysis) => [analysis.sourceAssetId, analysis] as const),
+  );
+  const slotByDoc = new Map(
+    normalizeVisualDnaSlots(assets.strategy.visualDnaSlots)
+      .filter((slot) => slot.sourceDocumentId)
+      .map((slot) => [slot.sourceDocumentId!, slot] as const),
+  );
+  const out: VisualCapsule[] = [];
+  for (const doc of assets.knowledge.documents) {
+    if (!isKnowledgeImageDoc(doc)) continue;
+    if (resolveBrainSourceScope(doc) !== "capsule") continue;
+    const prev = bySource.get(doc.id);
+    out.push(visualCapsuleFromDocAndSlot({ doc, analysis: analysisByDoc.get(doc.id), slot: slotByDoc.get(doc.id), prev }));
+    bySource.delete(doc.id);
+  }
+  return out.slice(0, 100);
 }
 
 function visualReferenceRowMeta(
@@ -269,16 +467,39 @@ type MessageType = "" | "error" | "success" | "info";
 type LogoSlotId = "positive" | "negative";
 export type BrainMainSection =
   | "overview"
+  | "sources"
   | "dna"
+  | "looks"
   | "visual_refs"
   | "brand_visual_dna"
   | "knowledge"
   | "connected_nodes"
   | "review"
+  | "diagnostics"
   | "voice"
   | "personas"
   | "messages"
   | "facts";
+
+type BrainPrimarySection = "overview" | "sources" | "dna" | "looks" | "review" | "diagnostics";
+
+function resolveBrainPrimarySection(section: BrainMainSection): BrainPrimarySection {
+  switch (section) {
+    case "knowledge":
+      return "sources";
+    case "visual_refs":
+    case "brand_visual_dna":
+    case "voice":
+    case "personas":
+    case "messages":
+    case "facts":
+      return "dna";
+    case "connected_nodes":
+      return "diagnostics";
+    default:
+      return section;
+  }
+}
 
 type Props = {
   open: boolean;
@@ -617,7 +838,8 @@ function ColorField({
   const id = React.useId();
   const [text, setText] = useState(value ?? "");
   useEffect(() => {
-    setText(value ?? "");
+    const t = window.setTimeout(() => setText(value ?? ""), 0);
+    return () => window.clearTimeout(t);
   }, [value]);
   const pickerValue = value && /^#[0-9A-Fa-f]{6}$/i.test(value) ? value : "#ffffff";
 
@@ -672,8 +894,8 @@ function ColorField({
 
 /** Cola secuencial de ingesta (subida, URL, análisis). Sin reintentos automáticos. */
 type KnowledgeIngestJob =
-  | { kind: "upload"; scope: "core" | "context"; files: File[] }
-  | { kind: "url"; scope: "core" | "context"; url: string }
+  | { kind: "upload"; scope: "core" | "context"; files: File[]; brainSourceScope?: KnowledgeDocumentEntry["brainSourceScope"] }
+  | { kind: "url"; scope: "core" | "context"; url: string; brainSourceScope?: KnowledgeDocumentEntry["brainSourceScope"] }
   | { kind: "analyze" };
 
 export function ProjectBrainFullscreen({
@@ -966,11 +1188,21 @@ export function ProjectBrainFullscreen({
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setMessage({ text: "", type: "" }), 4200);
   }, []);
+  const brandLocked = Boolean(assets.brainMeta?.brandLocked);
+  const brandWriteBlockReason = getBrainScopeWriteBlockReason("brand", assets);
+  const guardBrandWrite = useCallback(
+    (actionLabel?: string) => {
+      if (!brandWriteBlockReason) return true;
+      showToast(actionLabel ? `${brandWriteBlockReason} ${actionLabel}` : brandWriteBlockReason, "info");
+      return false;
+    },
+    [brandWriteBlockReason, showToast],
+  );
 
   const [reviewEvidenceOpenId, setReviewEvidenceOpenId] = useState<string | null>(null);
   const [reviewResolvingId, setReviewResolvingId] = useState<string | null>(null);
   const [signalModalClient, setSignalModalClient] = useState<BrainDownstreamClient | null>(null);
-  const [visualReanalyzing, setVisualReanalyzing] = useState(false);
+  const [, setVisualReanalyzing] = useState(false);
   const [visualReanalyzeDiagnostics, setVisualReanalyzeDiagnostics] = useState<VisualReanalyzeDiagnosticRow[]>([]);
   const [visualQueueBusy, setVisualQueueBusy] = useState(false);
   const [serverVisionProviderId, setServerVisionProviderId] = useState<
@@ -1050,12 +1282,17 @@ export function ProjectBrainFullscreen({
   const resolvePendingItem = useCallback(
     async (row: StoredLearningCandidate, action: LearningResolutionAction) => {
       const learningId = row.id;
+      const targetScope = resolveLearningCandidateBrainScope(row);
+      if (action === "PROMOTE_TO_DNA" && !canWriteBrainScope(targetScope, assets)) {
+        showToast(BRAIN_BRAND_LOCKED_MESSAGE, "info");
+        return;
+      }
       setReviewResolvingId(learningId);
       try {
         const res = await fetch("/api/spaces/brain/learning/resolve", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ learningId, action }),
+          body: JSON.stringify({ learningId, action, brandLocked }),
         });
         const json = await readResponseJson<{ error?: string }>(res, "brain/resolve");
         if (!res.ok) {
@@ -1125,7 +1362,7 @@ export function ProjectBrainFullscreen({
         setReviewResolvingId(null);
       }
     },
-    [assets, onAssetsMetadataChange, onVisualReferenceAnalysisDirty, showToast],
+    [assets, brandLocked, onAssetsMetadataChange, onVisualReferenceAnalysisDirty, showToast],
   );
 
   const devClearPendingLearnings = useCallback(
@@ -1331,6 +1568,7 @@ export function ProjectBrainFullscreen({
 
   const saveBrandVisualDnaBundle = useCallback(
     (bundle: BrandVisualDnaStoredBundle) => {
+      if (!guardBrandWrite("No se puede guardar ADN visual de Marca.")) return;
       patch(
         (a) => {
           const layer = a.strategy.visualReferenceAnalysis ?? { analyses: [] };
@@ -1346,10 +1584,11 @@ export function ProjectBrainFullscreen({
       );
       onVisualReferenceAnalysisDirty?.();
     },
-    [patch, onVisualReferenceAnalysisDirty],
+    [guardBrandWrite, patch, onVisualReferenceAnalysisDirty],
   );
 
   const stripLegacyDemoStrategyCopy = useCallback(() => {
+    if (!guardBrandWrite("No se puede limpiar copy legacy de Marca.")) return;
     patch(
       (a) => ({
         ...a,
@@ -1362,10 +1601,11 @@ export function ProjectBrainFullscreen({
       [BRAIN_STALE_REASON.STRATEGY_MANUALLY_CHANGED],
     );
     showToast("Se eliminaron del proyecto los mensajes demo del embudo y los rasgos EN demo (Professional/Collaborative/Innovative).", "success");
-  }, [patch, showToast]);
+  }, [guardBrandWrite, patch, showToast]);
 
   const setBrand = useCallback(
     (partial: Partial<ProjectAssetsMetadata["brand"]>) => {
+      if (!guardBrandWrite("No se puede editar identidad de Marca.")) return;
       const reasons: string[] = [];
       if ("logoPositive" in partial || "logoNegative" in partial) reasons.push(BRAIN_STALE_REASON.LOGO_CHANGED);
       if ("colorPrimary" in partial || "colorSecondary" in partial || "colorAccent" in partial) {
@@ -1373,7 +1613,7 @@ export function ProjectBrainFullscreen({
       }
       patch((a) => ({ ...a, brand: { ...a.brand, ...partial } }), reasons.length ? reasons : undefined);
     },
-    [patch],
+    [guardBrandWrite, patch],
   );
 
   const setKnowledge = useCallback(
@@ -1424,6 +1664,7 @@ export function ProjectBrainFullscreen({
             contentDna: next.contentDna ?? a.strategy.contentDna,
             safeCreativeRules: next.safeCreativeRules ?? a.strategy.safeCreativeRules,
             visualDnaSlots: next.visualDnaSlots ?? a.strategy.visualDnaSlots,
+            visualCapsules: next.visualCapsules ?? a.strategy.visualCapsules,
             visualDnaSlotSuppressedSourceIds:
               next.visualDnaSlotSuppressedSourceIds ?? a.strategy.visualDnaSlotSuppressedSourceIds,
             decisionTraces: next.decisionTraces ?? a.strategy.decisionTraces,
@@ -1455,67 +1696,104 @@ export function ProjectBrainFullscreen({
   }, [assets]);
 
   const slotMosaicBusyRef = useRef(new Set<string>());
+  const slotMosaicAutoAttemptRef = useRef(new Map<string, number>());
   const [visualDnaSlotBusy, setVisualDnaSlotBusy] = useState<Record<string, boolean>>({});
 
   const runSingleVisualDnaSlotMosaic = useCallback(
     async (slotId: string, opts?: { force?: boolean }) => {
       if (slotMosaicBusyRef.current.has(slotId)) return;
-      const rawAssets = normalizeProjectAssets(assetsMetadataRef.current);
-      let assetsLoop = rawAssets;
+      slotMosaicBusyRef.current.add(slotId);
+      setVisualDnaSlotBusy((p) => ({ ...p, [slotId]: true }));
       try {
-        assetsLoop = await hydrateKnowledgeImageDocumentsWithViewUrlsClient(rawAssets);
-      } catch {
-        assetsLoop = rawAssets;
-      }
-      const slot = normalizeVisualDnaSlots(assetsLoop.strategy.visualDnaSlots).find((s) => s.id === slotId);
-      if (!slot) return;
-      if (!opts?.force && slot.status === "ready" && slot.mosaic?.imageUrl?.trim()) return;
+        const rawAssets = normalizeProjectAssets(assetsMetadataRef.current);
+        let assetsLoop = rawAssets;
+        try {
+          assetsLoop = await hydrateKnowledgeImageDocumentsWithViewUrlsClient(rawAssets);
+        } catch {
+          assetsLoop = rawAssets;
+        }
+        const slot = normalizeVisualDnaSlots(assetsLoop.strategy.visualDnaSlots).find((s) => s.id === slotId);
+        if (!slot) return;
+        const hasExistingMosaic = Boolean(slot.mosaic?.imageUrl?.trim() || slot.mosaic?.s3Path?.trim());
+        if (!opts?.force && hasExistingMosaic) {
+          if (slot.status !== "ready") {
+            patch((a) => ({
+              ...a,
+              strategy: {
+                ...a.strategy,
+                visualDnaSlots: updateVisualDnaSlot(a.strategy.visualDnaSlots ?? [], slotId, {
+                  status: "ready",
+                  lastError: undefined,
+                  updatedAt: new Date().toISOString(),
+                }),
+              },
+            }));
+          }
+          return;
+        }
+        if (!opts?.force && (slot.status === "generating" || slot.status === "failed" || slot.status === "stale")) return;
+        if (!opts?.force) {
+          const lastAttempt = slotMosaicAutoAttemptRef.current.get(slotId) ?? 0;
+          if (Date.now() - lastAttempt < 30 * 60 * 1000) return;
+          slotMosaicAutoAttemptRef.current.set(slotId, Date.now());
+        }
 
-      const byId = new Map(
-        (assetsLoop.strategy.visualReferenceAnalysis?.analyses ?? []).map((x) => [x.sourceAssetId, x]),
-      );
-      const rows = collectVisualImageAssetRefs(assetsLoop).map((ref) => ({
-        ref,
-        analysis: byId.get(ref.id) ?? null,
-      }));
-      const docId = slot.sourceDocumentId;
-      if (!docId) return;
-      let row = rows.find((r) => r.ref.id === docId && r.ref.sourceKind === "knowledge_document");
-      if (!row?.analysis) return;
-      if (row.analysis.analysisStatus === "failed") return;
-      const slotSrc = slot.sourceImageUrl?.trim();
-      if (!row.ref.imageUrlForVision?.trim() && slotSrc) {
-        row = { ...row, ref: { ...row.ref, imageUrlForVision: slotSrc } };
-      }
-      if (!row.ref.imageUrlForVision?.trim()) {
+        const byId = new Map(
+          (assetsLoop.strategy.visualReferenceAnalysis?.analyses ?? []).map((x) => [x.sourceAssetId, x]),
+        );
+        const rows = collectVisualImageAssetRefs(assetsLoop).map((ref) => ({
+          ref,
+          analysis: byId.get(ref.id) ?? null,
+        }));
+        const docId = slot.sourceDocumentId;
+        if (!docId) return;
+        let row = rows.find((r) => r.ref.id === docId && r.ref.sourceKind === "knowledge_document");
+        if (!row?.analysis) return;
+        if (row.analysis.analysisStatus === "failed") return;
+        if (row.analysis.analysisStatus && row.analysis.analysisStatus !== "analyzed") {
+          patch((a) => ({
+            ...a,
+            strategy: {
+              ...a.strategy,
+              visualDnaSlots: updateVisualDnaSlot(a.strategy.visualDnaSlots ?? [], slotId, {
+                status: "pending",
+                lastError: undefined,
+                updatedAt: new Date().toISOString(),
+              }),
+            },
+          }));
+          return;
+        }
+        const slotSrc = slot.sourceImageUrl?.trim();
+        if (!row.ref.imageUrlForVision?.trim() && slotSrc) {
+          row = { ...row, ref: { ...row.ref, imageUrlForVision: slotSrc } };
+        }
+        if (!row.ref.imageUrlForVision?.trim()) {
+          patch((a) => ({
+            ...a,
+            strategy: {
+              ...a.strategy,
+              visualDnaSlots: updateVisualDnaSlot(a.strategy.visualDnaSlots ?? [], slotId, {
+                status: "failed",
+                lastError: "Sin URL/data de imagen para el tablero por slot",
+                updatedAt: new Date().toISOString(),
+              }),
+            },
+          }));
+          return;
+        }
+
         patch((a) => ({
           ...a,
           strategy: {
             ...a.strategy,
             visualDnaSlots: updateVisualDnaSlot(a.strategy.visualDnaSlots ?? [], slotId, {
-              status: "failed",
-              lastError: "Sin URL/data de imagen para el tablero por slot",
+              status: "generating",
               updatedAt: new Date().toISOString(),
             }),
           },
         }));
-        return;
-      }
 
-      slotMosaicBusyRef.current.add(slotId);
-      setVisualDnaSlotBusy((p) => ({ ...p, [slotId]: true }));
-      patch((a) => ({
-        ...a,
-        strategy: {
-          ...a.strategy,
-          visualDnaSlots: updateVisualDnaSlot(a.strategy.visualDnaSlots ?? [], slotId, {
-            status: "generating",
-            updatedAt: new Date().toISOString(),
-          }),
-        },
-      }));
-
-      try {
         const slotNow =
           normalizeProjectAssets(assetsMetadataRef.current).strategy.visualDnaSlots?.find((s) => s.id === slotId) ??
           slot;
@@ -1560,7 +1838,19 @@ export function ProjectBrainFullscreen({
 
   const syncVisualDnaSlotsRunningRef = useRef(false);
   const syncVisualDnaSlotsRerunRef = useRef(false);
-  const syncVisualDnaSlotsAndGenerateMosaics = useCallback(async () => {
+  const syncVisualDnaSlotsAutoSourceIdsRef = useRef(new Set<string>());
+  const syncVisualDnaSlotsAndGenerateMosaics = useCallback(async (opts?: {
+    autoGenerate?: boolean;
+    sourceDocumentIds?: string[];
+  }) => {
+    if (opts?.autoGenerate) {
+      const ids = (opts.sourceDocumentIds ?? []).map((id) => id.trim()).filter(Boolean);
+      if (ids.length) {
+        ids.forEach((id) => syncVisualDnaSlotsAutoSourceIdsRef.current.add(id));
+      } else {
+        syncVisualDnaSlotsAutoSourceIdsRef.current.add(VISUAL_DNA_SYNC_AUTO_ALL);
+      }
+    }
     if (syncVisualDnaSlotsRunningRef.current) {
       syncVisualDnaSlotsRerunRef.current = true;
       return;
@@ -1569,104 +1859,188 @@ export function ProjectBrainFullscreen({
     try {
       do {
         syncVisualDnaSlotsRerunRef.current = false;
-    const rawSnap = normalizeProjectAssets(assetsMetadataRef.current);
-    let assetsSnap = rawSnap;
-    try {
-      assetsSnap = await hydrateKnowledgeImageDocumentsWithViewUrlsClient(rawSnap);
-    } catch {
-      assetsSnap = rawSnap;
-    }
-    const hydratedSlots = normalizeVisualDnaSlots(assetsSnap.strategy.visualDnaSlots);
-    const currentSlots = normalizeVisualDnaSlots(rawSnap.strategy.visualDnaSlots);
-    const docsHydrated = assetsSnap.knowledge.documents;
-    const docsCurrent = rawSnap.knowledge.documents;
-    if (JSON.stringify(docsHydrated) !== JSON.stringify(docsCurrent)) {
-      patch((a) => ({
-        ...a,
-        knowledge: {
-          ...a.knowledge,
-          documents: docsHydrated,
-        },
-      }));
-    }
-    if (
-      hydratedSlots.length > 0 &&
-      JSON.stringify(hydratedSlots) !== JSON.stringify(currentSlots)
-    ) {
-      patch((a) => ({
-        ...a,
-        strategy: {
-          ...a.strategy,
-          visualDnaSlots: (() => {
-            const live = normalizeVisualDnaSlots(a.strategy.visualDnaSlots);
-            const byId = new Map(live.map((s) => [s.id, s]));
-            for (const hs of hydratedSlots) {
-              const prev = byId.get(hs.id);
-              if (!prev) {
-                byId.set(hs.id, hs);
-                continue;
-              }
-              byId.set(hs.id, {
-                ...prev,
-                ...hs,
-                mosaic: {
-                  ...prev.mosaic,
-                  ...hs.mosaic,
+        const autoSourceIds = new Set(syncVisualDnaSlotsAutoSourceIdsRef.current);
+        syncVisualDnaSlotsAutoSourceIdsRef.current.clear();
+        const rawSnap = normalizeProjectAssets(assetsMetadataRef.current);
+        let assetsSnap = rawSnap;
+        try {
+          assetsSnap = await hydrateKnowledgeImageDocumentsWithViewUrlsClient(rawSnap);
+        } catch {
+          assetsSnap = rawSnap;
+        }
+        const hydratedSlots = normalizeVisualDnaSlots(assetsSnap.strategy.visualDnaSlots);
+        const currentSlots = normalizeVisualDnaSlots(rawSnap.strategy.visualDnaSlots);
+        const docsHydrated = assetsSnap.knowledge.documents;
+        const docsCurrent = rawSnap.knowledge.documents;
+        const hydratedDocById = new Map(docsHydrated.map((doc) => [doc.id, doc]));
+        if (JSON.stringify(docsHydrated) !== JSON.stringify(docsCurrent)) {
+          patch((a) => ({
+            ...a,
+            knowledge: {
+              ...a.knowledge,
+              documents: docsHydrated,
+            },
+          }));
+        }
+        if (
+          hydratedSlots.length > 0 &&
+          JSON.stringify(hydratedSlots) !== JSON.stringify(currentSlots)
+        ) {
+          patch((a) => ({
+            ...a,
+            strategy: {
+              ...a.strategy,
+              visualDnaSlots: (() => {
+                const live = normalizeVisualDnaSlots(a.strategy.visualDnaSlots);
+                const byId = new Map(live.map((s) => [s.id, s]));
+                for (const hs of hydratedSlots) {
+                  const prev = byId.get(hs.id);
+                  const doc = hs.sourceDocumentId ? hydratedDocById.get(hs.sourceDocumentId) : undefined;
+                  if (!prev) {
+                    byId.set(hs.id, {
+                      ...hs,
+                      sourceImageUrl: hs.sourceImageUrl ?? doc?.dataUrl ?? doc?.originalSourceUrl,
+                      sourceS3Path: hs.sourceS3Path ?? doc?.s3Path,
+                    });
+                    continue;
+                  }
+                  byId.set(hs.id, {
+                    ...prev,
+                    sourceImageUrl: hs.sourceImageUrl ?? doc?.dataUrl ?? doc?.originalSourceUrl ?? prev.sourceImageUrl,
+                    sourceS3Path: hs.sourceS3Path ?? doc?.s3Path ?? prev.sourceS3Path,
+                    mosaic: {
+                      ...prev.mosaic,
+                      ...hs.mosaic,
+                    },
+                    status:
+                      slotMosaicBusyRef.current.has(hs.id)
+                        ? prev.status
+                        : hs.mosaic?.imageUrl?.trim() || hs.mosaic?.s3Path?.trim() || prev.mosaic?.imageUrl?.trim() || prev.mosaic?.s3Path?.trim()
+                          ? "ready"
+                          : prev.status,
+                  });
+                }
+                return dedupeVisualDnaSlotsBySourceDocument(Array.from(byId.values()));
+              })(),
+            },
+          }));
+        }
+        const pendingCapsules = appendPendingCapsuleImageVisualDnaSlots(assetsSnap).appended;
+        const analyzedSlots = appendKnowledgeImageVisualDnaSlots(
+          pendingCapsules.length
+            ? normalizeProjectAssets({
+                ...assetsSnap,
+                strategy: {
+                  ...assetsSnap.strategy,
+                  visualDnaSlots: [...normalizeVisualDnaSlots(assetsSnap.strategy.visualDnaSlots), ...pendingCapsules],
                 },
-              });
+              })
+            : assetsSnap,
+        ).appended;
+        const appended = [...pendingCapsules, ...analyzedSlots];
+        if (appended.length) {
+          patch(
+            (a) => ({
+              ...a,
+              strategy: {
+                ...a.strategy,
+                visualDnaSlots: (() => {
+                  const live = normalizeVisualDnaSlots(a.strategy.visualDnaSlots);
+                  const byId = new Set(live.map((s) => s.id));
+                  const byDoc = new Set(live.map((s) => s.sourceDocumentId).filter(Boolean));
+                  const merged = [...live];
+                  for (const slot of appended) {
+                    if (byId.has(slot.id)) continue;
+                    const docId = slot.sourceDocumentId?.trim();
+                    if (docId && byDoc.has(docId)) continue;
+                    merged.push(slot);
+                    byId.add(slot.id);
+                    if (docId) byDoc.add(docId);
+                  }
+                  return dedupeVisualDnaSlotsBySourceDocument(merged);
+                })(),
+              },
+            }),
+            [BRAIN_STALE_REASON.VISUAL_REFERENCE_CHANGED],
+          );
+        }
+        const latestAssets = normalizeProjectAssets(assetsMetadataRef.current);
+        const analysisBySourceDocumentId = new Map(
+          (latestAssets.strategy.visualReferenceAnalysis?.analyses ?? [])
+            .filter((analysis) => analysis.sourceKind === "knowledge_document")
+            .map((analysis) => [analysis.sourceAssetId, analysis]),
+        );
+        const list = dedupeVisualDnaSlotsBySourceDocument(latestAssets.strategy.visualDnaSlots ?? []);
+        const liveBefore = latestAssets.strategy.visualDnaSlots ?? [];
+        if (normalizeVisualDnaSlots(liveBefore).length !== list.length) {
+          patch((a) => ({
+            ...a,
+            strategy: {
+              ...a.strategy,
+              visualDnaSlots: dedupeVisualDnaSlotsBySourceDocument(a.strategy.visualDnaSlots ?? []),
+            },
+          }));
+        }
+        const nowMs = Date.now();
+        for (const s of list) {
+          const hasMosaic = Boolean(s.mosaic?.imageUrl?.trim() || s.mosaic?.s3Path?.trim());
+          if (hasMosaic) {
+            if (s.status !== "ready" && !slotMosaicBusyRef.current.has(s.id)) {
+              patch((a) => ({
+                ...a,
+                strategy: {
+                  ...a.strategy,
+                  visualDnaSlots: updateVisualDnaSlot(a.strategy.visualDnaSlots ?? [], s.id, {
+                    status: "ready",
+                    lastError: undefined,
+                    updatedAt: new Date().toISOString(),
+                  }),
+                },
+              }));
             }
-            return dedupeVisualDnaSlotsBySourceDocument(Array.from(byId.values()));
-          })(),
-        },
-      }));
-    }
-    const { appended } = appendKnowledgeImageVisualDnaSlots(assetsSnap);
-    if (appended.length) {
-      patch(
-        (a) => ({
-          ...a,
-          strategy: {
-            ...a.strategy,
-            visualDnaSlots: (() => {
-              const live = normalizeVisualDnaSlots(a.strategy.visualDnaSlots);
-              const byId = new Set(live.map((s) => s.id));
-              const byDoc = new Set(live.map((s) => s.sourceDocumentId).filter(Boolean));
-              const merged = [...live];
-              for (const slot of appended) {
-                if (byId.has(slot.id)) continue;
-                const docId = slot.sourceDocumentId?.trim();
-                if (docId && byDoc.has(docId)) continue;
-                merged.push(slot);
-                byId.add(slot.id);
-                if (docId) byDoc.add(docId);
-              }
-              return dedupeVisualDnaSlotsBySourceDocument(merged);
-            })(),
-          },
-        }),
-        [BRAIN_STALE_REASON.VISUAL_REFERENCE_CHANGED],
-      );
-    }
-    const list = dedupeVisualDnaSlotsBySourceDocument(
-      normalizeProjectAssets(assetsMetadataRef.current).strategy.visualDnaSlots ?? [],
-    );
-    const liveBefore = normalizeProjectAssets(assetsMetadataRef.current).strategy.visualDnaSlots ?? [];
-    if (normalizeVisualDnaSlots(liveBefore).length !== list.length) {
-      patch((a) => ({
-        ...a,
-        strategy: {
-          ...a.strategy,
-          visualDnaSlots: dedupeVisualDnaSlotsBySourceDocument(a.strategy.visualDnaSlots ?? []),
-        },
-      }));
-    }
-    for (const s of list) {
-      const hasMosaic = Boolean(s.mosaic?.imageUrl?.trim());
-      if (hasMosaic && s.status === "ready") continue;
-      if (s.status === "failed") continue;
-      if (s.status === "stale") continue;
-      await runSingleVisualDnaSlotMosaic(s.id);
-    }
+            continue;
+          }
+          const analysis = s.sourceDocumentId ? analysisBySourceDocumentId.get(s.sourceDocumentId) : undefined;
+          const analysisStatus = analysis?.analysisStatus ?? (analysis ? "analyzed" : undefined);
+          const analysisReady = analysisStatus === "analyzed";
+          if (s.status === "generating" && !slotMosaicBusyRef.current.has(s.id)) {
+            if (!analysisReady) {
+              patch((a) => ({
+                ...a,
+                strategy: {
+                  ...a.strategy,
+                  visualDnaSlots: updateVisualDnaSlot(a.strategy.visualDnaSlots ?? [], s.id, {
+                    status: "pending",
+                    lastError: undefined,
+                    updatedAt: new Date().toISOString(),
+                  }),
+                },
+              }));
+              continue;
+            }
+            if (isVisualDnaSlotGeneratingStale(s, nowMs)) {
+              patch((a) => ({
+                ...a,
+                strategy: {
+                  ...a.strategy,
+                  visualDnaSlots: updateVisualDnaSlot(a.strategy.visualDnaSlots ?? [], s.id, {
+                    status: "failed",
+                    lastError: "Generación interrumpida. Pulsa Regenerar para reintentar.",
+                    updatedAt: new Date().toISOString(),
+                  }),
+                },
+              }));
+              continue;
+            }
+          }
+          if (s.status !== "pending") continue;
+          if (!analysisReady) continue;
+          const canAutoGenerate =
+            autoSourceIds.has(VISUAL_DNA_SYNC_AUTO_ALL) ||
+            Boolean(s.sourceDocumentId && autoSourceIds.has(s.sourceDocumentId));
+          if (!canAutoGenerate) continue;
+          await runSingleVisualDnaSlotMosaic(s.id);
+        }
       } while (syncVisualDnaSlotsRerunRef.current);
     } finally {
       syncVisualDnaSlotsRunningRef.current = false;
@@ -1678,6 +2052,32 @@ export function ProjectBrainFullscreen({
     [assets.strategy.visualDnaSlots],
   );
   const visualDnaSlotsDisplay = visualDnaSlotsNorm;
+
+  useEffect(() => {
+    const slotsWithMosaicButNotReady = visualDnaSlotsNorm.filter(
+      (slot) =>
+        !slotMosaicBusyRef.current.has(slot.id) &&
+        slot.status !== "ready" &&
+        Boolean(slot.mosaic?.imageUrl?.trim() || slot.mosaic?.s3Path?.trim()),
+    );
+    if (!slotsWithMosaicButNotReady.length) return;
+    patch((a) => ({
+      ...a,
+      strategy: {
+        ...a.strategy,
+        visualDnaSlots: slotsWithMosaicButNotReady.reduce(
+          (acc, slot) =>
+            updateVisualDnaSlot(acc, slot.id, {
+              status: "ready",
+              lastError: undefined,
+              updatedAt: new Date().toISOString(),
+            }),
+          a.strategy.visualDnaSlots ?? [],
+        ),
+      },
+    }));
+  }, [patch, visualDnaSlotsNorm]);
+
   const analysisStatusBySourceDocumentId = useMemo(() => {
     const out: Record<string, "queued" | "pending" | "analyzing" | "analyzed" | "failed" | undefined> = {};
     for (const row of assets.strategy.visualReferenceAnalysis?.analyses ?? []) {
@@ -1691,11 +2091,36 @@ export function ProjectBrainFullscreen({
   const visualSlotSyncKey = useMemo(() => {
     const imgDocs = assets.knowledge.documents
       .filter((d) => d.mime.startsWith("image/") || d.type === "image" || d.format === "image")
-      .map((d) => `${d.id}:${d.s3Path ? "s3" : ""}:${d.dataUrl ? "d" : ""}:${d.originalSourceUrl ? "u" : ""}`);
+      .map((d) => `${d.id}:${resolveBrainSourceScope(d)}:${d.s3Path ? "s3" : ""}:${d.dataUrl ? "d" : ""}:${d.originalSourceUrl ? "u" : ""}`);
     const ax = assets.strategy.visualReferenceAnalysis?.analyses ?? [];
     const axSig = ax.map((a) => `${a.sourceAssetId}:${a.analysisStatus ?? ""}`).join(",");
     return `${imgDocs.join(",")}|${axSig}`;
   }, [assets.knowledge.documents, assets.strategy.visualReferenceAnalysis?.analyses]);
+
+  const visualCapsuleSyncKey = useMemo(() => {
+    const capsuleDocs = assets.knowledge.documents
+      .filter((d) => isKnowledgeImageDoc(d) && resolveBrainSourceScope(d) === "capsule")
+      .map((d) => `${d.id}:${d.name}:${d.uploadedAt ?? ""}:${d.dataUrl ? "d" : ""}:${d.originalSourceUrl ?? ""}`)
+      .join("|");
+    const slots = normalizeVisualDnaSlots(assets.strategy.visualDnaSlots)
+      .map((s) => `${s.id}:${s.sourceDocumentId ?? ""}:${s.status}:${s.updatedAt ?? ""}:${s.mosaic?.imageUrl ? "m" : ""}`)
+      .join("|");
+    return `${capsuleDocs}::${slots}`;
+  }, [assets.knowledge.documents, assets.strategy.visualDnaSlots]);
+
+  useEffect(() => {
+    const nextCapsules = reconcileVisualCapsulesFromAssets(assets);
+    const current = JSON.stringify(assets.strategy.visualCapsules ?? []);
+    const next = JSON.stringify(nextCapsules);
+    if (current === next) return;
+    patch((a) => ({
+      ...a,
+      strategy: {
+        ...a.strategy,
+        visualCapsules: nextCapsules.length ? nextCapsules : undefined,
+      },
+    }));
+  }, [assets, patch, visualCapsuleSyncKey]);
 
   const handleRegenerateVisualDnaSlot = useCallback(
     (slotId: string) => void runSingleVisualDnaSlotMosaic(slotId, { force: true }),
@@ -1708,8 +2133,12 @@ export function ProjectBrainFullscreen({
       patch((a) => {
         const slots = normalizeVisualDnaSlots(a.strategy.visualDnaSlots ?? []);
         const victim = slots.find((s) => s.id === slotId);
+        const docId = victim?.sourceDocumentId?.trim();
+        const doc = docId ? a.knowledge.documents.find((d) => d.id === docId) : undefined;
+        const deletesCapsuleSource = Boolean(doc && resolveBrainSourceScope(doc) === "capsule");
         if (victim) {
           const maybeKeys = [
+            deletesCapsuleSource ? doc?.s3Path : undefined,
             victim.mosaic?.s3Path,
             victim.people?.same?.s3Path,
             victim.people?.similar?.s3Path,
@@ -1722,19 +2151,45 @@ export function ProjectBrainFullscreen({
           ];
           keysToDelete = [...new Set(maybeKeys.filter((k): k is string => typeof k === "string" && k.startsWith("knowledge-files/")))];
         }
-        const docId = victim?.sourceDocumentId?.trim();
-        const knowledgeDocIds = new Set(a.knowledge.documents.map((d) => d.id));
+        const nextDocuments = deletesCapsuleSource && docId
+          ? a.knowledge.documents.filter((d) => d.id !== docId)
+          : a.knowledge.documents;
+        const nextAnalyses =
+          docId && a.strategy.visualReferenceAnalysis
+            ? a.strategy.visualReferenceAnalysis.analyses.filter((row) => row.sourceAssetId !== docId)
+            : undefined;
+        const nextVisualReferenceAnalysis =
+          nextAnalyses && a.strategy.visualReferenceAnalysis
+            ? {
+                ...a.strategy.visualReferenceAnalysis,
+                analyses: nextAnalyses,
+                aggregated: aggregateVisualPatterns(nextAnalyses),
+                lastAnalyzedAt: new Date().toISOString(),
+              }
+            : a.strategy.visualReferenceAnalysis;
+        const knowledgeDocIds = new Set(nextDocuments.map((d) => d.id));
         const prevSup = normalizeVisualDnaSlotSuppressedSourceIds(
           a.strategy.visualDnaSlotSuppressedSourceIds,
           knowledgeDocIds,
         );
         const nextSup =
-          docId && knowledgeDocIds.has(docId) && !prevSup.includes(docId) ? [...prevSup, docId] : prevSup;
+          !deletesCapsuleSource && docId && knowledgeDocIds.has(docId) && !prevSup.includes(docId)
+            ? [...prevSup, docId]
+            : prevSup;
         return {
           ...a,
+          knowledge: {
+            ...a.knowledge,
+            documents: nextDocuments,
+          },
           strategy: {
             ...a.strategy,
             visualDnaSlots: removeVisualDnaSlot(slots, slotId),
+            visualReferenceAnalysis: nextVisualReferenceAnalysis,
+            visualCapsules:
+              deletesCapsuleSource && docId
+                ? (a.strategy.visualCapsules ?? []).filter((capsule) => capsule.sourceImageId !== docId)
+                : a.strategy.visualCapsules,
             visualDnaSlotSuppressedSourceIds: nextSup.length > 0 ? nextSup : undefined,
           },
         };
@@ -1791,7 +2246,8 @@ export function ProjectBrainFullscreen({
           const list = layer.analyses.map((row) => {
             if (row.sourceAssetId !== sourceAssetId) return row;
             if (override === undefined) {
-              const { userVisualOverride: _omit, ...rest } = row;
+              const rest = { ...row };
+              delete rest.userVisualOverride;
               return rest as BrainVisualImageAnalysis;
             }
             return { ...row, userVisualOverride: override };
@@ -1831,7 +2287,10 @@ export function ProjectBrainFullscreen({
     [projectId, setStrategy],
   );
 
-  const handleReanalyzeVisualRefs = useCallback(async (opts?: { assetsSnapshot?: ProjectAssetsMetadata }) => {
+  const handleReanalyzeVisualRefs = useCallback(async (opts?: {
+    assetsSnapshot?: ProjectAssetsMetadata;
+    autoGenerateSourceDocumentIds?: string[];
+  }) => {
     setVisualReanalyzing(true);
     setVisualReanalyzeDiagnostics([]);
     const requestAssetsRaw = opts?.assetsSnapshot ?? assetsMetadataRef.current;
@@ -1842,12 +2301,13 @@ export function ProjectBrainFullscreen({
       const res = await fetch("/api/spaces/brain/visual/reanalyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: pid, assets: requestAssetsRaw, debug }),
+        body: JSON.stringify({ projectId: pid, assets: compactAssetsForVisualRequest(base), debug }),
       });
       const json = (await readResponseJson<{
         visualReferenceAnalysis?: ProjectAssetsMetadata["strategy"]["visualReferenceAnalysis"];
         brandVisualDna?: ProjectAssetsMetadata["strategy"]["brandVisualDna"];
         provider?: string;
+        brandWriteBlocked?: boolean;
         diagnostics?: VisualReanalyzeDiagnosticRow[];
         batch?: { candidatesCreated?: number };
         error?: string;
@@ -1855,12 +2315,13 @@ export function ProjectBrainFullscreen({
       if (res.ok && json.visualReferenceAnalysis) {
         const nextVisualLayer = json.visualReferenceAnalysis;
         patch((a) => {
+          const canMergeBrandVisualDna = canWriteBrainScope("brand", a);
           const derived = buildVisualStyleFromVisionAnalyses(nextVisualLayer.analyses ?? []);
           const visualStyle = derived
             ? mergeVisualStyleWithVisionDerivedDescriptions(a.strategy.visualStyle, derived)
             : a.strategy.visualStyle;
           let meta = touchBrainMetaAfterVisualAnalysis(a.brainMeta, {
-            synthesizedBrandVisualDna: Boolean(json.brandVisualDna),
+            synthesizedBrandVisualDna: Boolean(json.brandVisualDna && canMergeBrandVisualDna),
           });
           if (json.provider === "mock") {
             meta = markBrainStale(meta, [BRAIN_STALE_REASON.REMOTE_ANALYSIS_FAILED_FALLBACK_USED]);
@@ -1871,12 +2332,15 @@ export function ProjectBrainFullscreen({
               ...a.strategy,
               visualReferenceAnalysis: nextVisualLayer,
               visualStyle,
-              ...(json.brandVisualDna ? { brandVisualDna: json.brandVisualDna } : {}),
+              ...(json.brandVisualDna && canMergeBrandVisualDna ? { brandVisualDna: json.brandVisualDna } : {}),
             },
             brainMeta: meta,
           };
         });
         onVisualReferenceAnalysisDirty?.();
+        if (json.brandWriteBlocked || (brandLocked && json.brandVisualDna)) {
+          showToast(BRAIN_BRAND_LOCKED_MESSAGE, "info");
+        }
         if (json.provider === "mock" || json.provider === "gemini-vision" || json.provider === "openai-vision") {
           setServerVisionProviderId(json.provider);
           setServerVisionProbeDone(true);
@@ -1925,9 +2389,12 @@ export function ProjectBrainFullscreen({
       );
     } finally {
       setVisualReanalyzing(false);
-      void syncVisualDnaSlotsAndGenerateMosaics();
+      void syncVisualDnaSlotsAndGenerateMosaics({
+        autoGenerate: Boolean(opts?.autoGenerateSourceDocumentIds?.length),
+        sourceDocumentIds: opts?.autoGenerateSourceDocumentIds,
+      });
     }
-  }, [projectId, runVisualReferenceReanalysis, showToast, onVisualReferenceAnalysisDirty, patch, syncVisualDnaSlotsAndGenerateMosaics]);
+  }, [brandLocked, projectId, runVisualReferenceReanalysis, showToast, onVisualReferenceAnalysisDirty, patch, syncVisualDnaSlotsAndGenerateMosaics]);
 
   const handleSaveVisualAnalysis = useCallback(async () => {
     if (!onSaveProjectFromBrain) {
@@ -2042,7 +2509,19 @@ export function ProjectBrainFullscreen({
           if (job.kind === "upload") {
             const nFiles = job.files.length;
             const nImages = job.files.filter((f) => f.type.startsWith("image/")).length;
-            const scopeLabel = job.scope === "core" ? "empresa (CORE)" : "contexto (mercado)";
+            const semanticScope = job.brainSourceScope ?? (job.scope === "core" ? "brand" : "project");
+            const blocked = getBrainScopeWriteBlockReason(semanticScope, normalizeProjectAssets(assetsMetadataRef.current));
+            if (blocked) {
+              setKnowledgePipelineDetail(blocked);
+              showToast(blocked, "info");
+              continue;
+            }
+            const scopeLabel =
+              semanticScope === "brand"
+                ? "Marca"
+                : semanticScope === "capsule"
+                  ? "Looks visuales"
+                  : "Proyecto";
             const imgHint = nImages > 0 ? ` · ${nImages} imagen${nImages === 1 ? "" : "es"}` : "";
             setKnowledgePipelineDetail(
               `Subiendo ${nFiles} archivo${nFiles === 1 ? "" : "s"} al pozo de ${scopeLabel}${imgHint}…`,
@@ -2062,7 +2541,12 @@ export function ProjectBrainFullscreen({
               error?: string;
             }>(response, "POST /api/spaces/brain/knowledge/upload");
             if (!response.ok) throw new Error(data?.error || "Error subiendo archivos");
-            const added = data?.documents || [];
+            const added = (data?.documents || []).map((doc) => ({
+              ...doc,
+              brainSourceScope: semanticScope,
+              scope: semanticScope === "brand" ? "core" : "context",
+              contextKind: semanticScope === "project" || semanticScope === "capsule" ? "referencia" : doc.contextKind,
+            })) satisfies KnowledgeDocumentEntry[];
             if (added.length) {
               setKnowledgePipelineDetail(
                 `Servidor aceptó ${added.length} documento(s). Guardando en el pozo y enlazando con el proyecto…`,
@@ -2071,6 +2555,7 @@ export function ProjectBrainFullscreen({
             const meta = normalizeProjectAssets(assetsMetadataRef.current);
             const nextDocs = [...meta.knowledge.documents, ...added];
             const addedImages = added.some((d) => (d.mime || "").toLowerCase().startsWith("image/"));
+            let assetsForVisualIngest: ProjectAssetsMetadata | null = null;
             if (addedImages) {
               setKnowledgePipelineDetail(
                 "Hay imágenes nuevas: actualizando inventario visual y referencias locales antes del análisis…",
@@ -2080,7 +2565,7 @@ export function ProjectBrainFullscreen({
                   const mergedDocs = [...a.knowledge.documents, ...added];
                   const temp: ProjectAssetsMetadata = { ...a, knowledge: { ...a.knowledge, documents: mergedDocs } };
                   const pid = (projectId?.trim() || "__local__").trim();
-                  return {
+                  const nextBase = {
                     ...a,
                     knowledge: { ...a.knowledge, documents: mergedDocs },
                     strategy: {
@@ -2088,10 +2573,29 @@ export function ProjectBrainFullscreen({
                       visualReferenceAnalysis: reanalyzeVisualReferences(pid, temp),
                     },
                   };
+                  const capsuleSlots =
+                    semanticScope === "capsule"
+                      ? appendPendingCapsuleImageVisualDnaSlots(normalizeProjectAssets(nextBase)).nextSlots
+                      : nextBase.strategy.visualDnaSlots;
+                  const nextBaseWithSlots = normalizeProjectAssets({
+                    ...nextBase,
+                    strategy: { ...nextBase.strategy, visualDnaSlots: capsuleSlots },
+                  });
+                  const nextAssets = normalizeProjectAssets({
+                    ...nextBaseWithSlots,
+                    strategy: {
+                      ...nextBaseWithSlots.strategy,
+                      visualCapsules:
+                        semanticScope === "capsule"
+                          ? reconcileVisualCapsulesFromAssets(nextBaseWithSlots)
+                          : nextBaseWithSlots.strategy.visualCapsules,
+                    },
+                  });
+                  assetsForVisualIngest = nextAssets;
+                  return nextAssets;
                 },
                 [BRAIN_STALE_REASON.NEW_IMAGE_UPLOADED, BRAIN_STALE_REASON.VISUAL_REFERENCE_CHANGED],
               );
-              void syncVisualDnaSlotsAndGenerateMosaics();
             } else {
               setKnowledge({ documents: nextDocs }, [BRAIN_STALE_REASON.NEW_DOCUMENT_UPLOADED]);
             }
@@ -2104,13 +2608,31 @@ export function ProjectBrainFullscreen({
               showToast(data?.message || "Archivos subidos", "success");
             }
             if (added.length > 0) {
-              if (addedImages) visionAfterKnowledgeIngestRef.current = true;
-              knowledgeIngestQueueRef.current.push({ kind: "analyze" });
-              setKnowledgePipelineQueued(knowledgeIngestQueueRef.current.length);
-              const q = knowledgeIngestQueueRef.current.length;
-              setKnowledgePipelineDetail(
-                `Encolando análisis de contenido (quedan ${q} paso${q === 1 ? "" : "s"} en esta cola)…`,
-              );
+              if (semanticScope === "capsule" && addedImages) {
+                setKnowledgePipelineDetail("Looks visuales: analizando cápsula visual con visión remota…");
+                try {
+                  await handleReanalyzeVisualRefs({
+                    assetsSnapshot:
+                      assetsForVisualIngest ??
+                      normalizeProjectAssets({
+                        ...meta,
+                        knowledge: { ...meta.knowledge, documents: nextDocs },
+                      }),
+                    autoGenerateSourceDocumentIds: added.map((doc) => doc.id),
+                  });
+                  setKnowledgePipelineDetail("Looks visuales actualizados.");
+                } catch {
+                  setKnowledgePipelineDetail("No se pudo completar el análisis visual. Puedes reintentarlo con Regenerar.");
+                }
+              } else {
+                if (addedImages) visionAfterKnowledgeIngestRef.current = true;
+                knowledgeIngestQueueRef.current.push({ kind: "analyze" });
+                setKnowledgePipelineQueued(knowledgeIngestQueueRef.current.length);
+                const q = knowledgeIngestQueueRef.current.length;
+                setKnowledgePipelineDetail(
+                  `Encolando análisis de contenido (quedan ${q} paso${q === 1 ? "" : "s"} en esta cola)…`,
+                );
+              }
             } else if (skipped > 0) {
               setKnowledgePipelineDetail("Ningún archivo entró al pozo (formato o tamaño). Revisa el aviso.");
             } else {
@@ -2131,8 +2653,15 @@ export function ProjectBrainFullscreen({
               }
             })();
             setKnowledgePipelineDetail(
-              `Extrayendo contenido de ${host} (${job.scope === "core" ? "CORE" : "contexto"})…`,
+              `Extrayendo contenido de ${host} (${job.scope === "core" ? "Marca" : "Proyecto"})…`,
             );
+            const semanticScope = job.brainSourceScope ?? (job.scope === "core" ? "brand" : "project");
+            const blocked = getBrainScopeWriteBlockReason(semanticScope, normalizeProjectAssets(assetsMetadataRef.current));
+            if (blocked) {
+              setKnowledgePipelineDetail(blocked);
+              showToast(blocked, "info");
+              continue;
+            }
             const response = await fetch("/api/spaces/brain/knowledge/url", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -2147,7 +2676,14 @@ export function ProjectBrainFullscreen({
               "POST /api/spaces/brain/knowledge/url",
             );
             if (!response.ok) throw new Error(data?.error || "Error al procesar URL");
-            const urlDoc = data?.document;
+            const urlDoc = data?.document
+              ? ({
+                  ...data.document,
+                  brainSourceScope: semanticScope,
+                  scope: semanticScope === "brand" ? "core" : "context",
+                  contextKind: semanticScope === "project" ? "referencia" : data.document.contextKind,
+                } satisfies KnowledgeDocumentEntry)
+              : undefined;
             const urlIsImage =
               !!urlDoc &&
               (String(urlDoc.mime || "").toLowerCase().startsWith("image/") ||
@@ -2156,7 +2692,7 @@ export function ProjectBrainFullscreen({
             setKnowledge(
               {
                 urls: [...snap.knowledge.urls, job.url],
-                documents: data?.document ? [...snap.knowledge.documents, data.document] : snap.knowledge.documents,
+                documents: urlDoc ? [...snap.knowledge.documents, urlDoc] : snap.knowledge.documents,
               },
               [
                 BRAIN_STALE_REASON.URL_ADDED,
@@ -2173,16 +2709,26 @@ export function ProjectBrainFullscreen({
             setKnowledgePipelineDetail(
               `URL integrada. Encolando análisis del pozo (${qAfterUrl} paso${qAfterUrl === 1 ? "" : "s"})…`,
             );
-            if (urlIsImage && data?.document) {
+            if (urlIsImage && urlDoc) {
               const pid = (projectId?.trim() || "__local__").trim();
               patch(
                 (a) => {
                   const temp: ProjectAssetsMetadata = normalizeProjectAssets(a);
-                  return {
+                  const nextBase = {
                     ...a,
                     strategy: {
                       ...a.strategy,
                       visualReferenceAnalysis: reanalyzeVisualReferences(pid, temp),
+                    },
+                  };
+                  return {
+                    ...nextBase,
+                    strategy: {
+                      ...nextBase.strategy,
+                      visualCapsules:
+                        semanticScope === "capsule"
+                          ? reconcileVisualCapsulesFromAssets(normalizeProjectAssets(nextBase))
+                          : nextBase.strategy.visualCapsules,
                     },
                   };
                 },
@@ -2203,8 +2749,8 @@ export function ProjectBrainFullscreen({
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                  documents: snap.knowledge.documents,
-                  strategy: snap.strategy,
+                  documents: snap.knowledge.documents.map(compactBrainDocumentForKnowledgeAnalyze),
+                  strategy: compactStrategyForBrainApi(snap.strategy),
                   brainMeta: snap.brainMeta,
                 }),
               });
@@ -2227,25 +2773,33 @@ export function ProjectBrainFullscreen({
                 corporateContext: mergedCc,
               });
               if (data?.strategy) {
+                const canMergeStrategy = canWriteBrainScope("brand", snap);
                 const derived = buildVisualStyleFromVisionAnalyses(snap.strategy.visualReferenceAnalysis?.analyses);
                 const baseVs = data.strategy.visualStyle ?? defaultBrainVisualStyle();
                 const visualStyle = derived ? mergeVisualStyleWithVisionDerivedDescriptions(baseVs, derived) : baseVs;
-                setStrategy({
-                  ...data.strategy,
-                  visualStyle,
-                });
+                const liveForStrategy = normalizeProjectAssets(assetsMetadataRef.current);
+                const strategyForApply = mergeKnowledgeStrategyPreservingVisualPipelines(
+                  { ...data.strategy, visualStyle },
+                  liveForStrategy.strategy,
+                );
+                if (canMergeStrategy) {
+                  setStrategy(strategyForApply);
+                } else {
+                  showToast(BRAIN_BRAND_LOCKED_MESSAGE, "info");
+                }
                 mergedForVision = normalizeProjectAssets({
                   ...snap,
                   knowledge: { ...snap.knowledge, documents: mergedDocs, corporateContext: mergedCc },
-                  strategy: {
-                    ...snap.strategy,
-                    ...data.strategy,
-                    visualStyle,
-                  },
-                  ...(data.brainMeta ? { brainMeta: normalizeBrainMeta(data.brainMeta) } : {}),
+                  strategy: canMergeStrategy ? strategyForApply : liveForStrategy.strategy,
+                  ...(data.brainMeta
+                    ? { brainMeta: normalizeBrainMeta({ ...data.brainMeta, brandLocked: Boolean(snap.brainMeta?.brandLocked) }) }
+                    : {}),
                 });
                 if (data.brainMeta) {
-                  patch((a) => ({ ...a, brainMeta: normalizeBrainMeta(data.brainMeta) }));
+                  patch((a) => ({
+                    ...a,
+                    brainMeta: normalizeBrainMeta({ ...data.brainMeta, brandLocked: a.brainMeta?.brandLocked }),
+                  }));
                 }
                 if (!briefPersonaId && data.strategy.personas[0]?.id) {
                   setBriefPersonaId(data.strategy.personas[0].id);
@@ -2254,10 +2808,15 @@ export function ProjectBrainFullscreen({
                 mergedForVision = normalizeProjectAssets({
                   ...snap,
                   knowledge: { ...snap.knowledge, documents: mergedDocs, corporateContext: mergedCc },
-                  ...(data?.brainMeta ? { brainMeta: normalizeBrainMeta(data.brainMeta) } : {}),
+                  ...(data?.brainMeta
+                    ? { brainMeta: normalizeBrainMeta({ ...data.brainMeta, brandLocked: Boolean(snap.brainMeta?.brandLocked) }) }
+                    : {}),
                 });
                 if (data?.brainMeta) {
-                  patch((a) => ({ ...a, brainMeta: normalizeBrainMeta(data.brainMeta) }));
+                  patch((a) => ({
+                    ...a,
+                    brainMeta: normalizeBrainMeta({ ...data.brainMeta, brandLocked: a.brainMeta?.brandLocked }),
+                  }));
                 }
               }
               showToast(data?.message || "Análisis completado", "success");
@@ -2299,9 +2858,9 @@ export function ProjectBrainFullscreen({
   ]);
 
   const enqueueKnowledgeUpload = useCallback(
-    (scope: "core" | "context", files: File[]) => {
+    (scope: "core" | "context", files: File[], brainSourceScope?: KnowledgeDocumentEntry["brainSourceScope"]) => {
       if (!files.length) return;
-      knowledgeIngestQueueRef.current.push({ kind: "upload", scope, files: [...files] });
+      knowledgeIngestQueueRef.current.push({ kind: "upload", scope, files: [...files], brainSourceScope });
       setKnowledgePipelineQueued(knowledgeIngestQueueRef.current.length);
       void runKnowledgeIngestPump();
     },
@@ -2309,14 +2868,14 @@ export function ProjectBrainFullscreen({
   );
 
   const handleAddUrl = useCallback(
-    (scope: "core" | "context") => {
+    (scope: "core" | "context", brainSourceScope?: KnowledgeDocumentEntry["brainSourceScope"]) => {
       const draft = scope === "core" ? urlDraftCore : urlDraftContext;
       const normalized = tryNormalizeUrl(draft);
       if (!normalized) {
         showToast("Introduce una URL válida (https://…)", "error");
         return;
       }
-      knowledgeIngestQueueRef.current.push({ kind: "url", scope, url: normalized });
+      knowledgeIngestQueueRef.current.push({ kind: "url", scope, url: normalized, brainSourceScope });
       setKnowledgePipelineQueued(knowledgeIngestQueueRef.current.length);
       void runKnowledgeIngestPump();
     },
@@ -2355,10 +2914,13 @@ export function ProjectBrainFullscreen({
 
   const handleDelete = useCallback(
     async (id: string) => {
+      const doc = assets.knowledge.documents.find((d) => d.id === id);
+      if (doc && resolveBrainSourceScope(doc) === "brand" && !guardBrandWrite("No se puede eliminar una fuente de Marca.")) {
+        return;
+      }
       if (!confirm("¿Seguro que quieres eliminar este documento?")) return;
       setIsDeleting(id);
       try {
-        const doc = assets.knowledge.documents.find((d) => d.id === id);
         if (doc?.s3Path) fireAndForgetDeleteS3Keys([doc.s3Path]);
         const remaining = assets.knowledge.documents.filter((d) => d.id !== id);
         const isImg = (d: KnowledgeDocumentEntry) =>
@@ -2377,13 +2939,14 @@ export function ProjectBrainFullscreen({
         setIsDeleting(null);
       }
     },
-    [assets.knowledge.documents, enqueueKnowledgeAnalyzeJob, setKnowledge, showToast],
+    [assets.knowledge.documents, enqueueKnowledgeAnalyzeJob, guardBrandWrite, setKnowledge, showToast],
   );
 
   const handleClearKnowledgeSources = useCallback(() => {
+    if (!guardBrandWrite("No se puede vaciar el pozo mientras Marca esté bloqueada.")) return;
     if (
       !confirm(
-        "Se vaciará el pozo de conocimiento: se borrarán todos los documentos e imágenes subidos, los enlaces guardados y el resumen corporativo extraído. El análisis visual por referencia no se borra aquí (sigue en «Referencias visuales» hasta que lo cambies). ¿Continuar?",
+        "Se vaciará la bandeja de fuentes: se borrarán todos los documentos e imágenes subidos, los enlaces guardados y el resumen corporativo extraído. El ADN visual persistido no se borra aquí. ¿Continuar?",
       )
     ) {
       return;
@@ -2400,16 +2963,17 @@ export function ProjectBrainFullscreen({
     if (hadImages) visionAfterKnowledgeIngestRef.current = true;
     enqueueKnowledgeAnalyzeJob();
     showToast("Pozo vaciado; actualizando conocimiento…", "success");
-  }, [assets.knowledge.documents, enqueueKnowledgeAnalyzeJob, setKnowledge, showToast]);
+  }, [assets.knowledge.documents, enqueueKnowledgeAnalyzeJob, guardBrandWrite, setKnowledge, showToast]);
 
   const handleResetBrainCompletely = useCallback(() => {
+    if (!guardBrandWrite("No se puede reiniciar Brain completo mientras Marca esté bloqueada.")) return;
     if (knowledgeIngestLocked) {
       showToast("Espera a que termine la cola de ingesta antes de reiniciar.", "info");
       return;
     }
     if (
       !confirm(
-        "Esto reiniciará marca, documentos, referencias visuales, estrategia y chat local del Brain. Los aprendizajes pendientes asociados al proyecto pueden seguir existiendo en el servidor hasta que se revisen o eliminen desde «Por revisar». Se intentarán eliminar los archivos del pozo en almacenamiento. No hay deshacer. ¿Continuar?",
+        "Esto reiniciará marca, documentos, referencias visuales, estrategia y chat local del Brain. Los aprendizajes pendientes asociados al proyecto pueden seguir existiendo en el servidor hasta que se revisen o eliminen desde «Aprendizajes». Se intentarán eliminar los archivos de la bandeja en almacenamiento. No hay deshacer. ¿Continuar?",
       )
     ) {
       return;
@@ -2442,6 +3006,7 @@ export function ProjectBrainFullscreen({
     showToast("Brain reiniciado en memoria. Guarda el proyecto en el espacio para persistir.", "success");
   }, [
     assets.knowledge.documents,
+    guardBrandWrite,
     knowledgeIngestLocked,
     onAssetsMetadataChange,
     onBrainAssetsFullReset,
@@ -2469,6 +3034,10 @@ export function ProjectBrainFullscreen({
   const handleSaveAdn = useCallback(
     async (docId: string) => {
       try {
+        const doc = assets.knowledge.documents.find((d) => d.id === docId);
+        if (doc && resolveBrainSourceScope(doc) === "brand" && !guardBrandWrite("No se puede editar una fuente de Marca.")) {
+          return;
+        }
         const response = await fetch("/api/spaces/brain/knowledge/update", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2493,7 +3062,7 @@ export function ProjectBrainFullscreen({
         showToast(e instanceof Error ? e.message : "Error guardando ADN", "error");
       }
     },
-    [assets.knowledge.corporateContext, assets.knowledge.documents, editForm, setKnowledge, showToast],
+    [assets.knowledge.corporateContext, assets.knowledge.documents, editForm, guardBrandWrite, setKnowledge, showToast],
   );
 
   const submitChatQuestion = useCallback(async () => {
@@ -2547,6 +3116,7 @@ export function ProjectBrainFullscreen({
   }, [assets.knowledge.documents, chatInput, chatLoading]);
 
   const addVoiceExample = useCallback(() => {
+    if (!guardBrandWrite("No se puede editar voz de Marca.")) return;
     const text = voiceText.trim();
     if (!text) return;
     const next: BrainVoiceExample = {
@@ -2562,19 +3132,21 @@ export function ProjectBrainFullscreen({
     };
     setStrategy({ voiceExamples: [...assets.strategy.voiceExamples, next] }, [BRAIN_STALE_REASON.BRAND_VOICE_CHANGED]);
     setVoiceText("");
-  }, [assets.strategy.voiceExamples, setStrategy, voiceKind, voiceText]);
+  }, [assets.strategy.voiceExamples, guardBrandWrite, setStrategy, voiceKind, voiceText]);
 
   const removeVoiceExample = useCallback(
     (id: string) => {
+      if (!guardBrandWrite("No se puede editar voz de Marca.")) return;
       setStrategy({ voiceExamples: assets.strategy.voiceExamples.filter((v) => v.id !== id) }, [
         BRAIN_STALE_REASON.BRAND_VOICE_CHANGED,
       ]);
     },
-    [assets.strategy.voiceExamples, setStrategy],
+    [assets.strategy.voiceExamples, guardBrandWrite, setStrategy],
   );
 
   const addTagItem = useCallback(
     (kind: "taboo" | "approved", value: string) => {
+      if (!guardBrandWrite("No se pueden editar frases de Marca.")) return;
       const text = value.trim();
       if (!text) return;
       if (kind === "taboo") {
@@ -2587,11 +3159,12 @@ export function ProjectBrainFullscreen({
         ]);
       }
     },
-    [assets.strategy.approvedPhrases, assets.strategy.tabooPhrases, setStrategy],
+    [assets.strategy.approvedPhrases, assets.strategy.tabooPhrases, guardBrandWrite, setStrategy],
   );
 
   const removeTagItem = useCallback(
     (kind: "taboo" | "approved", idx: number) => {
+      if (!guardBrandWrite("No se pueden editar frases de Marca.")) return;
       if (kind === "taboo") {
         setStrategy({ tabooPhrases: assets.strategy.tabooPhrases.filter((_, i) => i !== idx) }, [
           BRAIN_STALE_REASON.BRAND_VOICE_CHANGED,
@@ -2602,29 +3175,32 @@ export function ProjectBrainFullscreen({
         ]);
       }
     },
-    [assets.strategy.approvedPhrases, assets.strategy.tabooPhrases, setStrategy],
+    [assets.strategy.approvedPhrases, assets.strategy.tabooPhrases, guardBrandWrite, setStrategy],
   );
 
   const addStringListItem = useCallback(
     (kind: "languageTraits" | "syntaxPatterns" | "preferredTerms" | "forbiddenTerms", value: string) => {
+      if (!guardBrandWrite("No se pueden editar términos o rasgos de Marca.")) return;
       const text = value.trim();
       if (!text) return;
       const current = assets.strategy[kind] || [];
       if (current.includes(text)) return;
       setStrategy({ [kind]: [...current, text] }, [BRAIN_STALE_REASON.STRATEGY_MANUALLY_CHANGED]);
     },
-    [assets.strategy, setStrategy],
+    [assets.strategy, guardBrandWrite, setStrategy],
   );
 
   const removeStringListItem = useCallback(
     (kind: "languageTraits" | "syntaxPatterns" | "preferredTerms" | "forbiddenTerms", idx: number) => {
+      if (!guardBrandWrite("No se pueden editar términos o rasgos de Marca.")) return;
       const current = assets.strategy[kind] || [];
       setStrategy({ [kind]: current.filter((_, i) => i !== idx) }, [BRAIN_STALE_REASON.STRATEGY_MANUALLY_CHANGED]);
     },
-    [assets.strategy, setStrategy],
+    [assets.strategy, guardBrandWrite, setStrategy],
   );
 
   const addChannelIntensity = useCallback(() => {
+    if (!guardBrandWrite("No se puede editar intensidad de Marca.")) return;
     const channel = channelIntensityName.trim();
     if (!channel) return;
     const intensity = Math.max(0, Math.min(100, Number(channelIntensityValue) || 0));
@@ -2634,18 +3210,20 @@ export function ProjectBrainFullscreen({
     setStrategy({ channelIntensity: [...others, { channel, intensity }] }, [BRAIN_STALE_REASON.STRATEGY_MANUALLY_CHANGED]);
     setChannelIntensityName("");
     setChannelIntensityValue(60);
-  }, [assets.strategy.channelIntensity, channelIntensityName, channelIntensityValue, setStrategy]);
+  }, [assets.strategy.channelIntensity, channelIntensityName, channelIntensityValue, guardBrandWrite, setStrategy]);
 
   const removeChannelIntensity = useCallback(
     (idx: number) => {
+      if (!guardBrandWrite("No se puede editar intensidad de Marca.")) return;
       setStrategy({ channelIntensity: assets.strategy.channelIntensity.filter((_, i) => i !== idx) }, [
         BRAIN_STALE_REASON.STRATEGY_MANUALLY_CHANGED,
       ]);
     },
-    [assets.strategy.channelIntensity, setStrategy],
+    [assets.strategy.channelIntensity, guardBrandWrite, setStrategy],
   );
 
   const addPersona = useCallback(() => {
+    if (!guardBrandWrite("No se pueden editar personas de Marca.")) return;
     if (!personaName.trim()) return;
     const persona: BrainPersona = {
       id: crypto.randomUUID(),
@@ -2683,29 +3261,33 @@ export function ProjectBrainFullscreen({
     personaMarketSophistication,
     personaSophistication,
     personaTags,
+    guardBrandWrite,
     setStrategy,
   ]);
 
   const addCatalogPersona = useCallback(
     (persona: BrainPersona) => {
+      if (!guardBrandWrite("No se pueden editar personas de Marca.")) return;
       if (assets.strategy.personas.some((p) => p.id === persona.id)) return;
       setStrategy({ personas: [...assets.strategy.personas, persona] }, [BRAIN_STALE_REASON.STRATEGY_MANUALLY_CHANGED]);
       if (!briefPersonaId) setBriefPersonaId(persona.id);
     },
-    [assets.strategy.personas, briefPersonaId, setStrategy],
+    [assets.strategy.personas, briefPersonaId, guardBrandWrite, setStrategy],
   );
 
   const removePersona = useCallback(
     (id: string) => {
+      if (!guardBrandWrite("No se pueden editar personas de Marca.")) return;
       setStrategy({ personas: assets.strategy.personas.filter((p) => p.id !== id) }, [
         BRAIN_STALE_REASON.STRATEGY_MANUALLY_CHANGED,
       ]);
       if (briefPersonaId === id) setBriefPersonaId("");
     },
-    [assets.strategy.personas, briefPersonaId, setStrategy],
+    [assets.strategy.personas, briefPersonaId, guardBrandWrite, setStrategy],
   );
 
   const addFunnelMessage = useCallback(() => {
+    if (!guardBrandWrite("No se pueden editar mensajes de Marca.")) return;
     const text = funnelTextDraft.trim();
     if (!text) return;
     setStrategy(
@@ -2718,18 +3300,20 @@ export function ProjectBrainFullscreen({
       [BRAIN_STALE_REASON.STRATEGY_MANUALLY_CHANGED],
     );
     setFunnelTextDraft("");
-  }, [assets.strategy.funnelMessages, funnelStageDraft, funnelTextDraft, setStrategy]);
+  }, [assets.strategy.funnelMessages, funnelStageDraft, funnelTextDraft, guardBrandWrite, setStrategy]);
 
   const removeFunnelMessage = useCallback(
     (id: string) => {
+      if (!guardBrandWrite("No se pueden editar mensajes de Marca.")) return;
       setStrategy({ funnelMessages: assets.strategy.funnelMessages.filter((m) => m.id !== id) }, [
         BRAIN_STALE_REASON.STRATEGY_MANUALLY_CHANGED,
       ]);
     },
-    [assets.strategy.funnelMessages, setStrategy],
+    [assets.strategy.funnelMessages, guardBrandWrite, setStrategy],
   );
 
   const addMessageBlueprint = useCallback(() => {
+    if (!guardBrandWrite("No se pueden editar claims de Marca.")) return;
     const claim = messageClaimDraft.trim();
     if (!claim) return;
     setStrategy(
@@ -2768,11 +3352,13 @@ export function ProjectBrainFullscreen({
     messageCtaDraft,
     messageEvidenceDraft,
     messageSupportDraft,
+    guardBrandWrite,
     setStrategy,
   ]);
 
   const removeMessageBlueprint = useCallback(
     (id: string) => {
+      if (!guardBrandWrite("No se pueden editar claims de Marca.")) return;
       setStrategy(
         {
           messageBlueprints: assets.strategy.messageBlueprints.filter((m) => m.id !== id),
@@ -2780,7 +3366,7 @@ export function ProjectBrainFullscreen({
         [BRAIN_STALE_REASON.STRATEGY_MANUALLY_CHANGED],
       );
     },
-    [assets.strategy.messageBlueprints, setStrategy],
+    [assets.strategy.messageBlueprints, guardBrandWrite, setStrategy],
   );
 
   const generateWithBriefing = useCallback(async () => {
@@ -2846,6 +3432,7 @@ export function ProjectBrainFullscreen({
 
   const registerLearning = useCallback(
     (decision: "approved" | "rejected") => {
+      if (!guardBrandWrite("No se pueden registrar aprendizajes de Marca.")) return;
       if (!generatedPreview) return;
       const piece: BrainGeneratedPiece = {
         id: crypto.randomUUID(),
@@ -2904,6 +3491,7 @@ export function ProjectBrainFullscreen({
       assets.strategy.generatedPieces,
       assets.strategy.rejectedPatterns,
       assets.strategy.voiceExamples,
+      guardBrandWrite,
       briefChannel,
       briefFunnel,
       briefObjective,
@@ -2935,8 +3523,6 @@ export function ProjectBrainFullscreen({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose, personaModalOpen]);
 
-  if (!open) return null;
-
   function renderPendingReviewArticle(row: StoredLearningCandidate) {
     const c = row.candidate;
     const pendingTrace = normalizeBrainDecisionTrace(row.decisionTrace);
@@ -2954,6 +3540,10 @@ export function ProjectBrainFullscreen({
     const reasoningOpen = reviewReasoningOpenId === row.id;
     const strength = c.confidence >= 0.75 ? "Fuerte" : c.confidence >= 0.45 ? "Media" : "Débil";
     const example = c.evidence.examples?.[0];
+    const suggestedScope = resolveLearningCandidateBrainScope(row);
+    const suggestedScopeLabel =
+      suggestedScope === "brand" ? "Marca" : suggestedScope === "capsule" ? "Cápsula" : "Proyecto";
+    const promoteDisabled = busy || (brandLocked && suggestedScope === "brand");
     return (
       <article
         key={row.id}
@@ -2973,6 +3563,14 @@ export function ProjectBrainFullscreen({
           <span className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-zinc-600">
             Fuerza · {strength}
           </span>
+          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-800">
+            Destino sugerido · {suggestedScopeLabel}
+          </span>
+          {brandLocked && suggestedScope === "brand" ? (
+            <span className="rounded-full border border-zinc-300 bg-zinc-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-zinc-700">
+              Marca bloqueada
+            </span>
+          ) : null}
           {(c.conflictWithDNA || c.type === "CONTRADICTION") && (
             <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900">
               Revisar con el ADN
@@ -3084,9 +3682,10 @@ export function ProjectBrainFullscreen({
         <div className="mt-1 flex flex-wrap gap-2">
           <button
             type="button"
-            disabled={busy}
+            disabled={promoteDisabled}
             onClick={() => void resolvePendingItem(row, "PROMOTE_TO_DNA")}
             className="rounded-[5px] border border-violet-600 bg-violet-600 px-2.5 py-1.5 text-[10px] font-black uppercase tracking-wide text-white disabled:opacity-50"
+            title={brandLocked && suggestedScope === "brand" ? "Marca bloqueada: guarda en Proyecto o desbloquea Marca." : undefined}
           >
             {visualNodeBundle ? "Guardar en ADN visual" : "Guardar en ADN"}
           </button>
@@ -3163,16 +3762,113 @@ export function ProjectBrainFullscreen({
   );
   const imageDocCount = imageKnowledgeDocs.length;
   const imageKnowledgeAnalyzed = imageKnowledgeDocs.filter((d) => d.status === "Analizado").length;
-  const pdfDocEntriesForSummary = assets.knowledge.documents.filter((d) => {
-    const fmt = String(d.format || "").toLowerCase();
-    const mime = String(d.mime || "").toLowerCase();
-    return fmt === "pdf" || mime.includes("pdf");
-  });
-  const pdfDocCountForSummary = pdfDocEntriesForSummary.length;
-  const pdfAnalyzedForSummary = pdfDocEntriesForSummary.filter((d) => d.status === "Analizado").length;
   const visualPendingProposals = pendingLearnings.filter(
     (p) => p.candidate.evidence.evidenceSource === "visual_reference",
   ).length;
+  const brandSourceDocs = assets.knowledge.documents.filter((d) => resolveBrainSourceScope(d) === "brand");
+  const projectSourceDocs = assets.knowledge.documents.filter((d) => resolveBrainSourceScope(d) === "project");
+  const capsuleSourceDocs = assets.knowledge.documents.filter((d) => resolveBrainSourceScope(d) === "capsule");
+  const visualCapsules = useMemo(() => assets.strategy.visualCapsules ?? [], [assets.strategy.visualCapsules]);
+  const archivedVisualCapsules = visualCapsules.filter((c) => c.status === "archived").length;
+  const capsuleMetaBySourceDocumentId = useMemo(
+    () =>
+      Object.fromEntries(
+        visualCapsules.map((capsule) => [
+          capsule.sourceImageId,
+          {
+            id: capsule.id,
+            status: capsule.status,
+            analysisStatus: capsule.analysisStatus,
+            lastError: capsule.lastError,
+          },
+        ]),
+      ),
+    [visualCapsules],
+  );
+
+  const toggleBrandLocked = useCallback(() => {
+    patch((a) => ({
+      ...a,
+      brainMeta: {
+        ...normalizeBrainMeta(a.brainMeta),
+        brandLocked: !Boolean(a.brainMeta?.brandLocked),
+      },
+    }));
+  }, [patch]);
+
+  const openScopedFilePicker = useCallback(
+    (semanticScope: NonNullable<KnowledgeDocumentEntry["brainSourceScope"]>) => {
+      if (knowledgeIngestLocked) return;
+      if (semanticScope === "brand" && brandLocked) {
+        showToast("Marca bloqueada. Puedes usarla, pero no añadir nuevas fuentes.", "info");
+        return;
+      }
+      const input = document.createElement("input");
+      input.type = "file";
+      input.multiple = true;
+      input.accept =
+        semanticScope === "capsule"
+          ? ".jpg,.jpeg,.png,.webp"
+          : ".pdf,.docx,.txt,.md,.rtf,.jpg,.jpeg,.png,.webp";
+      input.onchange = () => {
+        const files = Array.from(input.files ?? []);
+        if (!files.length) return;
+        const picked =
+          semanticScope === "capsule"
+            ? files.filter((file) => file.type.startsWith("image/"))
+            : files;
+        if (semanticScope === "capsule" && picked.length !== files.length) {
+          showToast("Looks visuales solo acepta imágenes.", "info");
+        }
+        if (!picked.length) return;
+        enqueueKnowledgeUpload(semanticScope === "brand" ? "core" : "context", picked, semanticScope);
+      };
+      input.click();
+    },
+    [brandLocked, enqueueKnowledgeUpload, knowledgeIngestLocked, showToast],
+  );
+
+  const handleDropScopedFiles = useCallback(
+    (
+      ev: React.DragEvent<HTMLElement>,
+      semanticScope: NonNullable<KnowledgeDocumentEntry["brainSourceScope"]>,
+    ) => {
+      ev.preventDefault();
+      setIsDraggingCoreFiles(false);
+      setIsDraggingContextFiles(false);
+      if (knowledgeIngestLocked) return;
+      if (semanticScope === "brand" && brandLocked) {
+        showToast("Marca bloqueada. Puedes usarla, pero no añadir nuevas fuentes.", "info");
+        return;
+      }
+      const files = Array.from(ev.dataTransfer.files ?? []);
+      const picked =
+        semanticScope === "capsule" ? files.filter((file) => file.type.startsWith("image/")) : files;
+      if (semanticScope === "capsule" && picked.length !== files.length) {
+        showToast("Looks visuales solo acepta imágenes.", "info");
+      }
+      if (!picked.length) return;
+      enqueueKnowledgeUpload(semanticScope === "brand" ? "core" : "context", picked, semanticScope);
+    },
+    [brandLocked, enqueueKnowledgeUpload, knowledgeIngestLocked, showToast],
+  );
+
+  const setVisualCapsuleStatus = useCallback(
+    (capsuleId: string, status: VisualCapsuleStatus) => {
+      patch((a) => ({
+        ...a,
+        strategy: {
+          ...a.strategy,
+          visualCapsules: (a.strategy.visualCapsules ?? []).map((c) =>
+            c.id === capsuleId ? { ...c, status, updatedAt: new Date().toISOString() } : c,
+          ),
+        },
+      }));
+    },
+    [patch],
+  );
+
+  if (!open) return null;
 
   const shell = (
     <div
@@ -3215,11 +3911,13 @@ export function ProjectBrainFullscreen({
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
           <button
             type="button"
-            disabled={knowledgeIngestLocked}
+            disabled={knowledgeIngestLocked || brandLocked}
             onClick={() => handleResetBrainCompletely()}
             title={
               knowledgeIngestLocked
                 ? "Espera a que termine la ingesta"
+                : brandLocked
+                  ? "Marca bloqueada: desbloquéala antes de reiniciar Brain"
                 : "Borra marca, pozo, estrategia y todo análisis (memoria local hasta guardar)"
             }
             className="inline-flex items-center gap-1.5 rounded-[5px] border-2 border-rose-700 bg-rose-600 px-3 py-2 text-[11px] font-black uppercase tracking-wide text-white shadow-sm transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
@@ -3378,7 +4076,7 @@ export function ProjectBrainFullscreen({
           </section>
 
           <section className="rounded-[5px] border border-zinc-200/90 bg-white p-2.5 shadow-sm">
-            <p className="text-[9px] font-semibold uppercase tracking-wider text-zinc-500">Conocimiento</p>
+            <p className="text-[9px] font-semibold uppercase tracking-wider text-zinc-500">Fuentes</p>
             <p className="mt-1 text-[8px] leading-snug text-zinc-500">Ingesta fija arriba del panel.</p>
             <ul className="mt-1.5 space-y-1 text-[10px] text-zinc-700">
               <li className="flex justify-between">
@@ -3431,59 +4129,22 @@ export function ProjectBrainFullscreen({
               onClick={() => setActiveTab("review")}
               className="mt-2 w-full rounded-[5px] border border-violet-600 bg-violet-600 py-1.5 text-[9px] font-semibold uppercase tracking-wide text-white hover:bg-violet-700"
             >
-              Por revisar
+              Aprendizajes
             </button>
           </section>
         </aside>
 
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-y-contain rounded-[5px] border border-zinc-200/90 bg-white p-3 shadow-sm sm:p-4">
-          <BrainStudioKnowledgeIngestStrip
-            pipelineLocked={knowledgeIngestLocked}
-            pipelineQueueCount={knowledgePipelineQueued}
-            pipelineDetail={knowledgePipelineDetail}
-            onClearPozo={handleClearKnowledgeSources}
-            clearDisabled={
-              knowledgeIngestLocked ||
-              (assets.knowledge.documents.length === 0 && assets.knowledge.urls.length === 0)
-            }
-            imageDocCount={imageDocCount}
-            imageKnowledgeAnalyzed={imageKnowledgeAnalyzed}
-            pdfDocCount={pdfDocCountForSummary}
-            pdfAnalyzed={pdfAnalyzedForSummary}
-            documentTotal={assets.knowledge.documents.length}
-            urlCount={assets.knowledge.urls.length}
-            isDraggingCoreFiles={isDraggingCoreFiles}
-            setIsDraggingCoreFiles={setIsDraggingCoreFiles}
-            isDraggingContextFiles={isDraggingContextFiles}
-            setIsDraggingContextFiles={setIsDraggingContextFiles}
-            onCoreFilesSelected={(files) => enqueueKnowledgeUpload("core", files)}
-            onContextFilesSelected={(files) => enqueueKnowledgeUpload("context", files)}
-            urlDraftCore={urlDraftCore}
-            setUrlDraftCore={setUrlDraftCore}
-            urlDraftContext={urlDraftContext}
-            setUrlDraftContext={setUrlDraftContext}
-            onAddUrl={(scope) => handleAddUrl(scope)}
-          />
-          <VisualDnaSlotsLibrary
-            belowIngest
-            slots={visualDnaSlotsDisplay}
-            busySlotIds={visualDnaSlotBusy}
-            analysisStatusBySourceDocumentId={analysisStatusBySourceDocumentId}
-            onRegenerate={handleRegenerateVisualDnaSlot}
-            onDelete={handleDeleteVisualDnaSlot}
-            onRename={handleRenameVisualDnaSlot}
-          />
           <div className="mb-3 flex flex-col gap-2 border-b border-zinc-100 pb-3">
             <div className="flex min-w-0 flex-wrap items-center gap-1">
               {(
                 [
-                  ["overview", "Resumen", LayoutDashboard],
-                  ["dna", "ADN de marca", Sparkles],
-                  ["visual_refs", "Referencias visuales", ImageIcon],
-                  ["brand_visual_dna", "ADN visual (clusters)", Palette],
-                  ["knowledge", "Conocimiento", BookOpen],
-                  ["connected_nodes", "Nodos conectados", Network],
-                  ["review", "Por revisar", MessageSquareText],
+                  ["overview", "Inicio", LayoutDashboard],
+                  ["sources", "Fuentes", BookOpen],
+                  ["dna", "ADN", Sparkles],
+                  ["looks", "Looks visuales", ImageIcon],
+                  ["review", "Aprendizajes", MessageSquareText],
+                  ["diagnostics", "Diagnóstico", Network],
                 ] as const
               ).map(([id, label, Icon]) => (
                 <button
@@ -3492,17 +4153,13 @@ export function ProjectBrainFullscreen({
                   data-testid={
                     id === "review"
                       ? "brain-tab-review"
-                      : id === "knowledge"
-                        ? "brain-tab-knowledge"
-                        : id === "visual_refs"
-                          ? "brain-tab-visual-refs"
-                          : id === "overview"
-                            ? "brain-tab-overview"
-                            : undefined
+                      : id === "overview"
+                        ? "brain-tab-overview"
+                        : undefined
                   }
                   onClick={() => setActiveTab(id)}
                   className={`inline-flex items-center gap-1 rounded-[5px] border px-2 py-1 text-[9px] font-semibold uppercase tracking-wide ${
-                    activeTab === id
+                    resolveBrainPrimarySection(activeTab) === id
                       ? "border-violet-600 bg-violet-600 text-white"
                       : "border-transparent bg-zinc-50 text-zinc-600 hover:bg-zinc-100"
                   }`}
@@ -3511,103 +4168,500 @@ export function ProjectBrainFullscreen({
                   {label}
                 </button>
               ))}
-              <span className="mx-0.5 hidden h-4 w-px bg-zinc-200 sm:inline-block" aria-hidden />
-              <span className="w-full py-0.5 text-[8px] font-medium uppercase tracking-wider text-zinc-400 sm:w-auto sm:py-0">
-                Editorial
-              </span>
-              {(
-                [
-                  ["voice", "Voz y tono"],
-                  ["personas", "Personas"],
-                  ["messages", "Mensajes"],
-                  ["facts", "Hechos"],
-                ] as const
-              ).map(([id, label]) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => setActiveTab(id)}
-                  className={`rounded-[5px] border px-2 py-1 text-[9px] font-semibold uppercase tracking-wide ${
-                    activeTab === id
-                      ? "border-zinc-800 bg-zinc-800 text-white"
-                      : "border-transparent bg-zinc-50 text-zinc-600 hover:bg-zinc-100"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
             </div>
+            {resolveBrainPrimarySection(activeTab) === "sources" ? (
+              <div className="flex flex-wrap items-center gap-1">
+                {(
+                  [
+                    ["sources", "Bandejas"],
+                    ["knowledge", "Fuentes analizadas"],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setActiveTab(id)}
+                    className={`rounded-[5px] border px-2 py-1 text-[9px] font-semibold uppercase tracking-wide ${
+                      activeTab === id
+                        ? "border-zinc-800 bg-zinc-800 text-white"
+                        : "border-transparent bg-zinc-50 text-zinc-600 hover:bg-zinc-100"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {resolveBrainPrimarySection(activeTab) === "dna" ? (
+              <div className="flex flex-wrap items-center gap-1">
+                {(
+                  [
+                    ["dna", "Resumen"],
+                    ["visual_refs", "Visual"],
+                    ["brand_visual_dna", "Síntesis visual"],
+                    ["voice", "Voz"],
+                    ["messages", "Mensajes"],
+                    ["personas", "Audiencias"],
+                    ["facts", "Hechos"],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setActiveTab(id)}
+                    className={`rounded-[5px] border px-2 py-1 text-[9px] font-semibold uppercase tracking-wide ${
+                      activeTab === id
+                        ? "border-zinc-800 bg-zinc-800 text-white"
+                        : "border-transparent bg-zinc-50 text-zinc-600 hover:bg-zinc-100"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {resolveBrainPrimarySection(activeTab) === "diagnostics" ? (
+              <div className="flex flex-wrap items-center gap-1">
+                {(
+                  [
+                    ["diagnostics", "Trazas"],
+                    ["connected_nodes", "Nodos conectados"],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setActiveTab(id)}
+                    className={`rounded-[5px] border px-2 py-1 text-[9px] font-semibold uppercase tracking-wide ${
+                      activeTab === id
+                        ? "border-zinc-800 bg-zinc-800 text-white"
+                        : "border-transparent bg-zinc-50 text-zinc-600 hover:bg-zinc-100"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
+
+            {activeTab === "sources" && (
+              <div className="space-y-4">
+                {knowledgeIngestLocked ? (
+                  <div className="rounded-[5px] border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-950">
+                    <span className="font-bold">Procesando fuentes</span>
+                    {knowledgePipelineQueued > 0 ? ` · ${knowledgePipelineQueued} tareas en cola` : ""}.
+                    {knowledgePipelineDetail.trim() ? (
+                      <span className="ml-1">{knowledgePipelineDetail.trim()}</span>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <div className="grid gap-3 xl:grid-cols-[1fr_260px]">
+                  <div className="space-y-3">
+                    <section
+                      className={`rounded-[5px] border p-4 shadow-sm ${
+                        brandLocked
+                          ? "border-zinc-200 bg-zinc-50/80 opacity-80"
+                          : "border-sky-200 bg-gradient-to-b from-sky-50/70 to-white"
+                      }`}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (!knowledgeIngestLocked && !brandLocked) setIsDraggingCoreFiles(true);
+                      }}
+                      onDragLeave={() => setIsDraggingCoreFiles(false)}
+                      onDrop={(e) => handleDropScopedFiles(e, "brand")}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h2 className="text-[12px] font-black uppercase tracking-[0.14em] text-zinc-900">Marca</h2>
+                            <span
+                              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-wide ${
+                                brandLocked
+                                  ? "border-zinc-300 bg-white text-zinc-700"
+                                  : "border-emerald-200 bg-emerald-50 text-emerald-800"
+                              }`}
+                            >
+                              {brandLocked ? <Lock className="h-3 w-3" aria-hidden /> : <Unlock className="h-3 w-3" aria-hidden />}
+                              {brandLocked ? "Bloqueada" : "Editable"}
+                            </span>
+                          </div>
+                          <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-zinc-600">
+                            Sube aquí lo que debe mantenerse entre proyectos: logo, colores, tono, claims, manuales y referencias oficiales.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={toggleBrandLocked}
+                          className="rounded-[5px] border border-zinc-300 bg-white px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-zinc-800 hover:bg-zinc-50"
+                        >
+                          {brandLocked ? "Desbloquear marca" : "Bloquear marca"}
+                        </button>
+                      </div>
+                      <div
+                        className={`mt-3 rounded-[5px] border-2 border-dashed px-4 py-5 text-center ${
+                          isDraggingCoreFiles
+                            ? "border-sky-400 bg-sky-100/70"
+                            : brandLocked
+                              ? "border-zinc-200 bg-white/60"
+                              : "border-sky-200 bg-white/75 hover:border-sky-300"
+                        } ${brandLocked || knowledgeIngestLocked ? "cursor-not-allowed" : "cursor-pointer"}`}
+                        onClick={() => openScopedFilePicker("brand")}
+                      >
+                        <Plus className="mx-auto mb-1.5 h-5 w-5 text-sky-600" aria-hidden />
+                        <p className="text-[12px] font-bold text-zinc-800">
+                          {brandLocked ? "Marca bloqueada. Puedes usarla, pero no añadir fuentes." : "Arrastra o pulsa para añadir fuentes de marca"}
+                        </p>
+                        <p className="mt-1 text-[10px] text-zinc-500">PDF, DOCX, TXT/MD, URLs, imágenes, logos y brand books.</p>
+                      </div>
+                      <div className="mt-3 flex gap-2">
+                        <input
+                          value={urlDraftCore}
+                          onChange={(e) => setUrlDraftCore(e.target.value)}
+                          onKeyDown={(e) => e.key === "Enter" && !knowledgeIngestLocked && !brandLocked && (e.preventDefault(), handleAddUrl("core", "brand"))}
+                          disabled={knowledgeIngestLocked || brandLocked}
+                          placeholder="URL oficial de marca…"
+                          className="min-w-0 flex-1 rounded-[5px] border border-zinc-200 bg-white px-2 py-1.5 text-[12px] disabled:opacity-50"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleAddUrl("core", "brand")}
+                          disabled={!urlDraftCore.trim() || knowledgeIngestLocked || brandLocked}
+                          className="rounded-[5px] border border-sky-500/50 bg-sky-50 px-2.5 py-1.5 text-[10px] font-bold uppercase text-sky-800 disabled:opacity-50"
+                        >
+                          Añadir
+                        </button>
+                      </div>
+                      <p className="mt-2 text-[10px] text-zinc-500">{brandSourceDocs.length} fuente(s) de Marca.</p>
+                    </section>
+
+                    <section
+                      className="rounded-[5px] border border-amber-200 bg-gradient-to-b from-amber-50/70 to-white p-4 shadow-sm"
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (!knowledgeIngestLocked) setIsDraggingContextFiles(true);
+                      }}
+                      onDragLeave={() => setIsDraggingContextFiles(false)}
+                      onDrop={(e) => handleDropScopedFiles(e, "project")}
+                    >
+                      <h2 className="text-[12px] font-black uppercase tracking-[0.14em] text-zinc-900">Proyecto</h2>
+                      <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-zinc-600">
+                        Sube aquí lo que solo pertenece a este trabajo: briefing, referencias, documentos, URLs, imágenes y moodboards del proyecto.
+                      </p>
+                      <div
+                        className={`mt-3 rounded-[5px] border-2 border-dashed px-4 py-5 text-center ${
+                          isDraggingContextFiles ? "border-amber-400 bg-amber-100/70" : "border-amber-200 bg-white/75 hover:border-amber-300"
+                        } ${knowledgeIngestLocked ? "cursor-not-allowed" : "cursor-pointer"}`}
+                        onClick={() => openScopedFilePicker("project")}
+                      >
+                        <Plus className="mx-auto mb-1.5 h-5 w-5 text-amber-600" aria-hidden />
+                        <p className="text-[12px] font-bold text-zinc-800">Arrastra o pulsa para añadir contexto del proyecto</p>
+                        <p className="mt-1 text-[10px] text-zinc-500">Briefing, moodboards, referencias de cliente, campaña y URLs.</p>
+                      </div>
+                      <div className="mt-3 flex gap-2">
+                        <input
+                          value={urlDraftContext}
+                          onChange={(e) => setUrlDraftContext(e.target.value)}
+                          onKeyDown={(e) => e.key === "Enter" && !knowledgeIngestLocked && (e.preventDefault(), handleAddUrl("context", "project"))}
+                          disabled={knowledgeIngestLocked}
+                          placeholder="URL del proyecto…"
+                          className="min-w-0 flex-1 rounded-[5px] border border-zinc-200 bg-white px-2 py-1.5 text-[12px] disabled:opacity-50"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleAddUrl("context", "project")}
+                          disabled={!urlDraftContext.trim() || knowledgeIngestLocked}
+                          className="rounded-[5px] border border-amber-500/50 bg-amber-50 px-2.5 py-1.5 text-[10px] font-bold uppercase text-amber-800 disabled:opacity-50"
+                        >
+                          Añadir
+                        </button>
+                      </div>
+                      <p className="mt-2 text-[10px] text-zinc-500">{projectSourceDocs.length} fuente(s) de Proyecto.</p>
+                    </section>
+
+                    <section
+                      className="rounded-[5px] border border-violet-200 bg-gradient-to-b from-violet-50/70 to-white p-4 shadow-sm"
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (!knowledgeIngestLocked) setIsDraggingContextFiles(true);
+                      }}
+                      onDragLeave={() => setIsDraggingContextFiles(false)}
+                      onDrop={(e) => handleDropScopedFiles(e, "capsule")}
+                    >
+                      <h2 className="text-[12px] font-black uppercase tracking-[0.14em] text-zinc-900">Looks visuales</h2>
+                      <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-zinc-600">
+                        Sube imágenes para crear cápsulas visuales reutilizables con paleta, personas, objetos, texturas y entornos.
+                      </p>
+                      <div
+                        className={`mt-3 rounded-[5px] border-2 border-dashed px-4 py-5 text-center ${
+                          knowledgeIngestLocked ? "cursor-not-allowed" : "cursor-pointer"
+                        } border-violet-200 bg-white/75 hover:border-violet-300`}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (!knowledgeIngestLocked) setIsDraggingContextFiles(true);
+                        }}
+                        onDragLeave={() => setIsDraggingContextFiles(false)}
+                        onDrop={(e) => {
+                          e.stopPropagation();
+                          handleDropScopedFiles(e, "capsule");
+                        }}
+                        onClick={() => openScopedFilePicker("capsule")}
+                      >
+                        <ImageIcon className="mx-auto mb-1.5 h-5 w-5 text-violet-700" aria-hidden />
+                        <p className="text-[12px] font-bold text-zinc-800">Arrastra o pulsa para crear cápsulas visuales</p>
+                        <p className="mt-1 text-[10px] text-zinc-500">Solo imágenes: JPG, PNG, WebP y formatos visuales ya soportados.</p>
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-zinc-500">
+                        <span>{capsuleSourceDocs.length} imagen(es) fuente.</span>
+                        <span>{visualCapsules.length} cápsula(s).</span>
+                        <span>{archivedVisualCapsules} archivada(s).</span>
+                      </div>
+                    </section>
+
+                    <div className="rounded-[5px] border border-zinc-200/90 bg-white/90 px-3 py-2.5">
+                      <p className="text-[10px] font-black uppercase tracking-[0.12em] text-zinc-600">Fuentes recibidas</p>
+                      <p className="mt-1 text-[11px] text-zinc-700">
+                        {assets.knowledge.documents.length} archivo(s) · {assets.knowledge.urls.length} enlace(s) · {imageKnowledgeAnalyzed}/{imageDocCount} imagen(es) analizadas.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleClearKnowledgeSources}
+                        disabled={brandLocked || knowledgeIngestLocked || (assets.knowledge.documents.length === 0 && assets.knowledge.urls.length === 0)}
+                        title={brandLocked ? "Marca bloqueada: desbloquéala antes de vaciar el pozo completo." : undefined}
+                        className="mt-2 rounded-[5px] border border-rose-200 bg-rose-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-rose-900 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Vaciar pozo
+                      </button>
+                    </div>
+
+                    <div className="rounded-[5px] border border-violet-200 bg-violet-50/70 p-4">
+                      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-violet-900">
+                        Biblioteca de Looks visuales
+                      </p>
+                      <p className="mt-1 text-[11px] leading-relaxed text-violet-950/80">
+                        La gestión de cápsulas vive ahora en su propia sección para evitar duplicidades visuales.
+                        Cada imagen conserva su mosaico independiente.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("looks")}
+                        className="mt-3 rounded-[5px] border border-violet-600 bg-violet-600 px-3 py-2 text-[10px] font-black uppercase tracking-wide text-white hover:bg-violet-700"
+                      >
+                        Abrir Looks visuales
+                      </button>
+                    </div>
+                  </div>
+
+                  <aside className="space-y-3 rounded-[5px] border border-zinc-200 bg-zinc-50/80 p-3">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-zinc-500">Ayuda</p>
+                      <p className="mt-1 text-[12px] leading-relaxed text-zinc-700">
+                        Marca es identidad reutilizable. Proyecto es contexto temporal. Looks visuales son cápsulas generativas independientes.
+                      </p>
+                    </div>
+                    <div className="rounded-[5px] border border-white bg-white p-3">
+                      <p className="text-[10px] font-black uppercase tracking-wide text-violet-800">¿Qué son los Looks visuales?</p>
+                      <p className="mt-1 text-[11px] leading-relaxed text-zinc-600">
+                        Cada imagen subida conserva su propio mosaico y no modifica Marca ni Proyecto automáticamente.
+                      </p>
+                    </div>
+                  </aside>
+                </div>
+              </div>
+            )}
+
+            {activeTab === "looks" && (
+              <div className="space-y-4">
+                <div className="rounded-[5px] border border-violet-200 bg-violet-50/70 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h2 className="text-sm font-black uppercase tracking-[0.12em] text-violet-950">
+                        Looks visuales
+                      </h2>
+                      <p className="mt-1 max-w-3xl text-[12px] leading-relaxed text-violet-950/80">
+                        Cada imagen crea una cápsula visual independiente. No modifica Marca ni Proyecto
+                        automáticamente.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-[10px] text-violet-950/80">
+                      <span className="rounded-full border border-white/80 bg-white/75 px-2 py-1">
+                        {visualCapsules.length} cápsula(s)
+                      </span>
+                      <span className="rounded-full border border-white/80 bg-white/75 px-2 py-1">
+                        {archivedVisualCapsules} archivada(s)
+                      </span>
+                    </div>
+                  </div>
+                  <div
+                    className={`mt-4 rounded-[5px] border-2 border-dashed px-4 py-6 text-center ${
+                      knowledgeIngestLocked ? "cursor-not-allowed opacity-70" : "cursor-pointer"
+                    } border-violet-200 bg-white/80 hover:border-violet-300`}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (!knowledgeIngestLocked) setIsDraggingContextFiles(true);
+                    }}
+                    onDragLeave={() => setIsDraggingContextFiles(false)}
+                    onDrop={(e) => {
+                      e.stopPropagation();
+                      handleDropScopedFiles(e, "capsule");
+                    }}
+                    onClick={() => openScopedFilePicker("capsule")}
+                  >
+                    <ImageIcon className="mx-auto mb-1.5 h-5 w-5 text-violet-700" aria-hidden />
+                    <p className="text-[12px] font-bold text-zinc-800">
+                      Arrastra o pulsa para crear una cápsula visual
+                    </p>
+                    <p className="mt-1 text-[10px] text-zinc-500">
+                      Solo imágenes. Ver ADN abre el mosaico de esa imagen: fuente, paleta, héroe, personas, entornos,
+                      texturas y objetos.
+                    </p>
+                  </div>
+                </div>
+
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!knowledgeIngestLocked) setIsDraggingContextFiles(true);
+                  }}
+                  onDragLeave={() => setIsDraggingContextFiles(false)}
+                  onDrop={(e) => {
+                    e.stopPropagation();
+                    handleDropScopedFiles(e, "capsule");
+                  }}
+                >
+                  <VisualDnaSlotsLibrary
+                    slots={visualDnaSlotsDisplay.filter((slot) => {
+                      const doc = slot.sourceDocumentId
+                        ? assets.knowledge.documents.find((d) => d.id === slot.sourceDocumentId)
+                        : undefined;
+                      return doc ? resolveBrainSourceScope(doc) === "capsule" : false;
+                    })}
+                    busySlotIds={visualDnaSlotBusy}
+                    analysisStatusBySourceDocumentId={analysisStatusBySourceDocumentId}
+                    capsuleMetaBySourceDocumentId={capsuleMetaBySourceDocumentId}
+                    onSetCapsuleStatus={setVisualCapsuleStatus}
+                    onRegenerate={handleRegenerateVisualDnaSlot}
+                    onDelete={handleDeleteVisualDnaSlot}
+                    onRename={handleRenameVisualDnaSlot}
+                  />
+                </div>
+              </div>
+            )}
+
+            {activeTab === "diagnostics" && (
+              <div className="space-y-4">
+                <div>
+                  <h2 className="text-sm font-black uppercase tracking-[0.12em] text-zinc-900">Diagnóstico</h2>
+                  <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-zinc-600">
+                    Trazabilidad, telemetría y detalles técnicos. Esta sección no cambia el ADN ni las fuentes.
+                  </p>
+                </div>
+                <section className="rounded-[5px] border border-zinc-200 bg-white p-4 shadow-sm">
+                  <p className="text-[10px] font-black uppercase tracking-[0.14em] text-zinc-500">Decision Trace</p>
+                  {decisionTraces.length > 0 ? (
+                    <div className="mt-3 space-y-2">
+                      {decisionTraces.slice(0, 12).map((trace) => (
+                        <details key={trace.id} className="rounded-[5px] border border-zinc-200 bg-zinc-50/70 p-2.5">
+                          <summary className="cursor-pointer list-none">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="text-[11px] font-black text-zinc-900">
+                                  {traceKindLabel(trace.kind)}
+                                  {trace.targetNodeType ? ` · ${trace.targetNodeType}` : ""}
+                                </p>
+                                <p className="text-[10px] text-zinc-500">{formatTraceDate(trace.createdAt)}</p>
+                              </div>
+                              <span className="rounded-full border border-zinc-200 bg-white px-2 py-0.5 text-[9px] font-black text-zinc-700">
+                                conf {Math.round((trace.confidence ?? 0) * 100)}%
+                              </span>
+                            </div>
+                            <p className="mt-1 text-[11px] leading-relaxed text-zinc-700">{trace.outputSummary.summary}</p>
+                          </summary>
+                          {trace.inputs.length > 0 ? (
+                            <p className="mt-2 text-[11px] text-zinc-700">
+                              <span className="font-semibold text-zinc-900">Inputs:</span>{" "}
+                              {trace.inputs.slice(0, 8).map((x) => x.label).filter(Boolean).join(" · ")}
+                            </p>
+                          ) : null}
+                        </details>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-3 rounded-[5px] border border-dashed border-zinc-200 bg-zinc-50 px-3 py-4 text-[11px] text-zinc-500">
+                      Aún no hay trazas persistidas.
+                    </p>
+                  )}
+                </section>
+                <section className="rounded-[5px] border border-zinc-200 bg-zinc-50/80 p-4">
+                  <p className="text-[10px] font-black uppercase tracking-[0.14em] text-zinc-500">Estado técnico</p>
+                  <ul className="mt-2 space-y-1 text-[11px] text-zinc-700">
+                    <li>Brain version: {getBrainVersion(assets.brainMeta)}</li>
+                    <li>Fuentes: {assets.knowledge.documents.length} documentos · {assets.knowledge.urls.length} URLs</li>
+                    <li>Cápsulas visuales: {visualCapsules.length}</li>
+                    <li>Visual slots: {visualDnaSlotsDisplay.length}</li>
+                    <li>Aprendizajes pendientes: {pendingLearnings.length}</li>
+                  </ul>
+                </section>
+              </div>
+            )}
 
             {activeTab === "overview" && (
               <div className="space-y-6">
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
                   <div className="flex min-h-[120px] flex-col justify-between rounded-[5px] border border-violet-200 bg-white p-4 shadow-sm">
-                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-zinc-500">ADN de marca</p>
+                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-zinc-500">Marca</p>
                     <p className="mt-2 text-3xl font-black text-violet-800" title={BRAIN_ADN_COMPLETENESS_TOOLTIP_ES}>
                       {adn.total}
                       <span className="text-sm font-semibold text-zinc-500">/100</span>
                     </p>
                     <p className="mt-2 text-[11px] leading-snug text-zinc-600">
-                      {adn.total < 45
-                        ? "Heurística de completitud: faltan voz, mensajes y contexto analizado."
-                        : adn.total < 72
-                          ? "Buen avance de señales cargadas; refuerza hechos y visión remota en referencias."
-                          : "Señales cargadas alineadas; revisa siempre «Por revisar» antes de asumir visión real."}
+                      {brandSourceDocs.length} fuente(s) · {assets.brand.logoPositive || assets.brand.logoNegative ? "logo cargado" : "sin logo"} ·{" "}
+                      {brandLocked ? "marca bloqueada" : "marca editable"}. Este score mide completitud de señales, no calidad creativa.
                     </p>
                     <button
                       type="button"
-                      onClick={() => setActiveTab("dna")}
+                      onClick={() => setActiveTab("sources")}
                       className="mt-3 w-fit text-[11px] font-bold text-violet-700 underline decoration-violet-300 underline-offset-2 hover:text-violet-900"
                     >
-                      Ver ADN
+                      Ver fuentes
                     </button>
                   </div>
-                  <div className="flex min-h-[120px] flex-col justify-between rounded-[5px] border border-indigo-200 bg-white p-4 shadow-sm">
-                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-zinc-500">Referencias imagen</p>
-                    <p
-                      className="mt-2 text-3xl font-black text-indigo-800"
-                      title="Inventario de imágenes; el segundo número es visión remota (Gemini/OpenAI) sin fallback."
-                    >
-                      {visualImageRefCount}
-                      {visualDisposition.realRemoteAnalyzed > 0 ? (
-                        <span className="text-lg font-black text-indigo-600">
-                          {" "}
-                          · {visualDisposition.realRemoteAnalyzed}
-                        </span>
-                      ) : null}
-                    </p>
+                  <div className="flex min-h-[120px] flex-col justify-between rounded-[5px] border border-amber-200 bg-white p-4 shadow-sm">
+                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-zinc-500">Proyecto</p>
+                    <p className="mt-2 text-3xl font-black text-amber-800">{projectSourceDocs.length}</p>
                     <p className="mt-2 text-[11px] leading-snug text-zinc-600">
-                      {visualImageRefCount === 0
-                        ? "Sube imágenes de referencia en la bandeja; el análisis remoto se encadena al procesar el pozo."
-                        : `${visualImageRefCount} en inventario · ${visualDisposition.realRemoteAnalyzed} con visión remota · ${pendingVisualAnalysisCount} sin fila · ${visualDisposition.fallbackOrMockAnalyzed} mock/fallback · ${visualDisposition.failed} errores.`}
+                      Fuente(s) de contexto temporal. Aquí entran briefings, moodboards, referencias y documentos de este trabajo.
                     </p>
                     <button
                       type="button"
-                      onClick={() => setActiveTab("visual_refs")}
-                      className="mt-3 w-fit text-[11px] font-bold text-indigo-700 underline decoration-indigo-300 underline-offset-2 hover:text-indigo-900"
+                      onClick={() => setActiveTab("sources")}
+                      className="mt-3 w-fit text-[11px] font-bold text-amber-700 underline decoration-amber-300 underline-offset-2 hover:text-amber-900"
                     >
-                      Revisar
+                      Ver fuentes
                     </button>
                   </div>
                   <div className="flex min-h-[120px] flex-col justify-between rounded-[5px] border border-sky-200 bg-white p-4 shadow-sm">
-                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-zinc-500">Nodos conectados</p>
-                    <p className="mt-2 text-3xl font-black text-sky-800">{brainClients.length}</p>
+                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-zinc-500">Looks visuales</p>
+                    <p className="mt-2 text-3xl font-black text-sky-800">{visualCapsules.length}</p>
                     <p className="mt-2 text-[11px] leading-snug text-zinc-600">
-                      {brainClients.length === 0
-                        ? "Conecta Designer, Photoroom u otros al puerto Brain del lienzo."
-                        : `${brainClients.map((c) => c.label).join(" · ")}`}
+                      {visualCapsules.length === 0
+                        ? "Aún no hay cápsulas. Sube imágenes para crear looks independientes."
+                        : `${visualCapsules.filter((c) => c.analysisStatus === "ready").length} ready · ${visualCapsules.filter((c) => c.analysisStatus === "error").length} error · ${archivedVisualCapsules} archivadas.`}
                     </p>
                     <button
                       type="button"
-                      onClick={() => setActiveTab("connected_nodes")}
+                      onClick={() => setActiveTab("looks")}
                       className="mt-3 w-fit text-[11px] font-bold text-sky-700 underline decoration-sky-300 underline-offset-2 hover:text-sky-900"
                     >
-                      Ver nodos
+                      Ver looks
                     </button>
                   </div>
                   <div className="flex min-h-[120px] flex-col justify-between rounded-[5px] border border-amber-200 bg-amber-50/50 p-4 shadow-sm">
-                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-amber-900">Por revisar</p>
+                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-amber-900">Aprendizajes</p>
                     <p className="mt-2 text-3xl font-black text-amber-900">{pendingLearnings.length}</p>
                     <p className="mt-2 text-[11px] leading-snug text-amber-950/80">
                       Nada cambia en el ADN hasta que confirmes cada aprendizaje.
@@ -3638,7 +4692,6 @@ export function ProjectBrainFullscreen({
                           type="button"
                           title="Diagnóstico técnico JSON"
                           onClick={() => {
-                            // eslint-disable-next-line no-console
                             console.log("[Brain summary diagnostics]", brandSummary.diagnostics);
                             showToast("Diagnostics JSON en consola del navegador.", "info");
                           }}
@@ -3757,13 +4810,13 @@ export function ProjectBrainFullscreen({
                     <li className="flex gap-2">
                       <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-400" aria-hidden />
                       <span>
-                        Conocimiento · {analyzedCount} fuentes analizadas de {assets.knowledge.documents.length} activas.
+                        Fuentes analizadas · {analyzedCount} de {assets.knowledge.documents.length} activas.
                       </span>
                     </li>
                     <li className="flex gap-2">
                       <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-500" aria-hidden />
                       <span>
-                        Referencias visuales · {visualImageRefCount} en memoria
+                        Inventario visual · {visualImageRefCount} en memoria
                         {pendingVisualAnalysisCount > 0 ? ` · ${pendingVisualAnalysisCount} pendientes de capa visual` : ""}.
                       </span>
                     </li>
@@ -3773,7 +4826,7 @@ export function ProjectBrainFullscreen({
                         <span>
                           Hay {pendingLearnings.length}{" "}
                           {pendingLearnings.length === 1 ? "aprendizaje en revisión" : "aprendizajes en revisión"} en
-                          «Por revisar».
+                          «Aprendizajes».
                         </span>
                       </li>
                     )}
@@ -3878,7 +4931,7 @@ export function ProjectBrainFullscreen({
                 <div>
                   <h2 className="text-sm font-black uppercase tracking-[0.12em] text-zinc-900">ADN de marca</h2>
                   <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-zinc-600">
-                    Solo lo que consideras base reutilizable. Los aprendizajes pendientes viven en «Por revisar». Las
+                    Solo lo que consideras base reutilizable. Los aprendizajes pendientes viven en «Aprendizajes». Las
                     tarjetas leen los mismos datos guardados que el resumen; el texto demo/seed se filtra igual que en
                     «Resumen» para no confundir con tu marca real.
                   </p>
@@ -3891,7 +4944,7 @@ export function ProjectBrainFullscreen({
                         status: assets.knowledge.corporateContext?.trim() ? "Confirmado" : "Incompleto",
                         body:
                           assets.knowledge.corporateContext?.trim() ||
-                          "Sube CORE arriba del panel (se analiza solo al soltar o elegir archivos), o resume la marca en Conocimiento.",
+                          "Sube fuentes de Marca en Fuentes (se analizan al soltar o elegir archivos), o resume la marca en Fuentes analizadas.",
                         tab: "knowledge" as BrainMainSection,
                         footnote: null as string | null,
                       },
@@ -4145,7 +5198,7 @@ export function ProjectBrainFullscreen({
             {activeTab === "review" && (
               <div className="space-y-4">
                 <div className="rounded-[5px] border border-violet-200 bg-violet-50/60 p-4">
-                  <h2 className="text-sm font-black uppercase tracking-[0.12em] text-violet-900">Por revisar</h2>
+                  <h2 className="text-sm font-black uppercase tracking-[0.12em] text-violet-900">Aprendizajes</h2>
                   <p className="mt-1 text-[12px] leading-relaxed text-violet-950/80">
                     Propuestas a partir de señales recientes e información recibida en el lienzo. Nada cambia en la
                     marca hasta que elijas una acción.
@@ -4199,7 +5252,7 @@ export function ProjectBrainFullscreen({
                     <h2 className="text-sm font-black uppercase tracking-[0.12em] text-zinc-900">Referencias visuales</h2>
                     <p className="mt-0.5 max-w-2xl text-[11px] leading-snug text-zinc-600">
                       Mood board 1024×1024 (Nano Banana), inventario de visión y señales agregadas por referencia. La
-                      ingesta de PDF/imágenes CORE está siempre arriba del Brain.
+                      ingesta de PDF/imágenes de Marca o Proyecto está en Fuentes.
                     </p>
                   </div>
                   <div
@@ -4610,17 +5663,16 @@ export function ProjectBrainFullscreen({
                               key={ref.id}
                               className="flex flex-col gap-2 rounded-[5px] border border-zinc-200 bg-zinc-50/80 p-3 sm:flex-row sm:items-start sm:justify-between"
                             >
-                              <div className="min-w-0 flex-1">
-                                <p className="truncate text-[12px] font-semibold text-zinc-900">{ref.label ?? ref.name}</p>
+                              <div className="flex min-w-0 flex-1 gap-3">
+                                <BrainSourcePreview
+                                  src={ref.imageUrlForVision ?? null}
+                                  label={ref.label ?? ref.name}
+                                  className="h-14 w-14"
+                                />
+                                <div className="min-w-0 flex-1">
                                 <p className="text-[10px] text-zinc-500">
                                   {ref.sourceKind.replace(/_/g, " ")} ·{" "}
                                   <span className="font-mono text-zinc-600">id={ref.id}</span>
-                                  {analysis?.fileName ? (
-                                    <>
-                                      {" "}
-                                      · <span className="font-mono text-zinc-600">{analysis.fileName}</span>
-                                    </>
-                                  ) : null}
                                 </p>
                                 <div className="mt-2 flex flex-wrap items-center gap-2">
                                   <span className={`rounded-full border px-2 py-0.5 text-[9px] font-black ${status.klass}`}>
@@ -4742,6 +5794,7 @@ export function ProjectBrainFullscreen({
                                     </p>
                                   ) : null;
                                 })()}
+                                </div>
                               </div>
                               <div className="flex flex-shrink-0 flex-wrap gap-1.5 sm:justify-end">
                                 <button
@@ -4793,8 +5846,8 @@ export function ProjectBrainFullscreen({
                   </>
                 ) : (
                   <p className="rounded-[5px] border border-dashed border-zinc-200 bg-zinc-50 px-4 py-6 text-center text-[12px] text-zinc-500">
-                    Sube imágenes desde la bandeja superior (CORE/contexto) o en el lienzo: al terminar el análisis del
-                    pozo se actualiza la visión remota sola cuando haga falta.
+                    Sube imágenes desde Fuentes o Looks visuales: al terminar el análisis de la bandeja se actualiza la
+                    visión remota sola cuando haga falta.
                   </p>
                 )}
                 <div className="flex flex-wrap gap-2">
@@ -4803,7 +5856,7 @@ export function ProjectBrainFullscreen({
                     onClick={() => setActiveTab("knowledge")}
                     className="rounded-[5px] border border-zinc-300 bg-white px-4 py-2 text-[11px] font-black uppercase tracking-wide text-zinc-800 hover:bg-zinc-50"
                   >
-                    Inventario Conocimiento
+                    Fuentes analizadas
                   </button>
                   <button
                     type="button"
@@ -4849,18 +5902,34 @@ export function ProjectBrainFullscreen({
                     <p className="rounded-[5px] border border-dashed border-zinc-200 bg-zinc-50 px-3 py-8 text-center text-[12px] text-zinc-500">Bandeja vacía.</p>
                   ) : (
                     <ul className="space-y-3">
-                      {docsFiltered.map((doc) => (
+                      {docsFiltered.map((doc) => {
+                        const previewUrl = getKnowledgeDocumentPreviewUrl(doc);
+                        return (
                         <li key={doc.id} className="rounded-[5px] border border-zinc-200 bg-zinc-50 p-3">
                           <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2">
-                                {doc.format === "image" ? <ImageIcon className="h-4 w-4 text-zinc-500" /> : doc.format === "url" ? <Globe className="h-4 w-4 text-zinc-500" /> : <FileText className="h-4 w-4 text-zinc-500" />}
-                                <p className="truncate text-[12px] font-semibold text-zinc-900">{doc.name}</p>
-                                <span className="rounded-[5px] border border-zinc-200 bg-white px-1.5 py-0.5 text-[9px] font-black uppercase text-zinc-500">{doc.format || "doc"}</span>
-                                <span className={`rounded-[5px] border px-1.5 py-0.5 text-[9px] font-black uppercase ${doc.scope === "context" ? "border-amber-200 bg-amber-50 text-amber-700" : "border-sky-200 bg-sky-50 text-sky-700"}`}>{doc.scope === "context" ? "Contexto" : "Core"}</span>
+                            <div className="flex min-w-0 items-center gap-3">
+                              {isKnowledgeImageDoc(doc) ? (
+                                <BrainSourcePreview src={previewUrl} label={doc.name} />
+                              ) : doc.format === "url" ? (
+                                <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[5px] border border-zinc-200 bg-white text-zinc-500">
+                                  <Globe className="h-4 w-4" aria-hidden />
+                                </span>
+                              ) : (
+                                <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[5px] border border-zinc-200 bg-white text-zinc-500">
+                                  <FileText className="h-4 w-4" aria-hidden />
+                                </span>
+                              )}
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {!isKnowledgeImageDoc(doc) ? (
+                                    <p className="truncate text-[12px] font-semibold text-zinc-900">{doc.name}</p>
+                                  ) : null}
+                                  <span className="rounded-[5px] border border-zinc-200 bg-white px-1.5 py-0.5 text-[9px] font-black uppercase text-zinc-500">{doc.format || "doc"}</span>
+                                  <span className={`rounded-[5px] border px-1.5 py-0.5 text-[9px] font-black uppercase ${doc.scope === "context" ? "border-amber-200 bg-amber-50 text-amber-700" : "border-sky-200 bg-sky-50 text-sky-700"}`}>{doc.scope === "context" ? "Proyecto" : "Marca"}</span>
+                                </div>
+                                <p className="mt-1 text-[10px] text-zinc-500">{doc.uploadedAt ? new Date(doc.uploadedAt).toLocaleDateString("es-ES") : "sin fecha"} · {formatSize(doc.size)} · status: {doc.status || "Subido"}</p>
+                                {doc.errorMessage && <p className="mt-1 text-[10px] text-rose-600">{doc.errorMessage}</p>}
                               </div>
-                              <p className="mt-1 text-[10px] text-zinc-500">{doc.uploadedAt ? new Date(doc.uploadedAt).toLocaleDateString("es-ES") : "sin fecha"} · {formatSize(doc.size)} · status: {doc.status || "Subido"}</p>
-                              {doc.errorMessage && <p className="mt-1 text-[10px] text-rose-600">{doc.errorMessage}</p>}
                             </div>
                             <div className="flex items-center gap-2">
                               <button onClick={() => void handleOpenOriginal(doc)} className="rounded-[5px] border border-zinc-200 bg-white px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-zinc-700 hover:bg-zinc-100"><span className="inline-flex items-center gap-1"><ExternalLink className="h-3.5 w-3.5" />Original</span></button>
@@ -4922,7 +5991,8 @@ export function ProjectBrainFullscreen({
                             </div>
                           )}
                         </li>
-                      ))}
+                        );
+                      })}
                     </ul>
                   )}
                 </section>
@@ -5065,11 +6135,12 @@ export function ProjectBrainFullscreen({
                       <div className="mt-2 flex items-center justify-between rounded-[5px] border border-zinc-200 bg-white px-3 py-2">
                         <span className="text-[12px] text-zinc-700">Permitir absolutos (“el mejor”, “siempre”)</span>
                         <button
-                          onClick={() =>
+                          onClick={() => {
+                            if (!guardBrandWrite("No se pueden editar reglas de Marca.")) return;
                             setStrategy({ allowAbsoluteClaims: !assets.strategy.allowAbsoluteClaims }, [
                               BRAIN_STALE_REASON.STRATEGY_MANUALLY_CHANGED,
-                            ])
-                          }
+                            ]);
+                          }}
                           className={`rounded-full border px-3 py-1 text-[10px] font-black uppercase ${assets.strategy.allowAbsoluteClaims ? "border-emerald-300 bg-emerald-100 text-emerald-700" : "border-zinc-300 bg-zinc-100 text-zinc-700"}`}
                         >
                           {assets.strategy.allowAbsoluteClaims ? "Permitidos" : "Bloqueados"}
@@ -5395,24 +6466,24 @@ export function ProjectBrainFullscreen({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveTab("visual_refs")}
+                  onClick={() => setActiveTab("looks")}
                   className="rounded-[5px] border border-zinc-300 bg-white py-2.5 text-left text-[11px] font-bold text-zinc-800 px-3 hover:bg-zinc-50"
                 >
-                  Completar referencias visuales
+                  Completar Looks visuales
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveTab("knowledge")}
+                  onClick={() => setActiveTab("sources")}
                   className="rounded-[5px] border border-zinc-300 bg-white py-2.5 text-left text-[11px] font-bold text-zinc-800 px-3 hover:bg-zinc-50"
                 >
-                  Subir fuentes CORE
+                  Subir fuentes de Marca / Proyecto
                 </button>
               </div>
               <div className="rounded-[5px] border border-amber-100 bg-amber-50/70 p-3">
                 <p className="text-[10px] font-black uppercase tracking-wide text-amber-900">Tres focos que suben el ADN</p>
                 <ul className="mt-2 space-y-1.5 text-[11px] leading-snug text-amber-950/90">
                   <li>· Añade hechos verificados y mensajes con evidencia.</li>
-                  <li>· Marca referencias visuales como CORE cuando encajen.</li>
+                  <li>· Marca referencias visuales como ADN visual de marca cuando encajen.</li>
                   <li>· Conecta nodos creativos al Brain para captar señales reales.</li>
                 </ul>
               </div>
@@ -5429,6 +6500,20 @@ export function ProjectBrainFullscreen({
                 Puntuación de completitud (heurística) a partir de voz, personas, mensajes y documentos de contexto
                 analizados. No mide calidad creativa absoluta.
               </p>
+            </div>
+          )}
+          {activeTab === "sources" && (
+            <div className="space-y-3">
+              <p className="text-[10px] font-black uppercase tracking-[0.14em] text-zinc-500">Fuentes</p>
+              <p className="text-[11px] leading-relaxed text-zinc-600">
+                Marca es identidad reutilizable. Proyecto es contexto temporal. Looks visuales crea cápsulas
+                independientes desde imágenes.
+              </p>
+              <ul className="space-y-1 text-[11px] text-zinc-700">
+                <li>Marca · {brandSourceDocs.length} fuente(s)</li>
+                <li>Proyecto · {projectSourceDocs.length} fuente(s)</li>
+                <li>Looks · {capsuleSourceDocs.length} imagen(es) fuente</li>
+              </ul>
             </div>
           )}
           {activeTab === "brand_visual_dna" && (
@@ -5461,6 +6546,19 @@ export function ProjectBrainFullscreen({
                   Análisis actualizado en memoria — guarda el proyecto para conservarlo.
                 </p>
               ) : null}
+            </div>
+          )}
+          {activeTab === "looks" && (
+            <div className="space-y-3">
+              <p className="text-[10px] font-black uppercase tracking-[0.14em] text-zinc-500">Cápsulas visuales</p>
+              <p className="text-[11px] leading-relaxed text-zinc-600">
+                Looks visuales es la biblioteca de ADN por imagen. Cada cápsula conserva su propio mosaico y no modifica
+                Marca ni Proyecto automáticamente.
+              </p>
+              <div className="rounded-[5px] border border-violet-100 bg-violet-50/80 p-3 text-[11px] text-violet-950">
+                <p>{visualCapsules.length} cápsula(s) creadas.</p>
+                <p className="mt-1">{visualCapsules.filter((c) => c.analysisStatus === "ready").length} ready · {visualCapsules.filter((c) => c.analysisStatus === "error").length} con error.</p>
+              </div>
             </div>
           )}
           {activeTab === "connected_nodes" && (
@@ -5635,7 +6733,7 @@ export function ProjectBrainFullscreen({
                       }}
                       className="w-full rounded-[5px] border border-violet-600 bg-violet-600 py-2.5 text-[11px] font-black uppercase tracking-wide text-white hover:bg-violet-700"
                     >
-                      Ir a Por revisar
+                      Ir a Aprendizajes
                     </button>
                     {process.env.NODE_ENV === "development" ? (
                       <p className="text-[10px] leading-snug text-zinc-400">{BRAIN_TELEMETRY_EPHEMERAL_DEV_NOTE_ES}</p>

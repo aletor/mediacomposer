@@ -20,6 +20,7 @@ import {
   buildVisualStyleFromVisionAnalyses,
   mergeVisualStyleWithVisionDerivedDescriptions,
 } from "./brain-visual-style-from-vision";
+import { canWriteBrainScope, BRAIN_BRAND_LOCKED_MESSAGE } from "./brain-scope-policy";
 
 export type BrainRestudyProviderChoice = "gemini" | "openai" | "mock";
 
@@ -101,6 +102,7 @@ export async function runBrainRestudyPipeline(input: {
   const steps: BrainRestudyStep[] = [];
   const warnings: string[] = [];
   let working = normalizeProjectAssets(input.assetsRaw ?? {});
+  const brandLocked = !canWriteBrainScope("brand", working);
 
   const cleanupFlags = {
     clearPendingLearnings: opt.clearPendingLearnings,
@@ -119,12 +121,15 @@ export async function runBrainRestudyPipeline(input: {
       steps.push({ step: "clear_pending_learnings", ok: true, detail: "skipped" });
     }
 
-    if (opt.clearLegacyEnglishCopy) {
+    if (opt.clearLegacyEnglishCopy && !brandLocked) {
       working = normalizeProjectAssets({
         ...working,
         strategy: stripLegacyEnglishFromStrategy(working.strategy),
       });
       steps.push({ step: "strip_legacy_strategy_copy", ok: true });
+    } else if (opt.clearLegacyEnglishCopy && brandLocked) {
+      warnings.push(BRAIN_BRAND_LOCKED_MESSAGE);
+      steps.push({ step: "strip_legacy_strategy_copy", ok: true, detail: "skipped_brand_locked" });
     } else {
       steps.push({ step: "strip_legacy_strategy_copy", ok: true, detail: "skipped" });
     }
@@ -152,9 +157,8 @@ export async function runBrainRestudyPipeline(input: {
 
     const coreDocs = working.knowledge.documents.filter((d) => d.scope === "core");
     let coreAnalyzed = coreDocs.filter((d) => d.status === "Analizado").length;
-    let coreFailed = coreDocs.filter((d) => d.status === "Error").length;
 
-    if (opt.reanalyzeCoreDocuments && coreDocs.length) {
+    if (opt.reanalyzeCoreDocuments && coreDocs.length && !brandLocked) {
       try {
         const url = `${input.origin.replace(/\/$/, "")}/api/spaces/brain/knowledge/analyze`;
         const docsPayload = working.knowledge.documents.map((d) =>
@@ -198,7 +202,6 @@ export async function runBrainRestudyPipeline(input: {
           });
           const after = working.knowledge.documents.filter((d) => d.scope === "core");
           coreAnalyzed = after.filter((d) => d.status === "Analizado").length;
-          coreFailed = after.filter((d) => d.status === "Error").length;
           steps.push({ step: "reanalyze_core_documents", ok: true, detail: `analyzed=${coreAnalyzed}` });
         }
       } catch (e) {
@@ -210,7 +213,7 @@ export async function runBrainRestudyPipeline(input: {
       steps.push({
         step: "reanalyze_core_documents",
         ok: true,
-        detail: coreDocs.length ? "skipped" : "no_core_docs",
+        detail: brandLocked && coreDocs.length ? "skipped_brand_locked" : coreDocs.length ? "skipped" : "no_core_docs",
       });
     }
 

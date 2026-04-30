@@ -32,6 +32,8 @@ export type KnowledgeDocumentEntry = {
   name: string;
   size: number;
   mime: string;
+  /** Capa UI nueva: Marca / Proyecto / Cápsula visual. Convive con `scope` legacy core/context. */
+  brainSourceScope?: "brand" | "project" | "capsule";
   scope?: "core" | "context";
   contextKind?: "competencia" | "mercado" | "referencia" | "general";
   s3Path?: string;
@@ -358,6 +360,48 @@ export type BrainVisualReferenceLayer = {
   brandVisualDnaBundle?: BrandVisualDnaStoredBundle;
 };
 
+export type VisualCapsuleStatus = "reference" | "generative" | "promoted_partial" | "archived";
+export type VisualCapsuleAnalysisStatus = "analyzing" | "ready" | "incomplete" | "error";
+
+export type VisualCapsuleSuggestionKind = "person" | "environment" | "texture" | "object" | "hero" | "palette";
+
+export type VisualCapsuleSuggestion = {
+  id: string;
+  title?: string;
+  imageUrl?: string;
+  prompt?: string;
+  description?: string;
+  selected?: boolean;
+  kind: VisualCapsuleSuggestionKind;
+};
+
+export type VisualCapsule = {
+  id: string;
+  title?: string;
+  sourceImageId: string;
+  sourceImageUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+  status: VisualCapsuleStatus;
+  analysisStatus?: VisualCapsuleAnalysisStatus;
+  scope: "capsule";
+  summary?: string;
+  heroConclusion?: string;
+  palette: Array<{ hex: string; label?: string }>;
+  persons: VisualCapsuleSuggestion[];
+  environments: VisualCapsuleSuggestion[];
+  textures: VisualCapsuleSuggestion[];
+  objects: VisualCapsuleSuggestion[];
+  moodTags?: string[];
+  visualTraits?: string[];
+  fidelityScore?: number;
+  analysisProvider?: string;
+  sourceAnalysisId?: string;
+  sourceVisualDnaSlotId?: string;
+  mosaicImageUrl?: string;
+  lastError?: string;
+};
+
 export function defaultBrainVisualStyle(): BrainVisualStyle {
   return {
     protagonist: {
@@ -427,6 +471,11 @@ export type BrainStrategy = {
   safeCreativeRules?: SafeCreativeRules;
   /** ADN visual por imagen (tableros independientes; no sustituye brandVisualDna ni visualReferenceAnalysis). */
   visualDnaSlots?: VisualDnaSlot[];
+  /**
+   * Cápsulas visuales reutilizables creadas desde imágenes concretas.
+   * No sustituyen ni contaminan automáticamente `brandVisualDna`, `contentDna` ni `visualReferenceAnalysis`.
+   */
+  visualCapsules?: VisualCapsule[];
   /**
    * IDs de documentos de conocimiento (imagen) cuyo slot se eliminó a mano.
    * El sync automático no vuelve a crear slots para estos documentos mientras existan en el pozo.
@@ -645,6 +694,151 @@ const DEFAULT_STRATEGY: BrainStrategy = {
   visualStyle: defaultBrainVisualStyle(),
 };
 
+const VISUAL_CAPSULE_STATUSES: readonly VisualCapsuleStatus[] = [
+  "reference",
+  "generative",
+  "promoted_partial",
+  "archived",
+];
+
+const VISUAL_CAPSULE_ANALYSIS_STATUSES: readonly VisualCapsuleAnalysisStatus[] = [
+  "analyzing",
+  "ready",
+  "incomplete",
+  "error",
+];
+
+const VISUAL_CAPSULE_SUGGESTION_KINDS: readonly VisualCapsuleSuggestionKind[] = [
+  "person",
+  "environment",
+  "texture",
+  "object",
+  "hero",
+  "palette",
+];
+
+function normalizeVisualCapsuleSuggestion(raw: unknown, fallbackKind: VisualCapsuleSuggestionKind): VisualCapsuleSuggestion | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const kind = VISUAL_CAPSULE_SUGGESTION_KINDS.includes(o.kind as VisualCapsuleSuggestionKind)
+    ? (o.kind as VisualCapsuleSuggestionKind)
+    : fallbackKind;
+  const id = typeof o.id === "string" && o.id.trim() ? o.id.trim().slice(0, 120) : crypto.randomUUID();
+  const out: VisualCapsuleSuggestion = { id, kind };
+  if (typeof o.title === "string" && o.title.trim()) out.title = o.title.trim().slice(0, 160);
+  if (typeof o.imageUrl === "string" && o.imageUrl.trim()) out.imageUrl = o.imageUrl.trim().slice(0, 120000);
+  if (typeof o.prompt === "string" && o.prompt.trim()) out.prompt = o.prompt.trim().slice(0, 12000);
+  if (typeof o.description === "string" && o.description.trim()) out.description = o.description.trim().slice(0, 4000);
+  if (o.selected === true) out.selected = true;
+  return out;
+}
+
+function normalizeVisualCapsules(raw: unknown): VisualCapsule[] {
+  if (!Array.isArray(raw)) return [];
+  const out: VisualCapsule[] = [];
+  const seen = new Set<string>();
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const o = row as Record<string, unknown>;
+    const sourceImageId = typeof o.sourceImageId === "string" ? o.sourceImageId.trim().slice(0, 160) : "";
+    if (!sourceImageId) continue;
+    const id = typeof o.id === "string" && o.id.trim() ? o.id.trim().slice(0, 160) : `vc_${sourceImageId}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const status = VISUAL_CAPSULE_STATUSES.includes(o.status as VisualCapsuleStatus)
+      ? (o.status as VisualCapsuleStatus)
+      : "reference";
+    const analysisStatus = VISUAL_CAPSULE_ANALYSIS_STATUSES.includes(o.analysisStatus as VisualCapsuleAnalysisStatus)
+      ? (o.analysisStatus as VisualCapsuleAnalysisStatus)
+      : undefined;
+    const palette = Array.isArray(o.palette)
+      ? o.palette
+          .filter((x): x is Record<string, unknown> => Boolean(x && typeof x === "object"))
+          .map((x) => {
+            const hex = typeof x.hex === "string" ? x.hex.trim().slice(0, 32) : "";
+            if (!hex) return null;
+            return {
+              hex,
+              ...(typeof x.label === "string" && x.label.trim() ? { label: x.label.trim().slice(0, 80) } : {}),
+            };
+          })
+          .filter((x): x is { hex: string; label?: string } => Boolean(x))
+          .slice(0, 12)
+      : [];
+    const capsule: VisualCapsule = {
+      id,
+      ...(typeof o.title === "string" && o.title.trim() ? { title: o.title.trim().slice(0, 180) } : {}),
+      sourceImageId,
+      ...(typeof o.sourceImageUrl === "string" && o.sourceImageUrl.trim()
+        ? { sourceImageUrl: o.sourceImageUrl.trim().slice(0, 120000) }
+        : {}),
+      createdAt: typeof o.createdAt === "string" && o.createdAt.trim() ? o.createdAt : new Date().toISOString(),
+      updatedAt: typeof o.updatedAt === "string" && o.updatedAt.trim() ? o.updatedAt : new Date().toISOString(),
+      status,
+      ...(analysisStatus ? { analysisStatus } : {}),
+      scope: "capsule",
+      ...(typeof o.summary === "string" && o.summary.trim() ? { summary: o.summary.trim().slice(0, 2000) } : {}),
+      ...(typeof o.heroConclusion === "string" && o.heroConclusion.trim()
+        ? { heroConclusion: o.heroConclusion.trim().slice(0, 2000) }
+        : {}),
+      palette,
+      persons: Array.isArray(o.persons)
+        ? o.persons
+            .map((x) => normalizeVisualCapsuleSuggestion(x, "person"))
+            .filter((x): x is VisualCapsuleSuggestion => Boolean(x))
+            .slice(0, 20)
+        : [],
+      environments: Array.isArray(o.environments)
+        ? o.environments
+            .map((x) => normalizeVisualCapsuleSuggestion(x, "environment"))
+            .filter((x): x is VisualCapsuleSuggestion => Boolean(x))
+            .slice(0, 20)
+        : [],
+      textures: Array.isArray(o.textures)
+        ? o.textures
+            .map((x) => normalizeVisualCapsuleSuggestion(x, "texture"))
+            .filter((x): x is VisualCapsuleSuggestion => Boolean(x))
+            .slice(0, 20)
+        : [],
+      objects: Array.isArray(o.objects)
+        ? o.objects
+            .map((x) => normalizeVisualCapsuleSuggestion(x, "object"))
+            .filter((x): x is VisualCapsuleSuggestion => Boolean(x))
+            .slice(0, 20)
+        : [],
+      ...(Array.isArray(o.moodTags)
+        ? { moodTags: o.moodTags.filter((x): x is string => typeof x === "string" && x.trim().length > 0).slice(0, 24) }
+        : {}),
+      ...(Array.isArray(o.visualTraits)
+        ? {
+            visualTraits: o.visualTraits
+              .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+              .slice(0, 32),
+          }
+        : {}),
+      ...(typeof o.fidelityScore === "number" && Number.isFinite(o.fidelityScore)
+        ? { fidelityScore: Math.max(0, Math.min(1, o.fidelityScore)) }
+        : {}),
+      ...(typeof o.analysisProvider === "string" && o.analysisProvider.trim()
+        ? { analysisProvider: o.analysisProvider.trim().slice(0, 80) }
+        : {}),
+      ...(typeof o.sourceAnalysisId === "string" && o.sourceAnalysisId.trim()
+        ? { sourceAnalysisId: o.sourceAnalysisId.trim().slice(0, 160) }
+        : {}),
+      ...(typeof o.sourceVisualDnaSlotId === "string" && o.sourceVisualDnaSlotId.trim()
+        ? { sourceVisualDnaSlotId: o.sourceVisualDnaSlotId.trim().slice(0, 160) }
+        : {}),
+      ...(typeof o.mosaicImageUrl === "string" && o.mosaicImageUrl.trim()
+        ? { mosaicImageUrl: o.mosaicImageUrl.trim().slice(0, 120000) }
+        : {}),
+      ...(typeof o.lastError === "string" && o.lastError.trim() ? { lastError: o.lastError.trim().slice(0, 1000) } : {}),
+    };
+    out.push(capsule);
+    if (out.length >= 100) break;
+  }
+  return out;
+}
+
 export const MAX_LOGO_BYTES = 2 * 1024 * 1024;
 export const MAX_KNOWLEDGE_DOC_BYTES = 10 * 1024 * 1024;
 
@@ -718,6 +912,12 @@ export function normalizeProjectAssets(raw: unknown): ProjectAssetsMetadata {
         .map((d) => ({
           ...d,
           mime: typeof d.mime === "string" ? d.mime : "application/octet-stream",
+          brainSourceScope:
+            d.brainSourceScope === "brand" || d.brainSourceScope === "project" || d.brainSourceScope === "capsule"
+              ? d.brainSourceScope
+              : d.scope === "context"
+                ? "project"
+                : "brand",
           scope: d.scope === "context" ? "context" : "core",
           contextKind:
             d.contextKind === "competencia" ||
@@ -1336,6 +1536,11 @@ export function normalizeProjectAssets(raw: unknown): ProjectAssetsMetadata {
     if (safeRules) strategy.safeCreativeRules = safeRules;
     if (Array.isArray(s.visualDnaSlots)) {
       strategy.visualDnaSlots = normalizeVisualDnaSlots(s.visualDnaSlots);
+    }
+    if (Array.isArray(s.visualCapsules)) {
+      const capsules = normalizeVisualCapsules(s.visualCapsules);
+      if (capsules.length) strategy.visualCapsules = capsules;
+      else delete strategy.visualCapsules;
     }
     {
       const docIds = new Set(knowledge.documents.map((d) => d.id));

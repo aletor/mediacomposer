@@ -80,6 +80,8 @@ export type BrainMeta = {
   lastBrandVisualDnaAnalysisAt?: string;
   lastRuntimeContextBuildAt?: string;
   lastResetAt?: string;
+  /** Si está bloqueada, la marca puede leerse/usarse pero no modificarse desde el proyecto. */
+  brandLocked?: boolean;
   analysisStatus: BrainMetaAnalysisStatus;
   staleReasons: string[];
 };

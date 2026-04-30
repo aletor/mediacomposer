@@ -32,6 +32,7 @@ import {
   normalizeBrainMeta,
   touchBrainMetaAfterKnowledgeAnalysis,
 } from "@/lib/brain/brain-meta";
+import { canWriteBrainScope } from "@/lib/brain/brain-scope-policy";
 import { BRAIN_STALE_REASON } from "@/lib/brain/brain-stale-reasons";
 import {
   mergeBlueprintsPreferPrevious,
@@ -51,6 +52,7 @@ type BrainDoc = {
   size: number;
   mime: string;
   scope?: "core" | "context";
+  brainSourceScope?: "brand" | "project" | "capsule";
   s3Path?: string;
   type?: "document" | "image";
   format?: "pdf" | "docx" | "txt" | "html" | "url" | "image";
@@ -1006,6 +1008,7 @@ export async function POST(req: NextRequest) {
 
     const pendingIdx = nextDocs
       .map((doc, idx) => ({ doc, idx }))
+      .filter(({ doc }) => doc.brainSourceScope !== "capsule")
       .filter(({ doc }) =>
         shouldAnalyzeBrainDocument({
           workflowStatus: doc.workflowStatus,
@@ -1034,15 +1037,19 @@ export async function POST(req: NextRequest) {
     };
 
     if (pendingIdx.length === 0) {
-      const autofill = await buildAutofillStrategy(nextDocs, usageTasks, ctx);
+      const knowledgeDocs = nextDocs.filter((doc) => doc.brainSourceScope !== "capsule");
+      const autofill = await buildAutofillStrategy(knowledgeDocs, usageTasks, ctx);
       const meta = normalizeBrainMeta(body.brainMeta);
-      const corporateContext = buildReadableCorporateContext(nextDocs);
-      let strategy = mergeStrategy(body.strategy, autofill);
-      strategy = enrichStrategyCreativeMemory(strategy, {
-        brainMeta: meta,
-        knowledgeDocuments: nextDocs as KnowledgeDocumentEntry[],
-        corporateContext,
-      });
+      const corporateContext = buildReadableCorporateContext(knowledgeDocs);
+      let strategy = body.strategy ?? mergeStrategy(undefined, autofill);
+      if (canWriteBrainScope("brand", { brainMeta: meta })) {
+        strategy = mergeStrategy(body.strategy, autofill);
+        strategy = enrichStrategyCreativeMemory(strategy, {
+          brainMeta: meta,
+          knowledgeDocuments: knowledgeDocs as KnowledgeDocumentEntry[],
+          corporateContext,
+        });
+      }
       await Promise.all(usageTasks);
       return NextResponse.json({
         message: "No pending documents to analyze.",
@@ -1154,18 +1161,22 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const corporateContext = buildReadableCorporateContext(nextDocs);
-    const autofill = await buildAutofillStrategy(nextDocs, usageTasks, ctx);
+    const knowledgeDocs = nextDocs.filter((doc) => doc.brainSourceScope !== "capsule");
+    const corporateContext = buildReadableCorporateContext(knowledgeDocs);
+    const autofill = await buildAutofillStrategy(knowledgeDocs, usageTasks, ctx);
     let meta = touchBrainMetaAfterKnowledgeAnalysis(normalizeBrainMeta(body.brainMeta), analyzedDocIds.length);
     if (nextDocs.some((d) => d.status === "Error")) {
       meta = markBrainStale(meta, [BRAIN_STALE_REASON.REMOTE_ANALYSIS_FAILED_FALLBACK_USED]);
     }
-    let strategy = mergeStrategy(body.strategy, autofill);
-    strategy = enrichStrategyCreativeMemory(strategy, {
-      brainMeta: meta,
-      knowledgeDocuments: nextDocs as KnowledgeDocumentEntry[],
-      corporateContext,
-    });
+    let strategy = body.strategy ?? mergeStrategy(undefined, autofill);
+    if (canWriteBrainScope("brand", { brainMeta: meta })) {
+      strategy = mergeStrategy(body.strategy, autofill);
+      strategy = enrichStrategyCreativeMemory(strategy, {
+        brainMeta: meta,
+        knowledgeDocuments: knowledgeDocs as KnowledgeDocumentEntry[],
+        corporateContext,
+      });
+    }
     await Promise.all(usageTasks);
     return NextResponse.json({
       message: `Analyzed ${analyzedDocIds.length} documents.`,

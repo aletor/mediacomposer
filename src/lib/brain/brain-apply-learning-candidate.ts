@@ -14,6 +14,10 @@ import {
   createBrainDecisionTrace,
   normalizeBrainDecisionTrace,
 } from "@/lib/brain/brain-decision-trace";
+import {
+  getBrainScopeWriteBlockReason,
+  resolveLearningCandidateBrainScope,
+} from "@/lib/brain/brain-scope-policy";
 
 function cloneAssets(assets: ProjectAssetsMetadata): ProjectAssetsMetadata {
   return normalizeProjectAssets(JSON.parse(JSON.stringify(assets)) as unknown);
@@ -306,6 +310,13 @@ export function applyLearningCandidateToProjectAssets(
   }
 
   // --- PROMOTE_TO_DNA ---
+  const targetScope = resolveLearningCandidateBrainScope(row);
+  const blockedReason = getBrainScopeWriteBlockReason(targetScope, next);
+  if (blockedReason) {
+    warnings.push(blockedReason);
+    return { nextAssets: assets, applied: false, changedPaths: [], warnings };
+  }
+
   if (c.type === "PROJECT_MEMORY") {
     warnings.push(
       "PROJECT_MEMORY: «Guardar en ADN» guarda en memoria de este proyecto (no sustituye ADN de marca corporativa).",

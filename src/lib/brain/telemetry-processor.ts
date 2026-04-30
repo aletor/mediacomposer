@@ -428,6 +428,7 @@ export class TelemetryProcessor {
         sourceSessionIds: sessionKeys,
         candidate: enriched,
         createdAt: now,
+        suggestedBrainScope: "project",
         decisionTraceId: candidateTrace.id,
         decisionTrace: {
           ...candidateTrace,

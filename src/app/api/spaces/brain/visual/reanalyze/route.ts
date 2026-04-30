@@ -11,6 +11,7 @@ import { hydrateProjectAssetsForBrainVision } from "@/lib/brain/brain-visual-ass
 import { ApiServiceDisabledError, assertApiServiceEnabled } from "@/lib/api-usage-controls";
 import { buildBrandVisualDnaFromVisualReferenceAnalysis } from "@/lib/brain/brain-brand-visual-dna-synthesis";
 import { getBrainVersion } from "@/lib/brain/brain-meta";
+import { canWriteBrainScope } from "@/lib/brain/brain-scope-policy";
 
 export const runtime = "nodejs";
 
@@ -57,10 +58,13 @@ export async function POST(req: NextRequest) {
     const candidates = createVisualLearningCandidates(projectId, analyses, aggregated);
     const candidatesCreated = candidates.length;
     const brainVersion = getBrainVersion(assets.brainMeta);
-    const brandVisualDna = buildBrandVisualDnaFromVisualReferenceAnalysis(
-      { ...layer, aggregated },
-      { brainVersion },
-    );
+    const brandWriteBlocked = !canWriteBrainScope("brand", assets);
+    const brandVisualDna = brandWriteBlocked
+      ? null
+      : buildBrandVisualDnaFromVisualReferenceAnalysis(
+          { ...layer, aggregated },
+          { brainVersion },
+        );
     if (diagnostics?.length) {
       for (const row of diagnostics) {
         row.candidatesCreated = candidatesCreated;
@@ -69,6 +73,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       visualReferenceAnalysis: { ...layer, aggregated },
       brandVisualDna: brandVisualDna ?? undefined,
+      brandWriteBlocked,
       candidates,
       provider: providerId,
       ...(debug && diagnostics?.length

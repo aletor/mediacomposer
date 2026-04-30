@@ -24,6 +24,7 @@ export function normalizeBrainMeta(raw: unknown): BrainMeta {
     lastBrandVisualDnaAnalysisAt: typeof r.lastBrandVisualDnaAnalysisAt === "string" ? r.lastBrandVisualDnaAnalysisAt : undefined,
     lastRuntimeContextBuildAt: typeof r.lastRuntimeContextBuildAt === "string" ? r.lastRuntimeContextBuildAt : undefined,
     lastResetAt: typeof r.lastResetAt === "string" ? r.lastResetAt : undefined,
+    brandLocked: r.brandLocked === true,
     analysisStatus,
     staleReasons,
   };

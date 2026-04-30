@@ -247,6 +247,8 @@ export const ProjectBrainNode = memo(({ id, data, selected }: NodeProps<any>) =>
     () => listDownstreamBrainClients(ctx?.flowNodes ?? undefined, ctx?.flowEdges ?? undefined),
     [ctx?.flowNodes, ctx?.flowEdges],
   );
+  const brainClientIds = useMemo(() => brainClients.map((c) => c.id).filter(Boolean), [brainClients]);
+  const brainClientIdsKey = useMemo(() => brainClientIds.join("|"), [brainClientIds]);
 
   const totalActives = assets.knowledge.documents.length + assets.knowledge.urls.length;
 
@@ -259,11 +261,13 @@ export const ProjectBrainNode = memo(({ id, data, selected }: NodeProps<any>) =>
 
   useEffect(() => {
     if (!projectId?.trim()) {
-      setPendingRows([]);
-      setTelemetryByNodeId({});
-      return;
+      const t = window.setTimeout(() => {
+        setPendingRows([]);
+        setTelemetryByNodeId({});
+      }, 0);
+      return () => window.clearTimeout(t);
     }
-    const clientIds = brainClients.map((c) => c.id).filter(Boolean);
+    const clientIds = brainClientIdsKey ? brainClientIdsKey.split("|").filter(Boolean) : [];
     let cancelled = false;
     (async () => {
       try {
@@ -291,7 +295,7 @@ export const ProjectBrainNode = memo(({ id, data, selected }: NodeProps<any>) =>
     return () => {
       cancelled = true;
     };
-  }, [projectId, ctx?.assetsMetadata, brainClients]);
+  }, [projectId, brainClientIdsKey]);
 
   const pendingByNodeId = useMemo(() => buildPendingCountByNodeId(pendingRows), [pendingRows]);
 
@@ -347,7 +351,8 @@ export const ProjectBrainNode = memo(({ id, data, selected }: NodeProps<any>) =>
   const expanded = Boolean(selected);
 
   useEffect(() => {
-    setShowAllBrainClients(false);
+    const t = window.setTimeout(() => setShowAllBrainClients(false), 0);
+    return () => window.clearTimeout(t);
   }, [expanded]);
 
   const brainClientsVisibleCap = expanded ? (showAllBrainClients ? brainClients.length : 5) : 2;
