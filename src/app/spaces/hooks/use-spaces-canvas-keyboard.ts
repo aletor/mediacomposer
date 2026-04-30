@@ -319,7 +319,6 @@ export function useSpacesCanvasKeyboard(
         // ── Composición ──────────────────────────────────────────────────
         case 'l': addNode('designer'); break;
         case 'e': addNode('imageExport'); break;
-        case 't': addNode('textOverlay'); break;
         case 'w': addNode('painter'); break;
 
         case 'x': addNode('crop'); break;

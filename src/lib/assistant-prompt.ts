@@ -92,7 +92,7 @@ ${dataDigest}
 - Vídeo IA (Video Generator: Veo 3.1 o Seedance 2) → geminiVideo: prompts via promptInput; optional firstFrame/lastFrame from images (handles firstFrame, lastFrame); data.videoModel veo31 | seedance2.
 - Vídeo Grok Imagine → grokProcessor: connect prompt (required), optional video input for video-to-video (handle "video").
 - Describir imagen → mediaDescriber (image in).
-- Pintar / dibujar → painter; recortar encuadre → crop; texto como imagen → textOverlay.
+- Pintar / dibujar → painter; recortar encuadre → crop.
 - Subgrafos / modular → space, spaceInput, spaceOutput as needed.
 - "Nuevo espacio" / nested subgraph / crear un espacio (subgrafo) → one node: type "space", data: { "label": "Space", "hasInput": true, "hasOutput": true } (unless clarify is truly needed).
 - **Marco de grupo en el lienzo / agrupar nodos / “carpeta visual”** → \`canvasGroup\` es solo organización en el **mismo** canvas; lo normal es **UI** (seleccionar 2+ nodos → **G**). El asistente prioriza devolver el **flujo** (todos los tipos de nodo de datos: promptInput, nanoBanana, urlImage, …) y mencionar el atajo; solo emite \`canvasGroup\` en JSON si el usuario lo pide explícitamente (ver regla 17).

@@ -1,7 +1,7 @@
 import type { Edge, Node } from "@xyflow/react";
 import { NODE_REGISTRY } from "./nodeRegistry";
 
-const LEGACY_REMOVED_CANVAS_NODE_TYPES = new Set(["background", "imageComposer", "bezierMask"]);
+const LEGACY_REMOVED_CANVAS_NODE_TYPES = new Set(["background", "imageComposer", "bezierMask", "textOverlay"]);
 
 function parseStylePx(v: unknown): number | undefined {
   if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;

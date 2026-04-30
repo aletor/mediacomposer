@@ -29,7 +29,6 @@ export const NODE_KEYS: Record<string, string> = {
   spaceOutput: 'o',
   imageExport: 'e',
   painter: 'w',
-  textOverlay: 't',
   crop: 'x',
   designer: 'f',
   presenter: ';',

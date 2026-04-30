@@ -121,7 +121,6 @@ const TOOL_ITEMS: Array<{ type: string; label: string }> = [
   { type: 'spaceOutput', label: 'Exit' },
   { type: 'imageExport', label: 'Export' },
   { type: 'painter', label: 'Painter' },
-  { type: 'textOverlay', label: 'Text' },
   { type: 'crop', label: 'Crop' },
 ];
 
@@ -311,11 +310,11 @@ const Sidebar = ({
         className={
           sidebarLockedCollapsed
             ? 'absolute left-0 top-0 h-full w-0 overflow-hidden transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]'
-            : 'absolute left-0 top-0 h-full w-0 overflow-hidden group-hover/sidebar:w-[166px] transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]'
+            : 'absolute left-0 top-0 h-full w-0 overflow-hidden group-hover/sidebar:w-[178px] transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]'
         }
         style={{ willChange: 'width' }}
       >
-        <div className="h-full w-[166px] bg-transparent border-r border-white/8 flex flex-col min-h-0">
+        <div className="h-full w-[178px] bg-transparent border-r border-white/8 flex flex-col min-h-0">
           <div className="px-0 mb-2 pt-2 flex-1 min-h-0 overflow-y-auto custom-scrollbar">
             <div className="text-[10px] font-black text-white/60 uppercase tracking-[3px] mb-5 flex items-center gap-2 px-1">
               <NodeIconMono iconKey="layout" size={13} className="shrink-0 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" /> <span>Node Library</span>

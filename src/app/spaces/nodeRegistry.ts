@@ -327,25 +327,6 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
       cropConfig: '{ x: number, y: number, w: number, h: number } (Percentages 0-100)'
     }
   },
-  textOverlay: {
-    type: 'textOverlay',
-    label: 'Text Overlay',
-    description: 'Renders styled text (font, size, color, weight, align) onto a transparent canvas and outputs it as a PNG image for use in compositions.',
-    inputs: [],
-    outputs: [
-      { id: 'image', label: 'Text Image', type: 'image' }
-    ],
-    dataSchema: {
-      text: 'string',
-      fontFamily: 'string (CSS font-family)',
-      fontSize: 'number (px)',
-      color: 'string (hex color)',
-      fontWeight: '300 | 400 | 700 | 900',
-      textAlign: 'left | center | right',
-      canvasW: 'number',
-      canvasH: 'number',
-    }
-  },
   projectBrain: {
     type: 'projectBrain',
     label: 'Brain',
@@ -446,7 +427,6 @@ export const ASSISTANT_NODE_DATA_HINTS: Record<string, string> = {
   spaceOutput: "label",
   painter: "bgColor, strokeColor, brushSize, value",
   crop: "aspectRatio, cropConfig, value",
-  textOverlay: "text, fontFamily, fontSize, color, fontWeight, textAlign, canvasW, canvasH",
   backgroundRemover: "threshold, expansion, feather",
   projectBrain:
     "label (título opcional); salida prompt reservada (sin texto aún); marca y conocimiento en metadata.assets — resume y abre studio",

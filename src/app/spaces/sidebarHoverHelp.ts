@@ -68,10 +68,6 @@ export const SIDEBAR_HOVER_HELP: Record<string, { title: string; line: string }>
     title: 'Background Remover',
     line: 'Elimina fondo de la imagen',
   },
-  textOverlay: {
-    title: 'Text Overlay',
-    line: 'Convierte texto en imagen',
-  },
   mediaDescriber: {
     title: 'Vision / Media Describer',
     line: 'Describe imagen como prompt',
