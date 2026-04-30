@@ -90,6 +90,8 @@ import {
 } from "lucide-react";
 import { ScrubNumberInput } from "./ScrubNumberInput";
 import { FreehandExportModal, type ProfessionalExportOptions } from "./freehand/FreehandExportModal";
+import type { FoldderExportCreatedDetail } from "./foldder-export-events";
+import { StandardStudioShellHeader, type StandardStudioShellConfig } from "./StandardStudioShell";
 
 /** Campos numéricos arrastrables del panel Propiedades: un solo estilo y comportamiento (ver `ScrubNumberInput`). */
 const PROP_PANEL_SCRUB_CLASS =
@@ -843,6 +845,10 @@ export interface FreehandStudioProps extends DesignerEmbedProps {
   initialLayoutGuides?: LayoutGuide[];
   onClose: () => void;
   onExport: (dataUrl: string) => void;
+  /** Export final descargado por el usuario; Foldder lo registra en Exports. */
+  onFinalExport?: (detail: Omit<FoldderExportCreatedDetail, "sourceNodeId">) => void;
+  /** Cabecera de app de Vista estándar. En Vista Pro queda ausente. */
+  standardShell?: StandardStudioShellConfig;
   onUpdateObjects: (objects: FreehandObject[]) => void;
   onUpdateLayoutGuides?: (guides: LayoutGuide[]) => void;
   /** Título/subtítulo de la cabecera (por defecto Designer). PhotoRoom u otros embeds pueden personalizar. */
@@ -7602,6 +7608,32 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+function safeExportFilenameBase(raw: string | undefined, fallback = "export"): string {
+  const base = (raw || fallback)
+    .trim()
+    .replace(/\.(design|photoroom|presenter|painter|freehand|png|svg|jpg|jpeg|pdf|zip)$/i, "")
+    .replace(/[^a-z0-9-_]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+  return base || fallback;
+}
+
+function mimeForExportExtension(extension: string): string {
+  switch (extension.toLowerCase()) {
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "svg":
+      return "image/svg+xml";
+    case "pdf":
+      return "application/pdf";
+    default:
+      return "application/octet-stream";
+  }
+}
+
 function svgStringToCanvas(svgStr: string, w: number, h: number, bgColor?: string): Promise<HTMLCanvasElement> {
   return new Promise((resolve, reject) => {
     const blob = new Blob([svgStr], { type: "image/svg+xml" });
@@ -8522,6 +8554,8 @@ export function FreehandStudioCanvas({
   initialLayoutGuides,
   onClose,
   onExport,
+  onFinalExport,
+  standardShell,
   onUpdateObjects,
   onUpdateLayoutGuides,
   studioHeaderTitle = "Designer",
@@ -14536,6 +14570,15 @@ export function FreehandStudioCanvas({
 
   // ── Export ────────────────────────────────────────────────────────
 
+  const exportFilenameBase = useMemo(
+    () =>
+      safeExportFilenameBase(
+        standardShell?.fileName,
+        photoRoomStudioEmbed ? "photoroom" : designerMode ? "designer" : "freehand",
+      ),
+    [designerMode, photoRoomStudioEmbed, standardShell?.fileName],
+  );
+
   const doExportSvg = useCallback(() => {
     const svg = svgRef.current;
     if (!svg) return;
@@ -14548,8 +14591,16 @@ export function FreehandStudioCanvas({
       scale: 1,
       background: bg,
     });
-    downloadBlob(new Blob([str], { type: "image/svg+xml;charset=utf-8" }), "freehand.svg");
-  }, [objects, artboards]);
+    const name = `${exportFilenameBase}.svg`;
+    downloadBlob(new Blob([str], { type: "image/svg+xml;charset=utf-8" }), name);
+    onFinalExport?.({
+      name,
+      extension: ".svg",
+      mimeType: "image/svg+xml",
+      exportedFrom: photoRoomStudioEmbed ? "photoroom" : designerMode ? "designer" : "freehand",
+      exportFormat: "svg",
+    });
+  }, [objects, artboards, exportFilenameBase, onFinalExport, photoRoomStudioEmbed, designerMode]);
 
   const doExportPng = useCallback(async () => {
     const svg = svgRef.current;
@@ -14565,8 +14616,19 @@ export function FreehandStudioCanvas({
     });
     const str = substituteNativeTextForRasterExport(strRaw, objects);
     const canvas = await svgStringToCanvasSafe(str, bounds.w, bounds.h);
-    canvas.toBlob((blob) => { if (blob) downloadBlob(blob, "freehand.png"); }, "image/png");
-  }, [objects, artboards]);
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const name = `${exportFilenameBase}.png`;
+      downloadBlob(blob, name);
+      onFinalExport?.({
+        name,
+        extension: ".png",
+        mimeType: "image/png",
+        exportedFrom: photoRoomStudioEmbed ? "photoroom" : designerMode ? "designer" : "freehand",
+        exportFormat: "png",
+      });
+    }, "image/png");
+  }, [objects, artboards, exportFilenameBase, onFinalExport, photoRoomStudioEmbed, designerMode]);
 
   const doExportJpg = useCallback(async () => {
     const svg = svgRef.current;
@@ -14583,8 +14645,19 @@ export function FreehandStudioCanvas({
     const str = substituteNativeTextForRasterExport(strRaw, objects);
     const jpgBg = bg === "transparent" ? "#ffffff" : bg;
     const canvas = await svgStringToCanvasSafe(str, bounds.w, bounds.h, jpgBg);
-    canvas.toBlob((blob) => { if (blob) downloadBlob(blob, "freehand.jpg"); }, "image/jpeg", 0.92);
-  }, [objects, artboards]);
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const name = `${exportFilenameBase}.jpg`;
+      downloadBlob(blob, name);
+      onFinalExport?.({
+        name,
+        extension: ".jpg",
+        mimeType: "image/jpeg",
+        exportedFrom: photoRoomStudioEmbed ? "photoroom" : designerMode ? "designer" : "freehand",
+        exportFormat: "jpg",
+      });
+    }, "image/jpeg", 0.92);
+  }, [objects, artboards, exportFilenameBase, onFinalExport, photoRoomStudioEmbed, designerMode]);
 
   const doExportNode = useCallback(async () => {
     const svg = svgRef.current;
@@ -14670,12 +14743,22 @@ export function FreehandStudioCanvas({
     const h = Math.max(1, Math.round(b.h));
     const canvas = await svgStringToCanvasSafe(str, w, h);
     canvas.toBlob((blob) => {
-      if (blob) downloadBlob(blob, `export-${Date.now()}.png`);
+      if (!blob) return;
+      const name = `export-${Date.now()}.png`;
+      downloadBlob(blob, name);
+      onFinalExport?.({
+        name,
+        extension: ".png",
+        mimeType: "image/png",
+        exportedFrom: photoRoomStudioEmbed ? "photoroom" : designerMode ? "designer" : "freehand",
+        exportFormat: "png",
+        metadata: { exportScope: "selection", width: w, height: h },
+      });
     }, "image/png");
     triggerExportFlash(b);
     setToast("Exported PNG (1×)");
     window.setTimeout(() => setToast(null), 2600);
-  }, [triggerExportFlash]);
+  }, [triggerExportFlash, onFinalExport, photoRoomStudioEmbed, designerMode]);
 
   /** Rasteriza y sustituye por una única capa imagen (misma tubería que export PNG). */
   const performCombineLayers = useCallback(
@@ -14931,6 +15014,19 @@ export function FreehandStudioCanvas({
         } else {
           await rasterize(str, pw, ph, name);
         }
+        onFinalExport?.({
+          name,
+          extension: `.${ext}`,
+          mimeType: mimeForExportExtension(ext),
+          exportedFrom: photoRoomStudioEmbed ? "photoroom" : designerMode ? "designer" : "freehand",
+          exportFormat: ext,
+          metadata: {
+            exportScope: scope,
+            width: pw,
+            height: ph,
+            scale: opts.scale,
+          },
+        });
         triggerExportFlash(b);
       };
 
@@ -14993,12 +15089,29 @@ export function FreehandStudioCanvas({
           if (entries.length === 0) return;
           if (entries.length === 1) {
             downloadBlob(entries[0].blob, entries[0].fname);
+            onFinalExport?.({
+              name: entries[0].fname,
+              extension: `.${ext}`,
+              mimeType: mimeForExportExtension(ext),
+              exportedFrom: photoRoomStudioEmbed ? "photoroom" : designerMode ? "designer" : "freehand",
+              exportFormat: ext,
+              metadata: { exportScope: "artboard", artboardCount: 1, scale: opts.scale },
+            });
           } else {
             const zip = new JSZip();
             for (const e of entries) zip.file(e.fname, e.blob);
             const zb = await zip.generateAsync({ type: "blob" });
             const zipBase = opts.filename.replace(/\.[^.]+$/i, "").replace(/[^a-z0-9-_]+/gi, "_") || "export";
-            downloadBlob(zb, `${zipBase}-artboards.zip`);
+            const zipName = `${zipBase}-artboards.zip`;
+            downloadBlob(zb, zipName);
+            onFinalExport?.({
+              name: zipName,
+              extension: ".zip",
+              mimeType: "application/zip",
+              exportedFrom: photoRoomStudioEmbed ? "photoroom" : designerMode ? "designer" : "freehand",
+              exportFormat: "zip",
+              metadata: { exportScope: "artboard_batch", artboardCount: entries.length, scale: opts.scale },
+            });
           }
           setToast(`Exported ${entries.length} artboard(s)`);
           window.setTimeout(() => setToast(null), 2800);
@@ -15048,7 +15161,7 @@ export function FreehandStudioCanvas({
         window.setTimeout(() => setToast(null), 3000);
       }
     },
-    [exportModalScope, triggerExportFlash],
+    [exportModalScope, triggerExportFlash, onFinalExport, photoRoomStudioEmbed, designerMode],
   );
 
   // ── Keyboard ──────────────────────────────────────────────────────
@@ -20019,6 +20132,7 @@ export function FreehandStudioCanvas({
       onDragOver={handleDragOver}
       onDragEnter={handleDragEnter}
     >
+      {standardShell ? <StandardStudioShellHeader shell={standardShell} /> : null}
 
       <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => {
         const f = e.target.files?.[0];
@@ -26516,7 +26630,7 @@ export function FreehandStudioCanvas({
           defaultFilename={
             exportModalScope === "selection" && firstSelected
               ? `${firstSelected.name || "selection"}`
-              : "page"
+              : exportFilenameBase
           }
           selectionLabel={
             exportModalScope === "full"

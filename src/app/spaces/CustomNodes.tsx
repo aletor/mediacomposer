@@ -5,7 +5,7 @@
 import React, { memo, useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef, type ComponentProps } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { Position, NodeProps, BaseEdge, EdgeLabelRenderer, getBezierPath, EdgeProps, useReactFlow, useUpdateNodeInternals, useNodes, useEdges, NodeResizer, useNodeId, type Node } from '@xyflow/react';
-import { 
+import {
   Video, 
   Type, 
   Play, 
@@ -65,6 +65,11 @@ import {
   Cpu,
   Pin,
 } from 'lucide-react';
+import { StandardStudioShellHeader, type StandardStudioShellConfig } from './StandardStudioShell';
+import {
+  FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT,
+  type FoldderStudioEventDetail,
+} from './desktop-studio-events';
 
 
 /** Snapshot current output into _assetVersions for version history. */
@@ -102,6 +107,7 @@ import { fetchBlobViaSpacesProxy } from '@/lib/spaces-proxy-fetch';
 import { usePreventBrowserPinchZoom } from '@/lib/use-prevent-browser-pinch-zoom';
 import { NODE_REGISTRY } from './nodeRegistry';
 import { useRegisterAssistantNodeRun } from './use-assistant-node-run';
+import { dispatchFoldderExportCreated } from './foldder-export-events';
 import { useProjectBrainCanvas } from "./project-brain-canvas-context";
 import { normalizeProjectAssets } from "./project-assets-metadata";
 import {
@@ -822,6 +828,20 @@ export const ImageExportNode = memo(function ImageExportNode({ id, data, selecte
 
     // SYNCHRONOUS form submit → browser handles Content-Disposition: attachment natively
     formRef.current.submit();
+    dispatchFoldderExportCreated({
+      name: filename,
+      extension: `.${extension}`,
+      sourceNodeId: sourceNode.id,
+      thumbnailUrl: directImageSrc ?? undefined,
+      mimeType: format === "jpeg" ? "image/jpeg" : "image/png",
+      exportedFrom: "imageExport",
+      exportFormat: extension,
+      metadata: {
+        exportNodeId: id,
+        width: exportW,
+        height: exportH,
+      },
+    });
 
     setIsExporting(true);
     window.setTimeout(() => setIsExporting(false), 500);
@@ -837,7 +857,7 @@ export const ImageExportNode = memo(function ImageExportNode({ id, data, selecte
       style={{ minWidth: 240, maxHeight: 600 }}
     >
       <FoldderNodeResizer minWidth={240} minHeight={180} maxWidth={960} maxHeight={600} isVisible={selected} />
-      <NodeLabel id={id} label={data.label} defaultLabel="Export" />
+      <NodeLabel id={id} label={typeof data.label === "string" ? data.label : undefined} defaultLabel="Export" />
 
       {/* Hidden iframe — receives the form POST response (Content-Disposition: attachment) */}
       <iframe
@@ -2306,6 +2326,7 @@ interface NanoBananaStudioProps {
   /** Historial de generaciones previas (estado en el nodo para no perderlo al cerrar Studio). */
   generationHistory: string[];
   onGenerationHistoryChange: React.Dispatch<React.SetStateAction<string[]>>;
+  standardShell?: StandardStudioShellConfig;
 }
 
 // NanaBananaPaintCanvas: draws ONLY over the actual image pixels.
@@ -2442,6 +2463,7 @@ const NanoBananaStudio = memo(({
   onBrainImageGeneratorDiagnostics,
   topBarCloseMode = 'default', onClose, onGenerated, onResolutionChange,
   generationHistory, onGenerationHistoryChange,
+  standardShell,
 }: NanoBananaStudioProps) => {
   // ── Generation state ────────────────────────────────────────────────────
   const [genStatus, setGenStatus] = useState<'idle'|'running'|'success'|'error'>('idle');
@@ -3270,6 +3292,7 @@ const NanoBananaStudio = memo(({
       className="nb-studio-root fixed inset-0 flex flex-col"
       data-foldder-studio-canvas=""
     >
+      {standardShell ? <StandardStudioShellHeader shell={standardShell} /> : null}
 
       {/* ══ TOP BAR: Header + Model + Resolution + Usar generada ══════════════ */}
       <div
@@ -4009,6 +4032,7 @@ export const NanoBananaNode = memo(function NanoBananaNode({ id, data, selected 
   const [result, setResult] = useState<string | null>(null);
   const [showFullSize, setShowFullSize] = useState(false);
   const [showStudio, setShowStudio] = useState(false);
+  const [standardShell, setStandardShell] = useState<StandardStudioShellConfig | null>(null);
   const currentNode = nodes.find((node) => node.id === id);
   const currentFrameNode = useCurrentNodeFrameSnapshot(currentNode);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -4088,6 +4112,7 @@ export const NanoBananaNode = memo(function NanoBananaNode({ id, data, selected 
   const openNanoStudioNormal = useCallback(() => {
     photoRoomReturnTargetRef.current = null;
     setNanoStudioTopBarCloseMode('default');
+    setStandardShell(null);
     setShowStudio(true);
   }, []);
 
@@ -4095,6 +4120,7 @@ export const NanoBananaNode = memo(function NanoBananaNode({ id, data, selected 
     const prFlowId = photoRoomReturnTargetRef.current;
     photoRoomReturnTargetRef.current = null;
     setNanoStudioTopBarCloseMode('default');
+    setStandardShell(null);
     setShowStudio(false);
 
     const graphNodes = getNodes() as Node[];
@@ -4137,6 +4163,7 @@ export const NanoBananaNode = memo(function NanoBananaNode({ id, data, selected 
       if (e.detail?.nanoNodeId !== id) return;
       photoRoomReturnTargetRef.current = e.detail.photoRoomNodeId;
       setNanoStudioTopBarCloseMode('returnPhotoRoom');
+      setStandardShell(null);
       setShowStudio(true);
     };
     window.addEventListener('foldder-open-nano-studio-from-photo-room', onOpenFromPhotoRoom as EventListener);
@@ -4144,12 +4171,39 @@ export const NanoBananaNode = memo(function NanoBananaNode({ id, data, selected 
       window.removeEventListener('foldder-open-nano-studio-from-photo-room', onOpenFromPhotoRoom as EventListener);
   }, [id]);
 
+  useEffect(() => {
+    const onOpenStudio = (ev: Event) => {
+      const detail = (ev as CustomEvent<FoldderStudioEventDetail>).detail;
+      if (detail?.nodeId !== id) return;
+      photoRoomReturnTargetRef.current = null;
+      setNanoStudioTopBarCloseMode('default');
+      setStandardShell(detail.standardShell ? { ...detail.standardShell, nodeId: id, nodeType: 'nanoBanana', fileId: detail.fileId, appId: detail.appId } : null);
+      setShowStudio(true);
+    };
+    const onCloseStudio = (ev: Event) => {
+      const detail = (ev as CustomEvent<FoldderStudioEventDetail>).detail;
+      if (detail?.nodeId !== id) return;
+      closeNanoStudio();
+    };
+    window.addEventListener('foldder:open-studio', onOpenStudio as EventListener);
+    window.addEventListener('foldder-open-node-studio', onOpenStudio as EventListener);
+    window.addEventListener('foldder:close-studio', onCloseStudio as EventListener);
+    window.addEventListener('foldder-close-node-studio', onCloseStudio as EventListener);
+    return () => {
+      window.removeEventListener('foldder:open-studio', onOpenStudio as EventListener);
+      window.removeEventListener('foldder-open-node-studio', onOpenStudio as EventListener);
+      window.removeEventListener('foldder:close-studio', onCloseStudio as EventListener);
+      window.removeEventListener('foldder-close-node-studio', onCloseStudio as EventListener);
+    };
+  }, [closeNanoStudio, id]);
+
   /** Creación reciente desde PhotoRoom: consume registro síncrono al montar (antes que `useEffect` del listener). */
   useLayoutEffect(() => {
     const pending = takePendingNanoStudioOpenFromPhotoRoom(id);
     if (!pending) return;
     photoRoomReturnTargetRef.current = pending.photoRoomNodeId;
     setNanoStudioTopBarCloseMode('returnPhotoRoom');
+    setStandardShell(null);
     setShowStudio(true);
   }, [id]);
 
@@ -4623,7 +4677,18 @@ export const NanoBananaNode = memo(function NanoBananaNode({ id, data, selected 
             topBarCloseMode={nanoStudioTopBarCloseMode}
             generationHistory={persistedGenerationHistory}
             onGenerationHistoryChange={onGenerationHistoryChange}
-            onClose={closeNanoStudio}
+            standardShell={standardShell ?? undefined}
+            onClose={() => {
+              const shell = standardShell;
+              closeNanoStudio();
+              if (shell && typeof window !== 'undefined') {
+                window.dispatchEvent(
+                  new CustomEvent(FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT, {
+                    detail: { nodeId: id, nodeType: 'nanoBanana', fileId: shell.fileId, appId: shell.appId },
+                  }),
+                );
+              }
+            }}
             onGenerated={(url, s3Key) => {
               const d = brainDiagRef.current;
               brainTelemetry.track({
@@ -5934,6 +5999,7 @@ interface GeminiVideoStudioProps {
   /** Imágenes resueltas desde los handles del grafo (firstFrame / lastFrame). */
   connectedFirstFrame: string | null;
   connectedLastFrame: string | null;
+  standardShell?: StandardStudioShellConfig;
 }
 
 function VideoStudioFrameSlot({
@@ -5985,6 +6051,7 @@ const GeminiVideoStudio = memo(function GeminiVideoStudio({
   historyUrls,
   connectedFirstFrame,
   connectedLastFrame,
+  standardShell,
 }: GeminiVideoStudioProps) {
   useEffect(() => {
     document.body.classList.add('nb-studio-open');
@@ -6115,6 +6182,7 @@ const GeminiVideoStudio = memo(function GeminiVideoStudio({
       data-foldder-studio-canvas=""
       data-gv-video-studio=""
     >
+      {standardShell ? <StandardStudioShellHeader shell={standardShell} /> : null}
       <div className="nb-studio-topbar flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.07] bg-[#08080c] px-2 py-1.5">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1">
           <div className="flex shrink-0 items-center gap-2 border-r border-white/10 pr-2">
@@ -6933,6 +7001,7 @@ export const GeminiVideoNode = memo(function GeminiVideoNode({ id, data, selecte
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<string | null>(nodeData.value || null);
   const [showStudio, setShowStudio] = useState(false);
+  const [standardShell, setStandardShell] = useState<StandardStudioShellConfig | null>(null);
   const currentNode = nodes.find((node) => node.id === id);
   const currentFrameNode = useCurrentNodeFrameSnapshot(currentNode);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -6944,6 +7013,7 @@ export const GeminiVideoNode = memo(function GeminiVideoNode({ id, data, selecte
   useEffect(() => {
     if (!openVideoStudioFromPresenter) return;
     const timer = window.setTimeout(() => {
+      setStandardShell(null);
       setShowStudio(true);
       setNodes((nds) =>
         nds.map((n) =>
@@ -6953,6 +7023,31 @@ export const GeminiVideoNode = memo(function GeminiVideoNode({ id, data, selecte
     }, 140);
     return () => window.clearTimeout(timer);
   }, [id, openVideoStudioFromPresenter, setNodes]);
+
+  useEffect(() => {
+    const onOpenStudio = (ev: Event) => {
+      const detail = (ev as CustomEvent<FoldderStudioEventDetail>).detail;
+      if (detail?.nodeId !== id) return;
+      setStandardShell(detail.standardShell ? { ...detail.standardShell, nodeId: id, nodeType: 'geminiVideo', fileId: detail.fileId, appId: detail.appId } : null);
+      setShowStudio(true);
+    };
+    const onCloseStudio = (ev: Event) => {
+      const detail = (ev as CustomEvent<FoldderStudioEventDetail>).detail;
+      if (detail?.nodeId !== id) return;
+      setStandardShell(null);
+      setShowStudio(false);
+    };
+    window.addEventListener('foldder:open-studio', onOpenStudio as EventListener);
+    window.addEventListener('foldder-open-node-studio', onOpenStudio as EventListener);
+    window.addEventListener('foldder:close-studio', onCloseStudio as EventListener);
+    window.addEventListener('foldder-close-node-studio', onCloseStudio as EventListener);
+    return () => {
+      window.removeEventListener('foldder:open-studio', onOpenStudio as EventListener);
+      window.removeEventListener('foldder-open-node-studio', onOpenStudio as EventListener);
+      window.removeEventListener('foldder:close-studio', onCloseStudio as EventListener);
+      window.removeEventListener('foldder-close-node-studio', onCloseStudio as EventListener);
+    };
+  }, [id]);
 
   const useSeedance = nodeData.videoModel === 'seedance2';
   const modelKey = useSeedance ? 'seedance2' : 'veo31';
@@ -7330,7 +7425,10 @@ export const GeminiVideoNode = memo(function GeminiVideoNode({ id, data, selecte
           </div>
         )}
 
-        <FoldderStudioModeCenterButton onClick={() => setShowStudio(true)} />
+        <FoldderStudioModeCenterButton onClick={() => {
+          setStandardShell(null);
+          setShowStudio(true);
+        }} />
 
         {isActivelyGenerating && (
           <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-[50]">
@@ -7370,7 +7468,19 @@ export const GeminiVideoNode = memo(function GeminiVideoNode({ id, data, selecte
 
       {showStudio && (
         <GeminiVideoStudio
-          onClose={() => setShowStudio(false)}
+          standardShell={standardShell ?? undefined}
+          onClose={() => {
+            const shell = standardShell;
+            setStandardShell(null);
+            setShowStudio(false);
+            if (shell && typeof window !== 'undefined') {
+              window.dispatchEvent(
+                new CustomEvent(FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT, {
+                  detail: { nodeId: id, nodeType: 'geminiVideo', fileId: shell.fileId, appId: shell.appId },
+                }),
+              );
+            }
+          }}
           updateData={updateData}
           onGenerate={onRun}
           status={status}
@@ -7454,12 +7564,38 @@ export const PainterNode = memo(function PainterNode({ id, data, selected }: Nod
   const [brushSize,  setBrushSize]  = useState(nodeData.brushSize || 10);
   const [mode,       setMode]       = useState<'brush'|'eraser'>('brush');
   const [fullscreen, setFullscreen] = useState(false);
+  const [standardShell, setStandardShell] = useState<StandardStudioShellConfig | null>(null);
 
   useEffect(() => {
     if (fullscreen) document.body.classList.add('nb-studio-open');
     else document.body.classList.remove('nb-studio-open');
     return () => document.body.classList.remove('nb-studio-open');
   }, [fullscreen]);
+
+  useEffect(() => {
+    const onOpenStudio = (ev: Event) => {
+      const detail = (ev as CustomEvent<FoldderStudioEventDetail>).detail;
+      if (detail?.nodeId !== id) return;
+      setStandardShell(detail.standardShell ? { ...detail.standardShell, nodeId: id, nodeType: 'painter', fileId: detail.fileId, appId: detail.appId } : null);
+      setFullscreen(true);
+    };
+    const onCloseStudio = (ev: Event) => {
+      const detail = (ev as CustomEvent<FoldderStudioEventDetail>).detail;
+      if (detail?.nodeId !== id) return;
+      setStandardShell(null);
+      setFullscreen(false);
+    };
+    window.addEventListener('foldder:open-studio', onOpenStudio as EventListener);
+    window.addEventListener('foldder-open-node-studio', onOpenStudio as EventListener);
+    window.addEventListener('foldder:close-studio', onCloseStudio as EventListener);
+    window.addEventListener('foldder-close-node-studio', onCloseStudio as EventListener);
+    return () => {
+      window.removeEventListener('foldder:open-studio', onOpenStudio as EventListener);
+      window.removeEventListener('foldder-open-node-studio', onOpenStudio as EventListener);
+      window.removeEventListener('foldder:close-studio', onCloseStudio as EventListener);
+      window.removeEventListener('foldder-close-node-studio', onCloseStudio as EventListener);
+    };
+  }, [id]);
 
   // Keep refs in sync with state
   useEffect(() => { modeRef.current = mode; }, [mode]);
@@ -7504,7 +7640,7 @@ export const PainterNode = memo(function PainterNode({ id, data, selected }: Nod
       };
       img.src = url;
     };
-    if (data.value) {
+    if (typeof data.value === 'string' && data.value) {
       paintFromUrl(data.value);
     } else if (baseImageUrl) {
       paintFromUrl(baseImageUrl);
@@ -7693,12 +7829,26 @@ export const PainterNode = memo(function PainterNode({ id, data, selected }: Nod
             className={`w-5 h-5 rounded border-2 transition-all ${bgColor === 'black' ? 'border-white' : 'border-zinc-600 opacity-50'}`}
             style={{ background: '#111111' }} />
           {showFSButton && (
-            <button onClick={() => setFullscreen(true)} className="p-1.5 rounded-lg border border-white/10 bg-white/[0.03] text-zinc-500 hover:text-white transition-colors">
+            <button onClick={() => {
+              setStandardShell(null);
+              setFullscreen(true);
+            }} className="p-1.5 rounded-lg border border-white/10 bg-white/[0.03] text-zinc-500 hover:text-white transition-colors">
               <Maximize2 size={11} />
             </button>
           )}
           {!showFSButton && (
-            <button onClick={() => setFullscreen(false)} className="p-1.5 rounded-lg border border-white/10 bg-white/[0.03] text-zinc-400 hover:text-white transition-colors" title="Close fullscreen">
+            <button onClick={() => {
+              const shell = standardShell;
+              setStandardShell(null);
+              setFullscreen(false);
+              if (shell && typeof window !== 'undefined') {
+                window.dispatchEvent(
+                  new CustomEvent(FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT, {
+                    detail: { nodeId: id, nodeType: 'painter', fileId: shell.fileId, appId: shell.appId },
+                  }),
+                );
+              }
+            }} className="p-1.5 rounded-lg border border-white/10 bg-white/[0.03] text-zinc-400 hover:text-white transition-colors" title="Close fullscreen">
               <X size={11} />
             </button>
           )}
@@ -7735,7 +7885,7 @@ export const PainterNode = memo(function PainterNode({ id, data, selected }: Nod
 
           {/* Preview area */}
           <div className="relative w-full bg-[#0a0a0a]" style={{ height: 180 }}>
-            {data.value ? (
+            {typeof data.value === 'string' && data.value ? (
               <img src={data.value} className="w-full h-full object-contain" alt="Drawing preview" />
             ) : (
               <div className="flex flex-col items-center justify-center h-full gap-2 opacity-30">
@@ -7746,7 +7896,10 @@ export const PainterNode = memo(function PainterNode({ id, data, selected }: Nod
 
             {/* Fullscreen button — center on hover, always accessible */}
             <button
-              onClick={() => setFullscreen(true)}
+              onClick={() => {
+                setStandardShell(null);
+                setFullscreen(true);
+              }}
               className="absolute inset-0 flex items-center justify-center bg-black/0 hover:bg-black/40 transition-all group"
             >
               <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-2 bg-amber-500 text-black px-4 py-2 rounded-xl font-black text-[9px] uppercase tracking-widest shadow-lg">
@@ -7761,7 +7914,10 @@ export const PainterNode = memo(function PainterNode({ id, data, selected }: Nod
             <span className={`px-1.5 py-0.5 rounded text-[6px] font-black border bg-amber-500/20 text-amber-400 border-amber-500/30`}>
               {ratio.label}
             </span>
-            <button onClick={() => setFullscreen(true)}
+            <button onClick={() => {
+              setStandardShell(null);
+              setFullscreen(true);
+            }}
               className="p-1.5 rounded-lg border border-amber-500/20 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors">
               <Maximize2 size={11} />
             </button>
@@ -7781,10 +7937,22 @@ export const PainterNode = memo(function PainterNode({ id, data, selected }: Nod
           style={{ zIndex: 99999 }}
           data-foldder-studio-canvas=""
         >
+          {standardShell ? <StandardStudioShellHeader shell={standardShell} /> : null}
           <div className="flex items-center gap-3 px-4 py-2.5 bg-[#1a1a1a] border-b border-white/10">
             <Paintbrush size={14} className="text-amber-400" />
             <span className="text-[10px] font-black text-amber-300 uppercase tracking-widest">Painter — Fullscreen · {ratio.label}</span>
-            <button onClick={() => setFullscreen(false)} className="ml-auto text-zinc-400 hover:text-white transition-colors">
+            <button onClick={() => {
+              const shell = standardShell;
+              setStandardShell(null);
+              setFullscreen(false);
+              if (shell && typeof window !== 'undefined') {
+                window.dispatchEvent(
+                  new CustomEvent(FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT, {
+                    detail: { nodeId: id, nodeType: 'painter', fileId: shell.fileId, appId: shell.appId },
+                  }),
+                );
+              }
+            }} className="ml-auto text-zinc-400 hover:text-white transition-colors">
               <X size={20} />
             </button>
           </div>

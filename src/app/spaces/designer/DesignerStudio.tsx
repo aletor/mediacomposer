@@ -54,6 +54,8 @@ import { useDesignerImagePipeline } from "./useDesignerImagePipeline";
 import { useDesignerTextFrameLayoutSync } from "./useDesignerTextFrameLayoutSync";
 import { useBrainNodeTelemetry } from "@/lib/brain/use-brain-node-telemetry";
 import type { DesignerEmbedProps } from "../freehand/designer-embed-props";
+import type { FoldderExportCreatedDetail } from "../foldder-export-events";
+import type { StandardStudioShellConfig } from "../StandardStudioShell";
 import { countDesignerImagesInPages } from "./designer-export-image-summary";
 import {
   logDesignerExportImagesSummary,
@@ -66,6 +68,8 @@ interface DesignerStudioProps {
   activePageIndex: number;
   onClose: () => void;
   onExport: (dataUrl: string) => void;
+  onFinalExport?: (detail: Omit<FoldderExportCreatedDetail, "sourceNodeId">) => void;
+  standardShell?: StandardStudioShellConfig;
   onUpdatePages: (pages: DesignerPageState[], activeIdx?: number) => void;
   /** Id estable del nodo en el canvas (React Flow); el lienzo no se remonta al cambiar de página. */
   designerCanvasInstanceKey: string;
@@ -75,11 +79,23 @@ interface DesignerStudioProps {
   brainConnected?: boolean;
 }
 
+function safeDesignerExportFilenameBase(raw: string | undefined): string {
+  const base = (raw || "diseno")
+    .trim()
+    .replace(/\.(design|pdf|png|jpg|jpeg|svg)$/i, "")
+    .replace(/[^a-z0-9-_]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+  return base || "diseno";
+}
+
 export default function DesignerStudio({
   initialPages,
   activePageIndex: initialActiveIdx,
   onClose,
   onExport,
+  onFinalExport,
+  standardShell,
   onUpdatePages,
   designerCanvasInstanceKey,
   autoImageOptimization = true,
@@ -1223,8 +1239,17 @@ export default function DesignerStudio({
         alert("No se pudo preparar ninguna página para el PDF (el lienzo no estaba listo). Cierra el diálogo de exportación e inténtalo de nuevo.");
         return;
       }
-      await downloadMultiPageVectorPdf(markups, `diseno-${Date.now()}.pdf`, {
+      const pdfName = `${safeDesignerExportFilenameBase(standardShell?.fileName)}.pdf`;
+      await downloadMultiPageVectorPdf(markups, pdfName, {
         optimizeImages: pdfOpts.optimizeImages === true,
+      });
+      onFinalExport?.({
+        name: pdfName,
+        extension: ".pdf",
+        mimeType: "application/pdf",
+        exportedFrom: "designer",
+        exportFormat: "pdf",
+        metadata: { pageCount, exportFormat: "vector_pdf" },
       });
       const imgSnap = countDesignerImagesInPages(pagesRef.current);
       logDesignerExportImagesSummary({
@@ -1256,7 +1281,7 @@ export default function DesignerStudio({
       multiPdfExportingRef.current = false;
       setMultiPdfBusy(false);
     }
-  }, []);
+  }, [onFinalExport, standardShell?.fileName]);
 
   /** Miniatura del nodo en el grafo: siempre la 1.ª página (con imágenes vía raster SVG). */
   const captureFirstPageThumbnail = useCallback(async () => {
@@ -1454,6 +1479,8 @@ export default function DesignerStudio({
         initialLayoutGuides={activePage?.layoutGuides}
         onClose={handleCloseWithFirstPagePreview}
         onExport={onExport}
+        onFinalExport={onFinalExport}
+        standardShell={standardShell}
         onUpdateObjects={handleUpdateObjects}
         onUpdateLayoutGuides={handleUpdateLayoutGuides}
         brainConnected={brainConnected}

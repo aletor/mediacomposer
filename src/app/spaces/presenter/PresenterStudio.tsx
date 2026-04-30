@@ -53,6 +53,7 @@ import type { PresenterImageVideoCanvasBinding, PresenterImageVideoPlacement } f
 import { collectPresenterImageTargets } from "./presenter-image-video-collect";
 import { PresenterVideoPropertiesPanel } from "./PresenterVideoPropertiesPanel";
 import { findVideoPlacementForCanvasSelection } from "./presenter-video-selection";
+import { StandardStudioShellHeader, type StandardStudioShellConfig } from "../StandardStudioShell";
 
 /** Pausa entre pasos encadenados en la vista previa del panel (tras `PRESENTER_GROUP_ENTER_ANIM_MS`). */
 const PRESENTER_EDITOR_PREVIEW_GAP_MS = 72;
@@ -71,6 +72,7 @@ type Props = {
   /** Vídeos en imágenes (solo nodo Presenter). */
   imageVideoPlacements?: PresenterImageVideoPlacement[];
   onImageVideoPlacementsChange?: (next: PresenterImageVideoPlacement[]) => void;
+  standardShell?: StandardStudioShellConfig;
 };
 
 type PendingAnim = {
@@ -93,6 +95,7 @@ export function PresenterStudio({
   onPresenterPagePatch,
   imageVideoPlacements = [],
   onImageVideoPlacementsChange,
+  standardShell,
 }: Props) {
   const [shareOpen, setShareOpen] = useState(false);
   /** Panel lateral derecho: propiedades de vídeo · animaciones (iconos siempre visibles). */
@@ -678,6 +681,7 @@ export function PresenterStudio({
       aria-modal="true"
       aria-labelledby="presenter-studio-title"
     >
+      {standardShell ? <StandardStudioShellHeader shell={standardShell} /> : null}
       <header className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.08] bg-[#12151a]/95 px-4 py-3 backdrop-blur-md">
         <div className="flex min-w-0 items-center gap-2">
           <Presentation className="shrink-0 text-amber-400" size={20} strokeWidth={1.75} aria-hidden />

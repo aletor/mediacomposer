@@ -34,7 +34,9 @@ import { CanvasGroupNode } from "./CanvasGroupNode";
 
 export const spacesInitialNodes: Node[] = [];
 
-export const spacesNodeTypes: Record<string, ComponentType<unknown>> = {
+// React Flow accepts heterogeneous node components; each concrete node narrows NodeProps internally.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const spacesNodeTypes: Record<string, ComponentType<any>> = {
   mediaInput: MediaInputNode,
   promptInput: PromptNode,
   grokProcessor: GrokNode,

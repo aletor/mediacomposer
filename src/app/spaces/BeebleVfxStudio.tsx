@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import type { BeebleJob } from "@/lib/beeble-api";
 import { BeebleClient, estimateBeebleCredits, type BeebleAccountInfo } from "@/lib/beeble-api";
+import { StandardStudioShellHeader, type StandardStudioShellConfig } from "./StandardStudioShell";
 
 export type BeebleAlphaMode = "auto" | "fill" | "select" | "custom";
 
@@ -50,6 +51,7 @@ export type BeebleVfxStudioProps = {
   onRefreshJob?: (jobId: string) => void;
   historyJobs?: BeebleJob[];
   onLoadHistory?: () => void;
+  standardShell?: StandardStudioShellConfig;
 };
 
 function truncateUrl(s: string, max = 48) {
@@ -85,6 +87,7 @@ export const BeebleVfxStudio = memo(function BeebleVfxStudio(props: BeebleVfxStu
     onRefreshJob,
     historyJobs,
     onLoadHistory,
+    standardShell,
   } = props;
 
   const [labelDraft, setLabelDraft] = useState(nodeLabel);
@@ -161,6 +164,7 @@ export const BeebleVfxStudio = memo(function BeebleVfxStudio(props: BeebleVfxStu
       data-foldder-studio-canvas=""
       data-beeble-vfx-studio=""
     >
+      {standardShell ? <StandardStudioShellHeader shell={standardShell} /> : null}
       {/* Fondo sutil */}
       <div
         className="pointer-events-none absolute inset-0 opacity-[0.45]"

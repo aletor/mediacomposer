@@ -14,6 +14,12 @@ import { DesignerPagePreview } from "./DesignerPagePreview";
 import type { Story, TextFrame } from "../indesign/text-model";
 import type { ImageFrameRecord } from "../indesign/image-frame-model";
 import type { FreehandObject, LayoutGuide } from "../FreehandStudio";
+import {
+  dispatchFoldderExportCreated,
+  type FoldderExportCreatedDetail,
+} from "../foldder-export-events";
+import { FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT, type FoldderStudioEventDetail } from "../desktop-studio-events";
+import type { StandardStudioShellConfig } from "../StandardStudioShell";
 import type { PresenterGroupStep } from "../presenter/presenter-group-animations";
 
 const DESIGNER_NODE_MAX_WIDTH = 960;
@@ -91,6 +97,7 @@ export const DesignerNode = memo(({ id, data, selected }: NodeProps<any>) => {
 
   const firstPageDims = pages[0] ? getPageDimensions(pages[0]) : null;
   const currentNode = nodes.find((node) => node.id === id);
+  const [standardShell, setStandardShell] = useState<StandardStudioShellConfig | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const refreshHandleGeometry = useCallback(() => {
@@ -107,6 +114,31 @@ export const DesignerNode = memo(({ id, data, selected }: NodeProps<any>) => {
     else document.body.classList.remove("nb-studio-open");
     return () => document.body.classList.remove("nb-studio-open");
   }, [isStudioOpen]);
+
+  useEffect(() => {
+    const onOpenStudio = (ev: Event) => {
+      const detail = (ev as CustomEvent<FoldderStudioEventDetail>).detail;
+      if (detail?.nodeId !== id) return;
+      setStandardShell(detail.standardShell ? { ...detail.standardShell, nodeId: id, nodeType: "designer", fileId: detail.fileId, appId: detail.appId } : null);
+      setIsStudioOpen(true);
+    };
+    const onCloseStudio = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ nodeId?: string }>).detail;
+      if (detail?.nodeId !== id) return;
+      setStandardShell(null);
+      setIsStudioOpen(false);
+    };
+    window.addEventListener("foldder:open-studio", onOpenStudio as EventListener);
+    window.addEventListener("foldder-open-node-studio", onOpenStudio as EventListener);
+    window.addEventListener("foldder:close-studio", onCloseStudio as EventListener);
+    window.addEventListener("foldder-close-node-studio", onCloseStudio as EventListener);
+    return () => {
+      window.removeEventListener("foldder:open-studio", onOpenStudio as EventListener);
+      window.removeEventListener("foldder-open-node-studio", onOpenStudio as EventListener);
+      window.removeEventListener("foldder:close-studio", onCloseStudio as EventListener);
+      window.removeEventListener("foldder-close-node-studio", onCloseStudio as EventListener);
+    };
+  }, [id]);
 
   useEffect(() => {
     const raf = requestAnimationFrame(() => refreshHandleGeometry());
@@ -256,7 +288,10 @@ export const DesignerNode = memo(({ id, data, selected }: NodeProps<any>) => {
             </span>
           </div>
         )}
-        <FoldderStudioModeCenterButton onClick={() => setIsStudioOpen(true)} />
+        <FoldderStudioModeCenterButton onClick={() => {
+          setStandardShell(null);
+          setIsStudioOpen(true);
+        }} />
       </div>
 
       <div className="handle-wrapper handle-left" style={{ top: "50%", transform: "translateY(-50%)" }}>
@@ -280,8 +315,20 @@ export const DesignerNode = memo(({ id, data, selected }: NodeProps<any>) => {
             activePageIndex={activeIdx}
             designerCanvasInstanceKey={id}
             brainConnected={brainConnected}
-            onClose={() => setIsStudioOpen(false)}
+            onClose={() => {
+              setIsStudioOpen(false);
+              setStandardShell(null);
+              if (standardShell && typeof window !== "undefined") {
+                window.dispatchEvent(new CustomEvent(FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT, {
+                  detail: { nodeId: id, nodeType: "designer", fileId: standardShell.fileId, appId: standardShell.appId },
+                }));
+              }
+            }}
             onExport={onExport}
+            onFinalExport={(detail) => {
+              dispatchFoldderExportCreated({ ...detail, sourceNodeId: id });
+            }}
+            standardShell={standardShell ?? undefined}
             onUpdatePages={onUpdatePages}
             autoImageOptimization={nodeData.autoImageOptimization !== false}
             onAutoImageOptimizationChange={onAutoImageOptimizationChange}
@@ -299,6 +346,8 @@ function DesignerStudioLazy(props: {
   brainConnected?: boolean;
   onClose: () => void;
   onExport: (dataUrl: string) => void;
+  onFinalExport?: (detail: Omit<FoldderExportCreatedDetail, "sourceNodeId">) => void;
+  standardShell?: StandardStudioShellConfig;
   onUpdatePages: (pages: DesignerPageState[], activeIdx?: number) => void;
   autoImageOptimization?: boolean;
   onAutoImageOptimizationChange?: (enabled: boolean) => void;

@@ -11,6 +11,8 @@ import { NodeIcon } from "../foldder-icons";
 import type { DesignerNodeData, DesignerPageState } from "../designer/DesignerNode";
 import type { PresenterImageVideoPlacement } from "./presenter-image-video-types";
 import { PresenterStudio } from "./PresenterStudio";
+import { FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT, type FoldderStudioEventDetail } from "../desktop-studio-events";
+import type { StandardStudioShellConfig } from "../StandardStudioShell";
 
 const PRESENTER_NODE_MAX_WIDTH = 960;
 const PRESENTER_NODE_MAX_HEIGHT = 2200;
@@ -68,9 +70,35 @@ export const PresenterNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const nodeData = data as PresenterNodeData;
   const { setNodes } = useReactFlow();
   const [studioOpen, setStudioOpen] = useState(false);
+  const [standardShell, setStandardShell] = useState<StandardStudioShellConfig | null>(null);
   const { pages, connected, designerMissing, designerNodeId } = useDesignerDocumentPages(id);
 
   const slideCount = pages?.length ?? 0;
+
+  React.useEffect(() => {
+    const onOpenStudio = (ev: Event) => {
+      const detail = (ev as CustomEvent<FoldderStudioEventDetail>).detail;
+      if (detail?.nodeId !== id) return;
+      setStandardShell(detail.standardShell ? { ...detail.standardShell, nodeId: id, nodeType: "presenter", fileId: detail.fileId, appId: detail.appId } : null);
+      setStudioOpen(true);
+    };
+    const onCloseStudio = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ nodeId?: string }>).detail;
+      if (detail?.nodeId !== id) return;
+      setStandardShell(null);
+      setStudioOpen(false);
+    };
+    window.addEventListener("foldder:open-studio", onOpenStudio as EventListener);
+    window.addEventListener("foldder-open-node-studio", onOpenStudio as EventListener);
+    window.addEventListener("foldder:close-studio", onCloseStudio as EventListener);
+    window.addEventListener("foldder-close-node-studio", onCloseStudio as EventListener);
+    return () => {
+      window.removeEventListener("foldder:open-studio", onOpenStudio as EventListener);
+      window.removeEventListener("foldder-open-node-studio", onOpenStudio as EventListener);
+      window.removeEventListener("foldder:close-studio", onCloseStudio as EventListener);
+      window.removeEventListener("foldder-close-node-studio", onCloseStudio as EventListener);
+    };
+  }, [id]);
 
   const patchDesignerPage = useCallback(
     (pageId: string, patch: Partial<DesignerPageState>) => {
@@ -156,6 +184,7 @@ export const PresenterNode = memo(({ id, data, selected }: NodeProps<any>) => {
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
+                setStandardShell(null);
                 setStudioOpen(true);
               }}
               className="nodrag flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-slate-300/80 bg-white/90 px-3 py-4 text-center shadow-sm transition hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50"
@@ -180,7 +209,15 @@ export const PresenterNode = memo(({ id, data, selected }: NodeProps<any>) => {
         createPortal(
           <PresenterStudio
             pages={pages}
-            onClose={() => setStudioOpen(false)}
+            onClose={() => {
+              setStudioOpen(false);
+              setStandardShell(null);
+              if (standardShell && typeof window !== "undefined") {
+                window.dispatchEvent(new CustomEvent(FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT, {
+                  detail: { nodeId: id, nodeType: "presenter", fileId: standardShell.fileId, appId: standardShell.appId },
+                }));
+              }
+            }}
             onPresenterPagePatch={patchDesignerPage}
             imageVideoPlacements={nodeData.imageVideoPlacements ?? []}
             onImageVideoPlacementsChange={setImageVideoPlacements}
@@ -188,6 +225,7 @@ export const PresenterNode = memo(({ id, data, selected }: NodeProps<any>) => {
               deckKey: designerNodeId ? `${designerNodeId}::${id}` : `presenter::${id}`,
               deckTitle: nodeData.label?.trim() || "Presentation",
             }}
+            standardShell={standardShell ?? undefined}
           />,
           document.body,
         )}

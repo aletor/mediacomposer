@@ -9,8 +9,8 @@ export const SIDEBAR_HOVER_HELP: Record<string, { title: string; line: string }>
     line: 'Dashboard compacto: ADN, fuentes, nodos conectados y pendientes; abre Brain para editar',
   },
   projectAssets: {
-    title: 'Assets',
-    line: 'Resumen de medios del grafo (importados / generados); abre la biblioteca fullscreen',
+    title: 'Foldder',
+    line: 'Contenedor vivo del proyecto: Imported Media, Generated Media, Media Files y Exports',
   },
   mediaInput: {
     title: 'Media Input',

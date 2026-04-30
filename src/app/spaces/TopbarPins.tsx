@@ -67,7 +67,7 @@ function dockLayoutSpreadPx(
 }
 
 /**
- * Accesos fijos (no personalizables): Brain → Design → Image → PhotoRoom → Video → Foldder. (Presenter solo en la librería.)
+ * Accesos fijos (no personalizables): Brain → Design → Image → PhotoRoom → Video → Foldder.
  * Brain y Foldder: clic → panel fullscreen (tras breve espera); doble clic → nodo projectBrain / projectAssets en el lienzo. Resto: doble clic añade el nodo del pin. Orden estable.
  */
 export const TOPBAR_FIXED_PIN_TYPES = [
@@ -89,15 +89,15 @@ const TOPBAR_PIN_UI: Record<
   nanoBanana: { title: "Image Generator", shortLabel: "Image" },
   photoRoom: { title: "PhotoRoom — retoque de imagen", shortLabel: "Photo" },
   geminiVideo: { title: "Video Generator", shortLabel: "Video" },
-  files: { title: "Foldder — multimedia del proyecto", shortLabel: "Foldder" },
+  files: { title: "Abrir Foldder", shortLabel: "Foldder" },
 };
 
 type TopbarPinsProps = {
   /** Clic en «Brain»: identidad + fuente de conocimiento. */
   onBrainClick?: () => void;
-  /** Clic en «Assets»: biblioteca multimedia (importados / generados). */
+  /** Clic en «Foldder»: abre el contenedor del proyecto. */
   onAssetsClick?: () => void;
-  /** Doble clic: añadir nodo (Brain → projectBrain, Assets → projectAssets, resto → tipo del pin). */
+  /** Doble clic: añadir nodo (Brain → projectBrain, Foldder → projectAssets, resto → tipo del pin). */
   onPinDoubleClick?: (nodeType: string) => void;
   /** Arrastre desde la librería: sin tooltip hover encima de la barra */
   paletteDragActive?: boolean;
@@ -185,7 +185,7 @@ function TopbarPinChip({
           isBrain
             ? `${title}. Clic para abrir studio (marca y conocimiento). Doble clic para añadir el nodo Brain al lienzo.`
             : isAssets
-              ? `${title}. Clic para abrir la biblioteca multimedia. Doble clic para añadir el nodo Foldder al lienzo.`
+              ? `${title}. Clic para abrir Foldder. Doble clic para añadir el nodo Foldder al lienzo.`
               : `${title}. Doble clic para añadir al lienzo.`
         }
         onClick={

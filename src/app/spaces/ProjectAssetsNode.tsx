@@ -2,13 +2,12 @@
 
 import React, { memo, useCallback, useMemo } from "react";
 import { Position, type NodeProps } from "@xyflow/react";
-import { FolderOpen, Images, Sparkles } from "lucide-react";
+import { FileStack, FolderOpen, Images, Sparkles } from "lucide-react";
 import { FoldderDataHandle } from "./FoldderDataHandle";
 import { NodeIcon } from "./foldder-icons";
 import { NodeLabel, FoldderNodeHeaderTitle } from "./foldder-node-ui";
-import { collectProjectMedia } from "./project-media-inventory";
+import { collectFoldderLibrarySections } from "./foldder-library";
 import { useProjectAssetsCanvas } from "./project-assets-canvas-context";
-import { listAllBrainGeneratedSuggestionUrls } from "./brain-image-suggestions-cache";
 
 export type ProjectAssetsNodeData = {
   label?: string;
@@ -18,12 +17,21 @@ export const ProjectAssetsNode = memo(({ id, data, selected }: NodeProps) => {
   const nodeData = data as ProjectAssetsNodeData;
   const ctx = useProjectAssetsCanvas();
 
-  const { nImported, nGenerated } = useMemo(() => {
+  const { nImported, nGenerated, nFiles, nExports } = useMemo(() => {
     const list = ctx?.flowNodes ?? [];
-    const { imported, generated } = collectProjectMedia(list);
-    const extraBrain = listAllBrainGeneratedSuggestionUrls(ctx?.projectScopeId).length;
-    return { nImported: imported.length, nGenerated: generated.length + extraBrain };
-  }, [ctx?.flowNodes, ctx?.projectScopeId]);
+    const sections = collectFoldderLibrarySections({
+      nodes: list,
+      assetsMetadata: ctx?.assetsMetadata,
+      projectScopeId: ctx?.projectScopeId ?? "__local__",
+      projectFiles: ctx?.projectFiles,
+    });
+    return {
+      nImported: sections.importedMedia.length,
+      nGenerated: sections.generatedMedia.length,
+      nFiles: sections.mediaFiles.length,
+      nExports: sections.exports.length,
+    };
+  }, [ctx?.assetsMetadata, ctx?.flowNodes, ctx?.projectFiles, ctx?.projectScopeId]);
 
   const openLibrary = useCallback(() => {
     if (ctx?.openProjectAssets) {
@@ -49,7 +57,7 @@ export const ProjectAssetsNode = memo(({ id, data, selected }: NodeProps) => {
 
       <div className="node-content flex min-w-0 flex-col gap-3 px-3 pb-3 pt-2">
         <div className="min-w-0">
-          <span className="node-label">Medios en el grafo</span>
+          <span className="node-label">Foldder</span>
           <div className="space-y-2 rounded-xl border border-slate-200/60 bg-slate-50/50 p-3 shadow-inner">
             <div className="flex items-start gap-2 text-[11px] leading-snug text-slate-800">
               <Images className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500" strokeWidth={2} aria-hidden />
@@ -63,11 +71,23 @@ export const ProjectAssetsNode = memo(({ id, data, selected }: NodeProps) => {
                 {nGenerated === 1 ? "1 generado" : `${nGenerated} generados`}
               </span>
             </div>
+            <div className="flex items-start gap-2 text-[11px] leading-snug text-slate-800">
+              <FileStack className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500" strokeWidth={2} aria-hidden />
+              <span>
+                {nFiles === 1 ? "1 media file" : `${nFiles} media files`}
+              </span>
+            </div>
+            <div className="flex items-start gap-2 text-[11px] leading-snug text-slate-800">
+              <FolderOpen className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500" strokeWidth={2} aria-hidden />
+              <span>
+                {nExports === 1 ? "1 export" : `${nExports} exports`}
+              </span>
+            </div>
           </div>
         </div>
 
         <p className="m-0 text-[9px] font-medium uppercase tracking-wide text-slate-500">
-          Vista previa de marca en el panel (desde Brain)
+          Contenedor vivo del proyecto
         </p>
 
         <button
@@ -79,7 +99,7 @@ export const ProjectAssetsNode = memo(({ id, data, selected }: NodeProps) => {
           className="nodrag flex w-full items-center justify-center gap-2 rounded-xl border border-slate-300/80 bg-white/90 px-3 py-2.5 text-center text-[11px] font-bold uppercase tracking-wide text-slate-800 shadow-sm transition hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50"
         >
           <FolderOpen className="h-4 w-4 shrink-0 text-slate-600" strokeWidth={2} aria-hidden />
-          Abrir biblioteca
+          Abrir Foldder
         </button>
       </div>
 

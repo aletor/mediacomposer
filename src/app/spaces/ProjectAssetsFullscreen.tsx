@@ -3,10 +3,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Node } from "@xyflow/react";
-import { FolderOpen, X } from "lucide-react";
-import { collectProjectMedia, projectMediaDedupeKey, type ProjectMediaItem } from "./project-media-inventory";
+import { FileQuestion, FolderOpen, X } from "lucide-react";
+import { collectFoldderLibrarySections } from "./foldder-library";
+import type { ProjectMediaItem } from "./project-media-inventory";
+import type { ProjectFilesMetadata, ProjectFile } from "./project-files";
 import { normalizeProjectAssets } from "./project-assets-metadata";
-import { listAllBrainGeneratedSuggestionUrls } from "./brain-image-suggestions-cache";
 import { tryExtractKnowledgeFilesKeyFromUrl } from "@/lib/s3-media-hydrate";
 
 type Props = {
@@ -15,6 +16,7 @@ type Props = {
   nodes: Node[];
   /** Solo lectura: logos y colores definidos en Brain (`metadata.assets`). */
   assetsMetadata: unknown;
+  projectFiles?: ProjectFilesMetadata;
   /** Scope del proyecto activo para aislar caché y listados. */
   projectScopeId: string;
 };
@@ -38,7 +40,7 @@ function MediaTile({ item }: { item: ProjectMediaItem }) {
             playsInline
             preload="metadata"
           />
-        ) : (
+        ) : item.kind === "image" ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={item.url}
@@ -49,9 +51,13 @@ function MediaTile({ item }: { item: ProjectMediaItem }) {
               (e.target as HTMLImageElement).style.opacity = "0.2";
             }}
           />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-zinc-500">
+            <FileQuestion className="h-8 w-8" strokeWidth={1.6} />
+          </div>
         )}
         <span className="pointer-events-none absolute bottom-1 right-1 rounded bg-black/65 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide text-white/90">
-          {isVideo ? "Vídeo" : item.kind === "audio" ? "Audio" : "Imagen"}
+          {isVideo ? "Vídeo" : item.kind === "audio" ? "Audio" : item.kind === "image" ? "Imagen" : "Archivo"}
         </span>
       </div>
       <div className="min-w-0 px-2 py-1.5">
@@ -93,6 +99,59 @@ function MediaSection({
           {items.map((item) => (
             <li key={item.id}>
               <MediaTile item={item} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function MediaFileTile({ file }: { file: ProjectFile }) {
+  const extension = (file.extension || file.name.match(/\.[^.]+$/)?.[0] || file.kind).replace(/^\./, "").toUpperCase();
+  return (
+    <div className="group flex flex-col overflow-hidden rounded-xl border border-white/10 bg-zinc-900/80 p-3 shadow-lg">
+      <div className="flex h-24 items-center justify-center rounded-lg border border-white/10 bg-black/45">
+        <FolderOpen className="h-8 w-8 text-amber-200/80" strokeWidth={1.5} />
+      </div>
+      <div className="min-w-0 pt-2">
+        <p className="truncate text-[10px] font-semibold text-zinc-200" title={file.name}>
+          {file.name}
+        </p>
+        <p className="mt-1 text-[8px] font-black uppercase tracking-wide text-zinc-500">
+          {extension} · {file.nodeType || file.kind}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ProjectFilesSection({
+  title,
+  subtitle,
+  emptyHint,
+  items,
+}: {
+  title: string;
+  subtitle: string;
+  emptyHint: string;
+  items: ProjectFile[];
+}) {
+  return (
+    <section className="min-w-0 flex-1">
+      <div className="mb-3 border-b border-white/10 pb-2">
+        <h3 className="text-sm font-black uppercase tracking-[0.12em] text-amber-200/95">{title}</h3>
+        <p className="mt-0.5 text-[11px] text-zinc-500">{subtitle}</p>
+      </div>
+      {items.length === 0 ? (
+        <p className="rounded-lg border border-dashed border-white/10 bg-white/[0.03] px-3 py-8 text-center text-[12px] text-zinc-500">
+          {emptyHint}
+        </p>
+      ) : (
+        <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+          {items.map((item) => (
+            <li key={item.id}>
+              <MediaFileTile file={item} />
             </li>
           ))}
         </ul>
@@ -164,43 +223,11 @@ function BrandReadonlyStrip({ assetsMetadata }: { assetsMetadata: unknown }) {
   );
 }
 
-export function ProjectAssetsFullscreen({ open, onClose, nodes, assetsMetadata, projectScopeId }: Props) {
-  const { imported, generated } = useMemo(() => {
-    const base = collectProjectMedia(nodes);
-    const seen = new Set(
-      base.generated.map((g) => projectMediaDedupeKey(g.url.trim())).filter(Boolean),
-    );
-    const extra: ProjectMediaItem[] = [];
-    for (const url of listAllBrainGeneratedSuggestionUrls(projectScopeId)) {
-      const key = url.trim();
-      const dedupe = projectMediaDedupeKey(key);
-      if (!key || !dedupe || seen.has(dedupe)) continue;
-      seen.add(dedupe);
-      extra.push({
-        id: `brain-generated-${seen.size}-${key.slice(0, 32)}`,
-        url: key,
-        kind: "image",
-        sourceLabel: "Brain · sugerencia IA",
-        nodeId: "brain-cache",
-      });
-    }
-    const assets = normalizeProjectAssets(assetsMetadata);
-    const visualDnaSlots = assets.strategy.visualDnaSlots ?? [];
-    for (const slot of visualDnaSlots) {
-      const key = slot.mosaic?.imageUrl?.trim();
-      const dedupe = key ? projectMediaDedupeKey(key) : "";
-      if (!key || !dedupe || seen.has(dedupe)) continue;
-      seen.add(dedupe);
-      extra.push({
-        id: `brain-visual-dna-slot-${slot.id}`,
-        url: key,
-        kind: "image",
-        sourceLabel: `Brain · ADN por imagen (${slot.label || "slot"})`,
-        nodeId: "brain-visual-dna-slot",
-      });
-    }
-    return { imported: base.imported, generated: [...base.generated, ...extra] };
-  }, [nodes, projectScopeId, assetsMetadata]);
+export function ProjectAssetsFullscreen({ open, onClose, nodes, assetsMetadata, projectFiles, projectScopeId }: Props) {
+  const { importedMedia: imported, generatedMedia: generated, mediaFiles, exports } = useMemo(
+    () => collectFoldderLibrarySections({ nodes, assetsMetadata, projectScopeId, projectFiles }),
+    [nodes, assetsMetadata, projectScopeId, projectFiles],
+  );
   const [refreshedUrls, setRefreshedUrls] = useState<Record<string, string>>({});
   const viewImported = useMemo(
     () =>
@@ -292,7 +319,7 @@ export function ProjectAssetsFullscreen({ open, onClose, nodes, assetsMetadata, 
               Foldder
             </h1>
             <p className="text-[11px] text-zinc-500">
-              Vista de marca (solo lectura) y multimedia del lienzo
+              Vista ampliada del contenedor vivo del proyecto
             </p>
           </div>
         </div>
@@ -309,23 +336,34 @@ export function ProjectAssetsFullscreen({ open, onClose, nodes, assetsMetadata, 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6">
         <div className="mx-auto flex max-w-[1600px] flex-col gap-8">
           <BrandReadonlyStrip assetsMetadata={assetsMetadata} />
-          <div className="flex flex-col gap-10 lg:flex-row lg:gap-12">
           <MediaSection
-            title="Importados"
-            subtitle="Archivos que has añadido: subidas, URLs, contenido en Designer/Presenter, etc."
+            title="Imported Media"
+            subtitle="Archivos que entran desde fuera: uploads, URLs, Pinterest, logos, PDFs, documentos de marca y referencias."
             items={viewImported}
             emptyHint="Aún no hay elementos importados visibles en este proyecto."
           />
           <MediaSection
-            title="Generados"
-            subtitle="Salidas del sistema: Image/Video/VFX, Grok, historial graph-run, etc."
+            title="Generated Media"
+            subtitle="Resultados generados por nodos: imágenes IA, vídeos IA, renders, variaciones, Background Remover, VFX, etc."
             items={viewGenerated}
             emptyHint="Aún no hay elementos generados en este proyecto."
           />
-          </div>
+          <ProjectFilesSection
+            title="Media Files"
+            subtitle="Trabajos editables creados dentro de apps: .design, .photoroom, .painter, .presenter, etc."
+            emptyHint="Aún no hay archivos editables guardados en Foldder."
+            items={mediaFiles}
+          />
+          <ProjectFilesSection
+            title="Exports"
+            subtitle="Archivos finales exportados desde Foldder: PNG, JPG, PDF, vídeo o entregables listos para usar."
+            emptyHint="Aún no hay exports persistidos en Foldder."
+            items={exports}
+          />
           <p className="mt-10 pb-4 text-center text-[11px] text-zinc-600">
-            Para editar logos y colores abre <span className="font-semibold text-zinc-500">Brain</span>. La lista de
-            multimedia refleja el grafo actual; guarda el proyecto para persistir.
+            Esta es la misma entidad que el nodo <span className="font-semibold text-zinc-500">Foldder</span> de Vista Pro.
+            La fuente de verdad sigue en <code className="rounded bg-black/30 px-1">metadata.assets</code>, el grafo y
+            <code className="rounded bg-black/30 px-1">metadata.projectFiles</code>.
           </p>
         </div>
       </div>

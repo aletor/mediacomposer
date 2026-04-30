@@ -50,6 +50,7 @@ import { HandleTypeLegend } from "./HandleTypeLegend";
 import { AiRequestHud } from "./AiRequestHud";
 import { ExternalApiBlockedModal } from "./ExternalApiBlockedModal";
 import { TopbarPins } from "./TopbarPins";
+import { StandardDesktopView } from "./StandardDesktopView";
 import { ProjectBrainFullscreen, type BrainMainSection } from "./ProjectBrainFullscreen";
 import { ProjectAssetsFullscreen } from "./ProjectAssetsFullscreen";
 import {
@@ -74,6 +75,38 @@ import { FOLDDER_FIT_VIEW_EASE } from "@/lib/fit-view-ease";
 import { enterFullscreen } from "@/lib/fullscreen";
 import "./spaces.css";
 import { NODE_REGISTRY } from "./nodeRegistry";
+import {
+  createProjectFileForStudioNode,
+  createProjectExportFile,
+  getProjectFilesFromMetadata,
+  reconcileProjectFilesFromNodes,
+  setProjectFilesInMetadata,
+  updateProjectFileInMetadata,
+  upsertProjectFile,
+  type ProjectFile,
+  type WorkspaceViewMode,
+} from "./project-files";
+import { studioAppForFileKind, type StudioAppConfig } from "./studioApps";
+import {
+  dispatchFoldderStudioEvent,
+  FOLDDER_CLOSE_STUDIO_EVENT,
+  FOLDDER_LEGACY_CLOSE_NODE_STUDIO_EVENT,
+  FOLDDER_LEGACY_OPEN_NODE_STUDIO_EVENT,
+  FOLDDER_MINIMIZE_STUDIO_EVENT,
+  FOLDDER_OPEN_STUDIO_EVENT,
+  FOLDDER_RESTORE_STUDIO_EVENT,
+  FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT,
+  FOLDDER_STANDARD_STUDIO_MINIMIZE_REQUEST_EVENT,
+  FOLDDER_STANDARD_STUDIO_SAVE_AS_REQUEST_EVENT,
+  FOLDDER_STUDIO_CLOSED_EVENT,
+  FOLDDER_STUDIO_OPENED_EVENT,
+  type FoldderStudioEventDetail,
+} from "./desktop-studio-events";
+import { collectFoldderLibrarySections } from "./foldder-library";
+import {
+  FOLDDER_EXPORT_CREATED_EVENT,
+  type FoldderExportCreatedDetail,
+} from "./foldder-export-events";
 import {
   FOLDDER_OPEN_GEMINI_VIDEO_WITH_IMAGE_EVENT,
   type FoldderOpenGeminiVideoDetail,
@@ -182,6 +215,57 @@ type SavedProjectDetail = SavedProjectMeta & {
   spaces: Record<string, any>;
 };
 
+type OpenDesktopApp = {
+  id: string;
+  appId: string;
+  fileId?: string;
+  nodeId?: string;
+  nodeType?: string;
+  fileName?: string;
+  status: "open" | "minimized";
+  openedAt: string;
+  updatedAt: string;
+  /** Compatibilidad con la primera iteración del runtime estándar. */
+  title: string;
+  kind?: ProjectFile["kind"] | "app";
+};
+
+type StandardRuntimeApp = OpenDesktopApp;
+
+function createOpenDesktopApp(input: {
+  id: string;
+  appId: string;
+  title: string;
+  kind?: ProjectFile["kind"] | "app";
+  fileId?: string;
+  nodeId?: string;
+  nodeType?: string;
+  fileName?: string;
+  status?: OpenDesktopApp["status"];
+  openedAt?: string;
+}): OpenDesktopApp {
+  const now = new Date().toISOString();
+  return {
+    ...input,
+    fileName: input.fileName ?? input.title,
+    status: input.status ?? "open",
+    openedAt: input.openedAt ?? now,
+    updatedAt: now,
+  };
+}
+
+function standardShellForRuntimeApp(app: StandardRuntimeApp): FoldderStudioEventDetail["standardShell"] {
+  const label =
+    app.kind && app.kind !== "app"
+      ? studioAppForFileKind(app.kind)?.label
+      : undefined;
+  return {
+    appLabel: label ?? app.appId ?? "App",
+    fileName: app.fileId ? app.fileName ?? app.title : undefined,
+    canSaveAs: Boolean(app.fileId && app.kind !== "brain" && app.kind !== "assets" && app.kind !== "export"),
+  };
+}
+
 export function SpacesContent() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { data: session, status: sessionStatus } = useSession();
@@ -254,6 +338,7 @@ export function SpacesContent() {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [activeSpaceId, setActiveSpaceId] = useState<string>('root');
   const [currentName, setCurrentName] = useState<string>('');
+  const [workspaceViewMode, setWorkspaceViewMode] = useState<WorkspaceViewMode>('standard');
   const [savedProjects, setSavedProjects] = useState<SavedProjectMeta[]>([]);
   const [spacesMap, setSpacesMap] = useState<Record<string, any>>({});
   const [metadata, setMetadata] = useState<any>({});
@@ -328,9 +413,66 @@ export function SpacesContent() {
   const [projectBrainOpen, setProjectBrainOpen] = useState(false);
   const [brainInitialSection, setBrainInitialSection] = useState<BrainMainSection | null>(null);
   const [projectAssetsOpen, setProjectAssetsOpen] = useState(false);
+  const [standardRuntimeApp, setStandardRuntimeApp] = useState<StandardRuntimeApp | null>(null);
+  const [standardMinimizedApp, setStandardMinimizedApp] = useState<StandardRuntimeApp | null>(null);
+  const [openDesktopApps, setOpenDesktopApps] = useState<OpenDesktopApp[]>([]);
+  const [standardFoldderOpenRequest, setStandardFoldderOpenRequest] = useState(0);
   /** Aísla caché (p. ej. sugerencias de imagen) cuando aún no hay `activeProjectId`; evita reutilizar `__local__` entre borradores. */
   const [localWorkspaceScopeId, setLocalWorkspaceScopeId] = useState(() => newLocalWorkspaceScopeId());
   const projectScopeId = activeProjectId ?? localWorkspaceScopeId;
+
+  const registerStandardRuntimeApp = useCallback((app: StandardRuntimeApp) => {
+    const nextApp = { ...app, status: "open" as const, updatedAt: new Date().toISOString() };
+    setStandardRuntimeApp(nextApp);
+    setStandardMinimizedApp(null);
+    setOpenDesktopApps((apps) => {
+      const existing = apps.find((row) => row.id === nextApp.id);
+      const openedAt = existing?.openedAt ?? nextApp.openedAt;
+      return [
+        ...apps.filter((row) => row.id !== nextApp.id),
+        { ...nextApp, openedAt },
+      ];
+    });
+  }, []);
+
+  const minimizeRegisteredDesktopApp = useCallback((app: StandardRuntimeApp) => {
+    const minimized = { ...app, status: "minimized" as const, updatedAt: new Date().toISOString() };
+    setStandardRuntimeApp(null);
+    setStandardMinimizedApp(minimized);
+    setOpenDesktopApps((apps) => {
+      const existing = apps.find((row) => row.id === minimized.id);
+      return [
+        ...apps.filter((row) => row.id !== minimized.id),
+        { ...minimized, openedAt: existing?.openedAt ?? minimized.openedAt },
+      ];
+    });
+  }, []);
+
+  const closeRegisteredDesktopApp = useCallback((app: StandardRuntimeApp | null) => {
+    if (!app) return;
+    setOpenDesktopApps((apps) => apps.filter((row) => row.id !== app.id));
+    setStandardRuntimeApp((current) => (current?.id === app.id ? null : current));
+    setStandardMinimizedApp((current) => (current?.id === app.id ? null : current));
+  }, []);
+
+  const openFoldder = useCallback(
+    (target?: "panel" | "fullscreen") => {
+      const resolvedTarget = target ?? (workspaceViewMode === "standard" ? "panel" : "fullscreen");
+      registerStandardRuntimeApp(createOpenDesktopApp({ id: "foldder", title: "Foldder", kind: "assets", appId: "files", nodeType: "projectAssets" }));
+      if (resolvedTarget === "panel") {
+        setProjectAssetsOpen(false);
+        setStandardFoldderOpenRequest((value) => value + 1);
+        return;
+      }
+      setProjectAssetsOpen(true);
+    },
+    [registerStandardRuntimeApp, workspaceViewMode],
+  );
+
+  const projectFiles = useMemo(
+    () => reconcileProjectFilesFromNodes(metadata, nodes as Node[]),
+    [metadata, nodes],
+  );
 
   const projectBrainCanvasValue = useMemo(
     () => ({
@@ -354,10 +496,37 @@ export function SpacesContent() {
     () => ({
       flowNodes: nodes,
       assetsMetadata: metadata.assets,
+      projectFiles,
       projectScopeId,
-      openProjectAssets: () => setProjectAssetsOpen(true),
+      openProjectAssets: () => openFoldder("fullscreen"),
     }),
-    [nodes, metadata.assets, projectScopeId],
+    [nodes, metadata.assets, projectFiles, projectScopeId, openFoldder],
+  );
+  const foldderLibrarySections = useMemo(
+    () =>
+      collectFoldderLibrarySections({
+        nodes: nodes as Node[],
+        assetsMetadata: metadata.assets,
+        projectScopeId,
+        projectFiles,
+      }),
+    [metadata.assets, nodes, projectFiles, projectScopeId],
+  );
+  const standardActiveFile = useMemo(
+    () =>
+      standardRuntimeApp?.fileId
+        ? projectFiles.items.find((file) => file.id === standardRuntimeApp.fileId) ?? null
+        : null,
+    [projectFiles.items, standardRuntimeApp?.fileId],
+  );
+  const activeDesktopAppId = standardRuntimeApp?.appId ?? null;
+  const primaryMinimizedApp = useMemo(
+    () => standardMinimizedApp ?? openDesktopApps.find((app) => app.status === "minimized") ?? null,
+    [openDesktopApps, standardMinimizedApp],
+  );
+  const minimizedDesktopAppId = useMemo(
+    () => primaryMinimizedApp?.appId ?? null,
+    [primaryMinimizedApp?.appId],
   );
 
   useEffect(() => {
@@ -370,10 +539,10 @@ export function SpacesContent() {
   }, []);
 
   useEffect(() => {
-    const onOpenAssets = () => setProjectAssetsOpen(true);
+    const onOpenAssets = () => openFoldder();
     window.addEventListener("foldder-open-project-assets", onOpenAssets);
     return () => window.removeEventListener("foldder-open-project-assets", onOpenAssets);
-  }, []);
+  }, [openFoldder]);
 
   const handleLibraryDragStart = useCallback(
     (nodeType: string) => {
@@ -897,6 +1066,587 @@ export function SpacesContent() {
     },
     [screenToFlowPosition, nodes, setNodes, takeSnapshot, fitViewToNodeIds, scheduleFoldderCanvasIntroEnd]
   );
+
+  const scheduleProjectSave = useCallback(() => {
+    if (typeof window === "undefined") return;
+    window.setTimeout(() => {
+      void saveProjectRef.current(undefined, { silentError: true });
+    }, 180);
+  }, []);
+
+  const dispatchStudioOpen = useCallback((detail: FoldderStudioEventDetail) => {
+    dispatchFoldderStudioEvent(FOLDDER_OPEN_STUDIO_EVENT, detail);
+    dispatchFoldderStudioEvent(FOLDDER_LEGACY_OPEN_NODE_STUDIO_EVENT, detail);
+    dispatchFoldderStudioEvent(FOLDDER_STUDIO_OPENED_EVENT, detail);
+    if (detail.nodeType === "photoRoom" && detail.nodeId) {
+      window.dispatchEvent(
+        new CustomEvent("foldder-open-photo-room-studio", {
+          detail: { ...detail, nodeId: detail.nodeId, photoRoomNodeId: detail.nodeId },
+        }),
+      );
+    }
+  }, []);
+
+  const dispatchStudioClose = useCallback((detail: FoldderStudioEventDetail) => {
+    dispatchFoldderStudioEvent(FOLDDER_CLOSE_STUDIO_EVENT, detail);
+    dispatchFoldderStudioEvent(FOLDDER_LEGACY_CLOSE_NODE_STUDIO_EVENT, detail);
+    dispatchFoldderStudioEvent(FOLDDER_STUDIO_CLOSED_EVENT, detail);
+  }, []);
+
+  const openStandardBackedNode = useCallback(
+    (
+      nodeId: string,
+      nodeType?: string,
+      fileId?: string,
+      appId?: string,
+      standardShell?: FoldderStudioEventDetail["standardShell"],
+    ) => {
+      if (nodeType === "projectBrain") {
+        setBrainInitialSection(null);
+        setProjectBrainOpen(true);
+        return;
+      }
+      if (nodeType === "projectAssets") {
+        openFoldder();
+        return;
+      }
+      dispatchStudioOpen({ nodeId, nodeType, fileId, appId, standardShell });
+    },
+    [dispatchStudioOpen, openFoldder],
+  );
+
+  const closeStandardRuntimeSurface = useCallback((app: StandardRuntimeApp | null) => {
+    if (!app) return;
+    if (app.kind === "brain" || app.nodeType === "projectBrain") {
+      setProjectBrainOpen(false);
+      setBrainInitialSection(null);
+      return;
+    }
+    if (app.kind === "assets" || app.nodeType === "projectAssets") {
+      setProjectAssetsOpen(false);
+      return;
+    }
+    if (!app.nodeId) return;
+    dispatchStudioClose({ nodeId: app.nodeId, nodeType: app.nodeType, fileId: app.fileId, appId: app.appId });
+  }, [dispatchStudioClose]);
+
+  const minimizeStandardRuntimeApp = useCallback(() => {
+    const app = standardRuntimeApp;
+    if (!app) return;
+    dispatchFoldderStudioEvent(FOLDDER_MINIMIZE_STUDIO_EVENT, {
+      nodeId: app.nodeId,
+      nodeType: app.nodeType,
+      fileId: app.fileId,
+      appId: app.appId,
+    });
+    closeStandardRuntimeSurface(app);
+    minimizeRegisteredDesktopApp(app);
+  }, [closeStandardRuntimeSurface, minimizeRegisteredDesktopApp, standardRuntimeApp]);
+
+  const closeStandardRuntimeApp = useCallback(() => {
+    closeStandardRuntimeSurface(standardRuntimeApp);
+    closeRegisteredDesktopApp(standardRuntimeApp);
+  }, [closeRegisteredDesktopApp, closeStandardRuntimeSurface, standardRuntimeApp]);
+
+  const restoreStandardRuntimeApp = useCallback((appToRestore?: StandardRuntimeApp | null) => {
+    const app = appToRestore ?? standardMinimizedApp;
+    if (!app) return;
+    dispatchFoldderStudioEvent(FOLDDER_RESTORE_STUDIO_EVENT, {
+      nodeId: app.nodeId,
+      nodeType: app.nodeType,
+      fileId: app.fileId,
+      appId: app.appId,
+    });
+    registerStandardRuntimeApp({ ...app, status: "open" });
+    if (app.nodeId) openStandardBackedNode(app.nodeId, app.nodeType, app.fileId, app.appId, standardShellForRuntimeApp(app));
+    else if (app.kind === "brain") {
+      setBrainInitialSection(null);
+      setProjectBrainOpen(true);
+    } else if (app.kind === "assets") {
+      openFoldder();
+    }
+  }, [openFoldder, openStandardBackedNode, registerStandardRuntimeApp, standardMinimizedApp]);
+
+  useEffect(() => {
+    const onExportCreated = (event: Event) => {
+      const detail = (event as CustomEvent<FoldderExportCreatedDetail>).detail;
+      if (!detail?.name || !detail.extension) return;
+      const currentFiles = getProjectFilesFromMetadata(metadata);
+      const sourceFileId =
+        detail.sourceFileId ??
+        currentFiles.items.find(
+          (file) =>
+            file.kind !== "export" &&
+            file.metadata?.hidden !== true &&
+            detail.sourceNodeId &&
+            file.backingNodeId === detail.sourceNodeId,
+        )?.id;
+      const sourceNode = detail.sourceNodeId
+        ? nodes.find((node) => node.id === detail.sourceNodeId)
+        : null;
+      const sourceThumbnail =
+        detail.thumbnailUrl ??
+        (sourceNode?.data && typeof sourceNode.data === "object" && typeof (sourceNode.data as Record<string, unknown>).value === "string"
+          ? ((sourceNode.data as Record<string, unknown>).value as string)
+          : undefined);
+
+      const exportFile = createProjectExportFile({
+        ...detail,
+        sourceFileId,
+        thumbnailUrl: sourceThumbnail,
+      });
+      setMetadata((m: Record<string, unknown>) => ({
+        ...setProjectFilesInMetadata(m, upsertProjectFile(m, exportFile)),
+      }));
+      scheduleProjectSave();
+    };
+
+    window.addEventListener(FOLDDER_EXPORT_CREATED_EVENT, onExportCreated as EventListener);
+    return () => window.removeEventListener(FOLDDER_EXPORT_CREATED_EVENT, onExportCreated as EventListener);
+  }, [metadata, nodes, scheduleProjectSave]);
+
+  const openStandardFile = useCallback(
+    (file: ProjectFile) => {
+      const appConfig = studioAppForFileKind(file.kind);
+      if (file.kind === "export" || !appConfig?.nodeType || !appConfig.canOpenFile) {
+        window.alert("Este archivo todavía no tiene apertura directa.");
+        return;
+      }
+      if (!file.backingNodeId) {
+        if (file.kind === "brain") {
+          registerStandardRuntimeApp(createOpenDesktopApp({ id: file.id, title: file.name, appId: appConfig.appId, fileId: file.id, kind: file.kind, nodeType: appConfig.nodeType }));
+          setBrainInitialSection(null);
+          setProjectBrainOpen(true);
+          return;
+        }
+        if (file.kind === "assets") {
+          registerStandardRuntimeApp(createOpenDesktopApp({ id: file.id, title: file.name, appId: appConfig.appId, fileId: file.id, kind: file.kind, nodeType: appConfig.nodeType }));
+          openFoldder();
+          return;
+        }
+        window.alert("Este archivo todavía no tiene apertura directa.");
+        return;
+      }
+      const backingNode = nodes.find((node) => node.id === file.backingNodeId);
+      if (!backingNode) {
+        window.alert("No encuentro el nodo interno de este archivo. Cambia a Vista Pro para revisar el proyecto.");
+        return;
+      }
+      const nodeType = file.nodeType || backingNode.type;
+      if (!nodeType || nodeType !== appConfig.nodeType) {
+        window.alert("Este archivo todavía no tiene apertura directa.");
+        return;
+      }
+      const app = createOpenDesktopApp({
+        id: file.id,
+        title: file.name,
+        appId: appConfig.appId,
+        fileId: file.id,
+        kind: file.kind,
+        nodeId: file.backingNodeId,
+        nodeType,
+      });
+      registerStandardRuntimeApp(app);
+      openStandardBackedNode(file.backingNodeId, nodeType, file.id, appConfig.appId, {
+        appLabel: appConfig.label,
+        fileName: file.name,
+        canSaveAs: true,
+      });
+    },
+    [nodes, openFoldder, openStandardBackedNode, registerStandardRuntimeApp],
+  );
+
+  const createStandardFileForApp = useCallback(
+    (app: StudioAppConfig) => {
+      const reactFlowType = app.nodeType;
+      if (!app || !reactFlowType) return;
+      if (reactFlowType === "projectBrain") {
+        registerStandardRuntimeApp(createOpenDesktopApp({ id: "brain", title: "Brain", kind: "brain", appId: app.appId, nodeType: reactFlowType }));
+        setBrainInitialSection(null);
+        setProjectBrainOpen(true);
+        return;
+      }
+      if (reactFlowType === "projectAssets") {
+        openFoldder();
+        return;
+      }
+      if (app.requiresSourceFile) {
+        window.alert("Presentar necesita un archivo .design. Elige uno desde la carpeta Foldder.");
+        return;
+      }
+      if (!NODE_REGISTRY[reactFlowType]) return;
+      const defaultName = `${app.label} ${nodes.filter((node) => node.type === reactFlowType).length + 1}`;
+      const requestedName = window.prompt(`Nuevo archivo ${app.label}`, defaultName);
+      if (requestedName === null) return;
+      const baseName = requestedName.trim() || defaultName;
+
+      const viewportCenter = screenToFlowPosition({
+        x: window.innerWidth / 2,
+        y: window.innerHeight / 2,
+      });
+      const preferred = preferredCenterRightOfRightmostNode(nodes, reactFlowType);
+      const position = findEmptyPositionForNewNode(reactFlowType, nodes, preferred ?? viewportCenter);
+      const nodeId = `node_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      const standardStyle: React.CSSProperties | undefined =
+        reactFlowType === 'nanoBanana'
+          ? { width: NANO_BANANA_DEFAULT_W, height: NANO_BANANA_DEFAULT_H }
+          : reactFlowType === 'geminiVideo' || reactFlowType === 'vfxGenerator'
+            ? { width: GEMINI_VIDEO_DEFAULT_W, height: GEMINI_VIDEO_DEFAULT_H }
+            : undefined;
+      const newNode = {
+        id: nodeId,
+        type: reactFlowType,
+        position,
+        data: withFoldderCanvasIntro(reactFlowType, {
+          ...defaultDataForCanvasDropNode(reactFlowType),
+          label: baseName,
+        }),
+        ...(standardStyle ? { style: standardStyle } : {}),
+      };
+      const file = createProjectFileForStudioNode({
+        node: newNode as Node,
+        name: baseName,
+      });
+
+      takeSnapshot();
+      setNodes((nds) => [...nds, newNode]);
+      scheduleFoldderCanvasIntroEnd(nodeId);
+      if (file) {
+        registerStandardRuntimeApp(createOpenDesktopApp({
+          id: file.id,
+          title: file.name,
+          appId: app.appId,
+          fileId: file.id,
+          kind: file.kind,
+          nodeId,
+          nodeType: reactFlowType,
+        }));
+        setMetadata((m: Record<string, unknown>) => ({
+          ...setProjectFilesInMetadata(m, upsertProjectFile(m, file)),
+        }));
+        scheduleProjectSave();
+      }
+      window.setTimeout(() => openStandardBackedNode(nodeId, reactFlowType, file?.id, app.appId, file ? {
+        appLabel: app.label,
+        fileName: file.name,
+        canSaveAs: true,
+      } : undefined), 180);
+    },
+    [
+      nodes,
+      openFoldder,
+      openStandardBackedNode,
+      registerStandardRuntimeApp,
+      scheduleFoldderCanvasIntroEnd,
+      scheduleProjectSave,
+      screenToFlowPosition,
+      setNodes,
+      takeSnapshot,
+    ],
+  );
+
+  const renameProjectFile = useCallback((file: ProjectFile) => {
+    const requestedName = window.prompt("Renombrar archivo", file.name);
+    if (requestedName === null) return;
+    const trimmed = requestedName.trim();
+    if (!trimmed) return;
+    const ext = file.extension ?? "";
+    const nextName = ext && !trimmed.toLowerCase().endsWith(ext.toLowerCase()) ? `${trimmed}${ext}` : trimmed;
+    const label = ext && nextName.toLowerCase().endsWith(ext.toLowerCase())
+      ? nextName.slice(0, -ext.length)
+      : nextName;
+    setMetadata((m: Record<string, unknown>) => ({
+      ...setProjectFilesInMetadata(
+        m,
+        updateProjectFileInMetadata(m, file.id, (row) => ({
+          ...row,
+          name: nextName,
+          updatedAt: new Date().toISOString(),
+        })),
+      ),
+    }));
+    if (file.backingNodeId) {
+      setNodes((nds) =>
+        nds.map((node) =>
+          node.id === file.backingNodeId
+            ? { ...node, data: { ...node.data, label } }
+            : node,
+        ),
+      );
+    }
+    scheduleProjectSave();
+  }, [scheduleProjectSave, setNodes]);
+
+  const hideProjectFile = useCallback((file: ProjectFile) => {
+    const ok = window.confirm(`Quitar "${file.name}" de la vista Foldder? No se borrará el nodo ni los assets.`);
+    if (!ok) return;
+    setMetadata((m: Record<string, unknown>) => ({
+      ...setProjectFilesInMetadata(
+        m,
+        updateProjectFileInMetadata(m, file.id, (row) => ({
+          ...row,
+          metadata: { ...(row.metadata ?? {}), hidden: true },
+          updatedAt: new Date().toISOString(),
+        })),
+      ),
+    }));
+    scheduleProjectSave();
+  }, [scheduleProjectSave]);
+
+  const saveProjectFileAs = useCallback((file: ProjectFile) => {
+    if (file.kind === "export") {
+      window.alert("Guardar como solo duplica trabajos editables de Media Files, no exports.");
+      return;
+    }
+    if (!file.backingNodeId) {
+      window.alert("Este archivo todavía no tiene un nodo interno para duplicar.");
+      return;
+    }
+    const original = nodes.find((node) => node.id === file.backingNodeId);
+    if (!original || !original.type || original.type === "canvasGroup") {
+      window.alert("No encuentro el nodo interno de este archivo. Cambia a Vista Pro para revisar el proyecto.");
+      return;
+    }
+    const appConfig = studioAppForFileKind(file.kind);
+    if (!appConfig?.nodeType || original.type !== appConfig.nodeType) {
+      window.alert("Este archivo todavía no se puede duplicar con Guardar como.");
+      return;
+    }
+    const ext = file.extension ?? "";
+    const baseForPrompt = ext && file.name.toLowerCase().endsWith(ext.toLowerCase())
+      ? file.name.slice(0, -ext.length)
+      : file.name;
+    const requestedName = window.prompt("Guardar como", `${baseForPrompt} v2`);
+    if (requestedName === null) return;
+    const trimmed = requestedName.trim();
+    if (!trimmed) return;
+    const nextName = ext && !trimmed.toLowerCase().endsWith(ext.toLowerCase()) ? `${trimmed}${ext}` : trimmed;
+    const label = ext && nextName.toLowerCase().endsWith(ext.toLowerCase())
+      ? nextName.slice(0, -ext.length)
+      : nextName;
+    const newId = `${original.type}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    let rawData: Record<string, unknown> = {};
+    if (original.data && typeof original.data === "object") {
+      try {
+        rawData = JSON.parse(JSON.stringify(original.data)) as Record<string, unknown>;
+      } catch {
+        rawData = { ...(original.data as Record<string, unknown>) };
+      }
+    }
+    delete rawData._foldderCanvasIntro;
+    const newNode = {
+      ...original,
+      id: newId,
+      position: { x: original.position.x + 36, y: original.position.y + 36 },
+      selected: false,
+      data: withFoldderCanvasIntro(String(original.type), { ...rawData, label }),
+    };
+    const newFile = createProjectFileForStudioNode({
+      node: newNode as Node,
+      name: nextName,
+      sourceFileId: file.sourceFileId ?? file.id,
+      sourceNodeId: file.sourceNodeId ?? file.backingNodeId,
+    });
+    takeSnapshot();
+    setNodes((nds) => [...nds.map((node) => ({ ...node, selected: false })), newNode]);
+    scheduleFoldderCanvasIntroEnd(newId);
+    if (newFile) {
+      setMetadata((m: Record<string, unknown>) => ({
+        ...setProjectFilesInMetadata(m, upsertProjectFile(m, newFile)),
+      }));
+      const appConfig = studioAppForFileKind(newFile.kind);
+      registerStandardRuntimeApp(createOpenDesktopApp({
+        id: newFile.id,
+        title: newFile.name,
+        appId: appConfig?.appId ?? String(newFile.kind),
+        fileId: newFile.id,
+        kind: newFile.kind,
+        nodeId: newId,
+        nodeType: original.type,
+      }));
+      window.setTimeout(() => openStandardBackedNode(newId, original.type, newFile.id, appConfig?.appId, {
+        appLabel: appConfig?.label ?? "App",
+        fileName: newFile.name,
+        canSaveAs: true,
+      }), 180);
+    }
+    scheduleProjectSave();
+  }, [nodes, openStandardBackedNode, registerStandardRuntimeApp, scheduleFoldderCanvasIntroEnd, scheduleProjectSave, setNodes, takeSnapshot]);
+
+  const openPresenterForDesignFile = useCallback((file: ProjectFile) => {
+    if (file.kind !== "designer" || !file.backingNodeId) {
+      window.alert("Presentar necesita un archivo .design con nodo Designer interno.");
+      return;
+    }
+    const designerNode = nodes.find((node) => node.id === file.backingNodeId);
+    if (!designerNode || designerNode.type !== "designer") {
+      window.alert("No encuentro el nodo Designer interno de este archivo.");
+      return;
+    }
+    const currentProjectFiles = getProjectFilesFromMetadata(metadata);
+    const existing = currentProjectFiles.items.find(
+      (row) =>
+        row.kind === "presenter" &&
+        row.metadata?.hidden !== true &&
+        (row.sourceFileId === file.id || row.sourceNodeId === file.backingNodeId) &&
+        row.backingNodeId &&
+        nodes.some((node) => node.id === row.backingNodeId && node.type === "presenter"),
+    );
+    if (existing?.backingNodeId) {
+      openStandardFile(existing);
+      return;
+    }
+
+    const connectedPresenterEdge = edges.find(
+      (edge) =>
+        edge.source === file.backingNodeId &&
+        (edge.targetHandle === "document" || edge.targetHandle == null) &&
+        nodes.some((node) => node.id === edge.target && node.type === "presenter"),
+    );
+    const connectedPresenterNode = connectedPresenterEdge
+      ? nodes.find((node) => node.id === connectedPresenterEdge.target && node.type === "presenter")
+      : null;
+    if (connectedPresenterNode) {
+      const nodeLabel =
+        typeof connectedPresenterNode.data?.label === "string" && connectedPresenterNode.data.label.trim()
+          ? connectedPresenterNode.data.label.trim()
+          : `Presentar ${file.name.replace(/\.design$/i, "")}`;
+      const projectFile = createProjectFileForStudioNode({
+        node: connectedPresenterNode as Node,
+        name: `${nodeLabel}.presenter`,
+        sourceFileId: file.id,
+        sourceNodeId: file.backingNodeId,
+      });
+      if (!projectFile) {
+        openStandardBackedNode(connectedPresenterNode.id, "presenter", undefined, "presenter");
+        return;
+      }
+      setMetadata((m: Record<string, unknown>) => ({
+        ...setProjectFilesInMetadata(m, upsertProjectFile(m, projectFile)),
+      }));
+      registerStandardRuntimeApp(createOpenDesktopApp({
+        id: projectFile.id,
+        title: projectFile.name,
+        appId: "presenter",
+        fileId: projectFile.id,
+        kind: "presenter",
+        nodeId: connectedPresenterNode.id,
+        nodeType: "presenter",
+      }));
+      window.setTimeout(() => openStandardBackedNode(connectedPresenterNode.id, "presenter", projectFile.id, "presenter", {
+        appLabel: "Presentar",
+        fileName: projectFile.name,
+        canSaveAs: true,
+      }), 120);
+      scheduleProjectSave();
+      return;
+    }
+
+    const nodeId = `presenter_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const nodeLabel = `Presentar ${file.name.replace(/\.design$/i, "")}`;
+    const presenterNode = {
+      id: nodeId,
+      type: "presenter",
+      position: {
+        x: designerNode.position.x + 420,
+        y: designerNode.position.y,
+      },
+      data: withFoldderCanvasIntro("presenter", {
+        ...defaultDataForCanvasDropNode("presenter"),
+        label: nodeLabel,
+      }),
+    };
+    const edge = {
+      id: `std-present-${file.backingNodeId}-${nodeId}-${Date.now()}`,
+      source: file.backingNodeId,
+      sourceHandle: "document",
+      target: nodeId,
+      targetHandle: "document",
+      type: "buttonEdge" as const,
+      animated: true,
+    };
+    const projectFile = createProjectFileForStudioNode({
+      node: presenterNode as Node,
+      name: `${nodeLabel}.presenter`,
+      sourceFileId: file.id,
+      sourceNodeId: file.backingNodeId,
+    });
+    takeSnapshot();
+    setNodes((nds) => [...nds, presenterNode]);
+    setEdges((eds) => [...eds, edge]);
+    scheduleFoldderCanvasIntroEnd(nodeId);
+    if (projectFile) {
+      setMetadata((m: Record<string, unknown>) => ({
+        ...setProjectFilesInMetadata(m, upsertProjectFile(m, projectFile)),
+      }));
+      registerStandardRuntimeApp(createOpenDesktopApp({
+        id: projectFile.id,
+        title: projectFile.name,
+        appId: "presenter",
+        fileId: projectFile.id,
+        kind: "presenter",
+        nodeId,
+        nodeType: "presenter",
+      }));
+      window.setTimeout(() => openStandardBackedNode(nodeId, "presenter", projectFile.id, "presenter", {
+        appLabel: "Presentar",
+        fileName: projectFile.name,
+        canSaveAs: true,
+      }), 180);
+    }
+    scheduleProjectSave();
+  }, [
+    edges,
+    metadata,
+    nodes,
+    openStandardBackedNode,
+    openStandardFile,
+    registerStandardRuntimeApp,
+    scheduleFoldderCanvasIntroEnd,
+    scheduleProjectSave,
+    setEdges,
+    setNodes,
+    takeSnapshot,
+  ]);
+
+  const handleDesktopDockAppClick = useCallback((app: StudioAppConfig) => {
+    const minimizedApp =
+      openDesktopApps.find((row) => row.appId === app.appId && row.status === "minimized") ??
+      (standardMinimizedApp?.appId === app.appId ? standardMinimizedApp : null);
+    if (minimizedApp) {
+      restoreStandardRuntimeApp(minimizedApp);
+      return;
+    }
+    if (app.appId === "brain") {
+      registerStandardRuntimeApp(createOpenDesktopApp({ id: "brain", title: "Brain", kind: "brain", appId: app.appId, nodeType: app.nodeType }));
+      setBrainInitialSection(null);
+      setProjectBrainOpen(true);
+      return;
+    }
+    if (app.appId === "files") {
+      openFoldder("panel");
+    }
+  }, [openDesktopApps, openFoldder, registerStandardRuntimeApp, restoreStandardRuntimeApp, standardMinimizedApp]);
+
+  useEffect(() => {
+    const onSaveAs = (event: Event) => {
+      const detail = (event as CustomEvent<FoldderStudioEventDetail>).detail;
+      const file =
+        (detail?.fileId ? projectFiles.items.find((item) => item.id === detail.fileId) : null) ??
+        standardActiveFile;
+      if (file) saveProjectFileAs(file);
+    };
+    const onMinimize = () => minimizeStandardRuntimeApp();
+    const onClose = () => closeStandardRuntimeApp();
+    window.addEventListener(FOLDDER_STANDARD_STUDIO_SAVE_AS_REQUEST_EVENT, onSaveAs as EventListener);
+    window.addEventListener(FOLDDER_STANDARD_STUDIO_MINIMIZE_REQUEST_EVENT, onMinimize);
+    window.addEventListener(FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT, onClose);
+    return () => {
+      window.removeEventListener(FOLDDER_STANDARD_STUDIO_SAVE_AS_REQUEST_EVENT, onSaveAs as EventListener);
+      window.removeEventListener(FOLDDER_STANDARD_STUDIO_MINIMIZE_REQUEST_EVENT, onMinimize);
+      window.removeEventListener(FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT, onClose);
+    };
+  }, [closeStandardRuntimeApp, minimizeStandardRuntimeApp, projectFiles.items, saveProjectFileAs, standardActiveFile]);
 
   // ── Node click: global z-order counter — each click brings that node above all others
   // **Solo `node.zIndex` (nivel superior), nunca `style.zIndex`:** XY Flow aplica style después
@@ -2147,6 +2897,7 @@ export function SpacesContent() {
       const uiSnapshot = {
         canvasBgId,
         canvasViewMode,
+        workspaceViewMode,
         cardsFocusIndex,
         viewport: getViewport(),
         navigationStack,
@@ -2154,13 +2905,18 @@ export function SpacesContent() {
         sidebarLockedCollapsed,
       };
 
+      const metadataToSave = setProjectFilesInMetadata(
+        metadata,
+        reconcileProjectFilesFromNodes(metadata, sanitizedGraph.nodes as Node[]),
+      );
+
       const projectToSave = {
         id: activeProjectId,
         name: nameToSave || currentName || 'Untitled Project',
         rootSpaceId: 'root',
         spaces: spacesToSave,
         metadata: {
-          ...metadata,
+          ...metadataToSave,
           ui: uiSnapshot,
           savedAt: new Date().toISOString(),
         },
@@ -2194,6 +2950,7 @@ export function SpacesContent() {
       } else {
         setSpacesMap(spacesToSave as Record<string, unknown>);
       }
+      setMetadata((savedProject.metadata || projectToSave.metadata) as Record<string, unknown>);
       setVisualReferenceAnalysisDirty(false);
       return true;
     } catch (err) {
@@ -2419,6 +3176,7 @@ export function SpacesContent() {
         | {
             canvasBgId?: string;
             canvasViewMode?: 'free' | 'cards';
+            workspaceViewMode?: WorkspaceViewMode;
             cardsFocusIndex?: number;
             viewport?: { x?: number; y?: number; zoom?: number };
             navigationStack?: string[];
@@ -2467,6 +3225,11 @@ export function SpacesContent() {
       }
       if (ui?.canvasViewMode === 'free' || ui?.canvasViewMode === 'cards') {
         setCanvasViewMode(ui.canvasViewMode);
+      }
+      if (ui?.workspaceViewMode === 'standard' || ui?.workspaceViewMode === 'pro') {
+        setWorkspaceViewMode(ui.workspaceViewMode);
+      } else {
+        setWorkspaceViewMode('standard');
       }
       if (typeof ui?.sidebarLockedCollapsed === 'boolean') {
         setSidebarLockedCollapsed(ui.sidebarLockedCollapsed);
@@ -3778,7 +4541,7 @@ export function SpacesContent() {
         style={{ height: '100%' }}
       >
       {/* Sidebar: solo tras autenticar (oculto en pantalla de acceso) */}
-      {isAuthenticated && (
+      {isAuthenticated && workspaceViewMode === 'pro' && (
         <div data-foldder-sidebar style={{ position: 'fixed', top: 0, left: 0, height: '100vh', zIndex: 10003 }}>
           <Sidebar
             onLibraryDragStart={handleLibraryDragStart}
@@ -4117,6 +4880,7 @@ export function SpacesContent() {
         )}
 
         {/* Action HUD — fila1: agente (izq.) + acciones (der.); fila2: accesos fijos inferiores. Oculto con body.nb-studio-open (Nano Banana Studio fullscreen). */}
+        {workspaceViewMode === 'pro' && (
         <div
           key="action-hud"
           data-foldder-top-hud
@@ -4183,8 +4947,25 @@ export function SpacesContent() {
                   : 'pointer-events-auto flex w-full min-w-0 flex-1 items-center justify-between gap-3'
               }
             >
-              {/* Quick Actions — fondo / pantalla / proyectos (pins abajo en `TopbarPins`) */}
+              {/* Quick Actions — fondo / pantalla / Foldder (pins abajo en `TopbarPins`) */}
               <div className="flex shrink-0 gap-1.5">
+                <div className="flex h-10 items-center rounded-xl border border-white/25 bg-white/[0.08] p-1 shadow-sm backdrop-blur-xl">
+                  <button
+                    type="button"
+                    onClick={() => setWorkspaceViewMode('standard')}
+                    className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-[8px] font-black uppercase tracking-widest text-slate-700 transition hover:bg-white/20"
+                  >
+                    <Workflow size={12} />
+                    Estándar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setWorkspaceViewMode('pro')}
+                    className="flex h-8 items-center gap-1.5 rounded-lg bg-white px-2 text-[8px] font-black uppercase tracking-widest text-slate-900 shadow-sm"
+                  >
+                    Pro
+                  </button>
+                </div>
                 <div className="relative" ref={canvasBgMenuRef}>
                   <button
                     type="button"
@@ -4267,10 +5048,9 @@ export function SpacesContent() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => !projectDeleteInProgress && openLoadProjectsModal()}
-                  disabled={!!projectDeleteInProgress}
-                  title={projectDeleteInProgress ? 'Espera a que termine el borrado' : 'My Spaces'}
-                  className="group flex h-10 w-10 items-center justify-center rounded-xl border border-white/25 bg-white/[0.08] text-slate-700 shadow-sm backdrop-blur-xl transition-all hover:scale-105 hover:bg-white/[0.15] hover:text-slate-900 disabled:pointer-events-none disabled:opacity-40"
+                  onClick={() => openFoldder("fullscreen")}
+                  title="Abrir Foldder"
+                  className="group flex h-10 w-10 items-center justify-center rounded-xl border border-white/25 bg-white/[0.08] text-slate-700 shadow-sm backdrop-blur-xl transition-all hover:scale-105 hover:bg-white/[0.15] hover:text-slate-900"
                 >
                   <FolderOpen size={16} className="text-slate-700 group-hover:text-slate-900" />
                 </button>
@@ -4360,9 +5140,10 @@ export function SpacesContent() {
             </div>
           )}
         </div>
+        )}
 
-        {/* Barra inferior: Brain, Design, Present, Image, Video, VFX, Assets */}
-        {isAuthenticated && (
+        {/* Barra inferior: Brain, Design, Present, Image, Video y Foldder */}
+        {isAuthenticated && workspaceViewMode === 'pro' && (
           <div
             data-foldder-top-hud
             className="pointer-events-none absolute bottom-6 left-0 right-0 z-[120] flex items-end justify-center overflow-visible px-4"
@@ -4374,11 +5155,63 @@ export function SpacesContent() {
                 setBrainInitialSection(null);
                 setProjectBrainOpen(true);
               }}
-              onAssetsClick={() => setProjectAssetsOpen(true)}
+              onAssetsClick={() => openFoldder("fullscreen")}
               onPinDoubleClick={addNodeFromTopbarPinDoubleClick}
               paletteDragActive={paletteDragActive}
             />
           </div>
+        )}
+
+        {isAuthenticated && workspaceViewMode === 'standard' && (
+          <StandardDesktopView
+            projectName={currentName}
+            files={projectFiles.items}
+            importedMedia={foldderLibrarySections.importedMedia}
+            generatedMedia={foldderLibrarySections.generatedMedia}
+            exports={foldderLibrarySections.exports}
+            workspaceViewMode={workspaceViewMode}
+            activeAppId={activeDesktopAppId}
+            minimizedAppId={minimizedDesktopAppId}
+            onViewModeChange={setWorkspaceViewMode}
+            onDockAppClick={handleDesktopDockAppClick}
+            onCreateFileForApp={createStandardFileForApp}
+            onOpenFile={openStandardFile}
+            onRenameFile={renameProjectFile}
+            onSaveAsFile={saveProjectFileAs}
+            onHideFile={hideProjectFile}
+            onPresentDesignFile={openPresenterForDesignFile}
+            onOpenFoldder={() => openFoldder("panel")}
+            onOpenFoldderFullscreen={() => openFoldder("fullscreen")}
+            onNewProject={() => {
+              if (projectDeleteInProgress) return;
+              setNewProjectNameInput('');
+              setShowNewProjectModal(true);
+            }}
+            onSignOut={() => {
+              setPasscodeBypass(false);
+              setPasscode("");
+              setPassError(false);
+              if (sessionStatus === "authenticated") {
+                void signOut({ callbackUrl: "/spaces" });
+              }
+            }}
+            userName={session?.user?.name ?? null}
+            userEmail={session?.user?.email ?? null}
+            userImage={session?.user?.image ?? null}
+            foldderOpenRequest={standardFoldderOpenRequest}
+            canvasBgId={canvasBgId}
+            onCanvasBgChange={setCanvasBgId}
+          />
+        )}
+
+        {isAuthenticated && workspaceViewMode === 'standard' && primaryMinimizedApp && (
+          <button
+            type="button"
+            onClick={() => restoreStandardRuntimeApp(primaryMinimizedApp)}
+            className="fixed bottom-24 left-1/2 z-[95] -translate-x-1/2 rounded-2xl border border-white/18 bg-black/55 px-4 py-2 text-[11px] font-light uppercase tracking-[0.16em] text-white/75 shadow-2xl backdrop-blur-2xl transition hover:bg-black/70 hover:text-white"
+          >
+            Restaurar {primaryMinimizedApp.title}
+          </button>
         )}
 
         {isAuthenticated && (
@@ -4387,6 +5220,7 @@ export function SpacesContent() {
             onClose={() => {
               setProjectBrainOpen(false);
               setBrainInitialSection(null);
+              if (standardRuntimeApp?.kind === "brain") closeRegisteredDesktopApp(standardRuntimeApp);
             }}
             assetsMetadata={metadata.assets}
             projectId={activeProjectId}
@@ -4408,9 +5242,13 @@ export function SpacesContent() {
         {isAuthenticated && (
           <ProjectAssetsFullscreen
             open={projectAssetsOpen}
-            onClose={() => setProjectAssetsOpen(false)}
+            onClose={() => {
+              setProjectAssetsOpen(false);
+              if (standardRuntimeApp?.kind === "assets") closeRegisteredDesktopApp(standardRuntimeApp);
+            }}
             nodes={nodes}
             assetsMetadata={metadata.assets}
+            projectFiles={projectFiles}
             projectScopeId={projectScopeId}
           />
         )}

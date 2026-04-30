@@ -18,6 +18,11 @@ import { NodeIcon } from "./foldder-icons";
 import { resolveFoldderNodeState } from "./foldder-icons";
 import { resolvePromptValueFromEdgeSource } from "./canvas-group-logic";
 import { BeebleVfxStudio, type BeebleAlphaMode } from "./BeebleVfxStudio";
+import type { StandardStudioShellConfig } from "./StandardStudioShell";
+import {
+  FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT,
+  type FoldderStudioEventDetail,
+} from "./desktop-studio-events";
 import { BeebleClient, type BeebleJob } from "@/lib/beeble-api";
 import { useBeebleJobPoller } from "@/hooks/useBeebleJobPoller";
 import { runAiJobWithNotification } from "@/lib/ai-job-notifications";
@@ -98,6 +103,7 @@ export const VfxGeneratorNode = memo(({ id, data, selected }: NodeProps<any>) =>
   const nodes = useNodes();
   const updateNodeInternals = useUpdateNodeInternals();
   const [showStudio, setShowStudio] = useState(false);
+  const [standardShell, setStandardShell] = useState<StandardStudioShellConfig | null>(null);
   const [isLaunching, setIsLaunching] = useState(false);
   const [historyJobs, setHistoryJobs] = useState<BeebleJob[]>([]);
   const currentNode = nodes.find((node) => node.id === id);
@@ -113,6 +119,31 @@ export const VfxGeneratorNode = memo(({ id, data, selected }: NodeProps<any>) =>
     },
     [id, setNodes],
   );
+
+  useEffect(() => {
+    const onOpenStudio = (ev: Event) => {
+      const detail = (ev as CustomEvent<FoldderStudioEventDetail>).detail;
+      if (detail?.nodeId !== id) return;
+      setStandardShell(detail.standardShell ? { ...detail.standardShell, nodeId: id, nodeType: "vfxGenerator", fileId: detail.fileId, appId: detail.appId } : null);
+      setShowStudio(true);
+    };
+    const onCloseStudio = (ev: Event) => {
+      const detail = (ev as CustomEvent<FoldderStudioEventDetail>).detail;
+      if (detail?.nodeId !== id) return;
+      setStandardShell(null);
+      setShowStudio(false);
+    };
+    window.addEventListener("foldder:open-studio", onOpenStudio as EventListener);
+    window.addEventListener("foldder-open-node-studio", onOpenStudio as EventListener);
+    window.addEventListener("foldder:close-studio", onCloseStudio as EventListener);
+    window.addEventListener("foldder-close-node-studio", onCloseStudio as EventListener);
+    return () => {
+      window.removeEventListener("foldder:open-studio", onOpenStudio as EventListener);
+      window.removeEventListener("foldder-open-node-studio", onOpenStudio as EventListener);
+      window.removeEventListener("foldder:close-studio", onCloseStudio as EventListener);
+      window.removeEventListener("foldder-close-node-studio", onCloseStudio as EventListener);
+    };
+  }, [id]);
 
   const edgeVideo = useMemo(
     () => edges.find((e) => e.target === id && e.targetHandle === "sourceVideo"),
@@ -422,7 +453,10 @@ export const VfxGeneratorNode = memo(({ id, data, selected }: NodeProps<any>) =>
           </div>
         )}
 
-        <FoldderStudioModeCenterButton onClick={() => setShowStudio(true)} />
+        <FoldderStudioModeCenterButton onClick={() => {
+          setStandardShell(null);
+          setShowStudio(true);
+        }} />
 
         {isBusy && (
           <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-[50]">
@@ -441,7 +475,19 @@ export const VfxGeneratorNode = memo(({ id, data, selected }: NodeProps<any>) =>
 
       {showStudio && (
         <BeebleVfxStudio
-          onClose={() => setShowStudio(false)}
+          standardShell={standardShell ?? undefined}
+          onClose={() => {
+            const shell = standardShell;
+            setStandardShell(null);
+            setShowStudio(false);
+            if (shell && typeof window !== "undefined") {
+              window.dispatchEvent(
+                new CustomEvent(FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT, {
+                  detail: { nodeId: id, nodeType: "vfxGenerator", fileId: shell.fileId, appId: shell.appId },
+                }),
+              );
+            }
+          }}
           updatePatch={updatePatch}
           nodeLabel={typeof nodeData.label === "string" ? nodeData.label : ""}
           sourceVideoUri={sourceVideoUri}

@@ -29,6 +29,9 @@ import {
 } from "../canvas-group-logic";
 import { withFoldderCanvasIntro } from "../spaces-canvas-intro";
 import type { DesignerStudioApi, FreehandObject } from "../FreehandStudio";
+import { dispatchFoldderExportCreated } from "../foldder-export-events";
+import { FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT, type FoldderStudioEventDetail } from "../desktop-studio-events";
+import type { StandardStudioShellConfig } from "../StandardStudioShell";
 import type { PhotoRoomNodeStudioData } from "./photo-room-types";
 import { registerPendingNanoStudioOpenFromPhotoRoom } from "./photo-room-nano-open-pending";
 
@@ -96,6 +99,7 @@ export const PhotoRoomNode = memo(({ id, data, selected }: NodeProps<any>) => {
   const { setNodes, setEdges, getNodes, getEdges, fitView } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
   const [showStudio, setShowStudio] = useState(false);
+  const [standardShell, setStandardShell] = useState<StandardStudioShellConfig | null>(null);
   const studioApiRef = useRef<DesignerStudioApi | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
@@ -426,12 +430,29 @@ export const PhotoRoomNode = memo(({ id, data, selected }: NodeProps<any>) => {
   /** Volver desde Nano Banana Studio (flujo «Modificar imagen con IA»): reabrir este PhotoRoom en Studio. */
   useEffect(() => {
     const openStudio = (ev: Event) => {
-      const d = (ev as CustomEvent<{ photoRoomNodeId: string }>).detail;
-      if (d?.photoRoomNodeId !== id) return;
+      const d = (ev as CustomEvent<FoldderStudioEventDetail & { photoRoomNodeId?: string }>).detail;
+      if (d?.photoRoomNodeId !== id && d?.nodeId !== id) return;
+      setStandardShell(d.standardShell ? { ...d.standardShell, nodeId: id, nodeType: "photoRoom", fileId: d.fileId, appId: d.appId } : null);
       setShowStudio(true);
     };
+    const closeStudio = (ev: Event) => {
+      const d = (ev as CustomEvent<{ photoRoomNodeId?: string; nodeId?: string }>).detail;
+      if (d?.photoRoomNodeId !== id && d?.nodeId !== id) return;
+      setStandardShell(null);
+      setShowStudio(false);
+    };
     window.addEventListener("foldder-open-photo-room-studio", openStudio as EventListener);
-    return () => window.removeEventListener("foldder-open-photo-room-studio", openStudio as EventListener);
+    window.addEventListener("foldder:open-studio", openStudio as EventListener);
+    window.addEventListener("foldder-open-node-studio", openStudio as EventListener);
+    window.addEventListener("foldder:close-studio", closeStudio as EventListener);
+    window.addEventListener("foldder-close-node-studio", closeStudio as EventListener);
+    return () => {
+      window.removeEventListener("foldder-open-photo-room-studio", openStudio as EventListener);
+      window.removeEventListener("foldder:open-studio", openStudio as EventListener);
+      window.removeEventListener("foldder-open-node-studio", openStudio as EventListener);
+      window.removeEventListener("foldder:close-studio", closeStudio as EventListener);
+      window.removeEventListener("foldder-close-node-studio", closeStudio as EventListener);
+    };
   }, [id]);
 
   const previewUrl = useMemo(() => {
@@ -663,7 +684,10 @@ export const PhotoRoomNode = memo(({ id, data, selected }: NodeProps<any>) => {
             </span>
           </div>
         )}
-        <FoldderStudioModeCenterButton onClick={() => setShowStudio(true)} />
+        <FoldderStudioModeCenterButton onClick={() => {
+          setStandardShell(null);
+          setShowStudio(true);
+        }} />
       </div>
 
       {showStudio ? (
@@ -689,7 +713,19 @@ export const PhotoRoomNode = memo(({ id, data, selected }: NodeProps<any>) => {
             onPhotoRoomOpenConnectedNanoStudio={handlePhotoRoomOpenConnectedNanoStudio}
             onPersist={persistStudio}
             onExportPreview={handleStudioExportPreview}
-            onClose={() => setShowStudio(false)}
+            onFinalExport={(detail) => {
+              dispatchFoldderExportCreated({ ...detail, sourceNodeId: id });
+            }}
+            standardShell={standardShell ?? undefined}
+            onClose={() => {
+              setShowStudio(false);
+              setStandardShell(null);
+              if (standardShell && typeof window !== "undefined") {
+                window.dispatchEvent(new CustomEvent(FOLDDER_STANDARD_STUDIO_CLOSE_REQUEST_EVENT, {
+                  detail: { nodeId: id, nodeType: "photoRoom", fileId: standardShell.fileId, appId: standardShell.appId },
+                }));
+              }
+            }}
           />
         </Suspense>
       ) : null}
