@@ -1271,8 +1271,7 @@ export function SpacesContent() {
   }, [getViewport, scheduleNotesProjectSave, setNodes]);
 
   const syncStandardNoteHeight = useCallback((nodeId: string, heightPx: number) => {
-    const zoom = Math.max(getViewport().zoom || 1, 0.01);
-    const nextHeight = Math.max(NOTE_HEIGHT, heightPx / zoom);
+    const nextHeight = Math.max(NOTE_HEIGHT, heightPx);
     setNodes((nds) =>
       nds.map((node) => {
         if (node.id !== nodeId) return node;
@@ -1301,7 +1300,7 @@ export function SpacesContent() {
       requestAnimationFrame(() => updateNodeInternals(nodeId));
     });
     scheduleNotesProjectSave();
-  }, [getViewport, scheduleNotesProjectSave, setNodes, updateNodeInternals]);
+  }, [scheduleNotesProjectSave, setNodes, updateNodeInternals]);
 
   const dispatchStudioOpen = useCallback((detail: FoldderStudioEventDetail) => {
     dispatchFoldderStudioEvent(FOLDDER_OPEN_STUDIO_EVENT, detail);

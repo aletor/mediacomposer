@@ -292,16 +292,9 @@ const Sidebar = ({
         style={{ willChange: 'width' }}
       >
         <div className="h-full w-[178px] bg-transparent border-r border-white/8 flex flex-col min-h-0">
-          <div className="px-0 mb-2 pt-2 flex-1 min-h-0 overflow-y-auto custom-scrollbar">
-            <div className="text-[10px] font-black text-white/60 uppercase tracking-[3px] mb-5 flex items-center gap-2 px-1">
-              <NodeIconMono iconKey="layout" size={13} className="shrink-0 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" /> <span>Node Library</span>
-            </div>
-
+          <div className="px-0 mb-2 pt-20 flex-1 min-h-0 overflow-y-auto custom-scrollbar">
             {/* 🚀 HIGH END PRODUCTION */}
-            <div className="mb-6">
-              <h3 className="text-[8px] font-black text-white/55 uppercase tracking-widest mb-3 px-1 flex items-center gap-1.5 whitespace-nowrap overflow-hidden">
-                <NodeIconMono iconKey="asset" size={10} className="shrink-0 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" /> <span>High End Production</span>
-              </h3>
+            <div className="mb-4">
               <div className="mx-auto grid w-full max-w-[164px] grid-cols-2 gap-[8px]">
                 {HIGH_END_PRODUCTION_ITEMS.map(item => (
                   <div key={item.type}
@@ -326,10 +319,7 @@ const Sidebar = ({
             </div>
 
             {/* 🛠 TOOLS */}
-            <div className="mb-6">
-              <h3 className="text-[8px] font-black text-white/55 uppercase tracking-widest mb-3 px-1 flex items-center gap-1.5">
-                <NodeIconMono iconKey="grok" size={10} className="shrink-0 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" /> <span>Tools</span>
-              </h3>
+            <div className="mb-4">
               <div className="mx-auto grid w-full max-w-[164px] grid-cols-3 gap-[1px]">
                 {TOOL_ITEMS.map(item => (
                   <div key={item.type}

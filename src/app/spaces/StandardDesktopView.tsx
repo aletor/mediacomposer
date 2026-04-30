@@ -75,39 +75,20 @@ function DesktopFolderTile({
       type="button"
       onClick={onOpen}
       onDoubleClick={onOpen}
-      className="group relative flex min-h-[132px] w-full flex-col items-start justify-between overflow-hidden rounded-[18px] border border-white/14 bg-black/30 p-3.5 text-left shadow-[0_12px_28px_-20px_rgba(0,0,0,0.9)] backdrop-blur-xl transition-[transform,border-color,background-color,box-shadow] duration-300 hover:-translate-y-0.5 hover:border-white/24 hover:bg-black/42 hover:shadow-[0_18px_36px_-22px_rgba(0,0,0,0.95)]"
+      className="group relative flex w-[104px] flex-col items-center gap-2 rounded-[18px] border border-white/10 bg-white/[0.035] px-2.5 py-3 text-center shadow-[0_10px_24px_-18px_rgba(0,0,0,0.75)] backdrop-blur-[3px] transition-[transform,border-color,background-color,box-shadow] duration-300 hover:-translate-y-0.5 hover:border-white/24 hover:bg-white/[0.07] hover:shadow-[0_16px_30px_-22px_rgba(0,0,0,0.95)]"
     >
       <span
-        className="pointer-events-none absolute inset-x-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-white/35 to-transparent opacity-80"
-        aria-hidden
-      />
-
-      <div className="flex w-full items-start justify-between gap-2.5">
-        <span
-          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-white/18 bg-gradient-to-br ${tone} shadow-lg transition duration-300 group-hover:scale-105`}
-        >
-          {icon}
-        </span>
-        <span className="inline-flex h-7 min-w-[1.8rem] items-center justify-center rounded-full border border-white/14 bg-white/[0.06] px-2 text-[10px] font-light tabular-nums text-white/68">
+        className={`relative flex h-14 w-14 shrink-0 items-center justify-center rounded-[17px] border border-white/18 bg-gradient-to-br ${tone} shadow-[0_12px_22px_-16px_rgba(0,0,0,0.9)] transition duration-300 group-hover:scale-105`}
+      >
+        {icon}
+        <span className="absolute -right-1.5 -top-1.5 inline-flex h-6 min-w-6 items-center justify-center rounded-full border border-white/18 bg-black/42 px-1.5 text-[10px] font-light tabular-nums text-white/78 shadow-sm backdrop-blur-md">
           {count}
         </span>
-      </div>
-
-      <div className="mt-2.5 min-w-0">
-        <span className="block truncate text-[14px] font-light leading-none tracking-[0.18em] text-white">
-          {title}
-        </span>
-        <span className="mt-2 block line-clamp-2 max-w-[28ch] text-[11px] font-light leading-snug text-white/50">
-          {subtitle}
-        </span>
-      </div>
-
-      <span className="mt-2 inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.035] px-2 py-0.5 text-[9px] font-light uppercase tracking-[0.14em] text-white/44 transition-colors duration-300 group-hover:text-white/70">
-        Abrir
-        <span className="text-[10px]" aria-hidden>
-          →
-        </span>
       </span>
+      <span className="block max-w-full truncate text-[10px] font-light uppercase leading-tight tracking-[0.14em] text-white/82">
+        {title}
+      </span>
+      <span className="sr-only">{subtitle}</span>
     </button>
   );
 }
@@ -170,21 +151,24 @@ export function StandardDesktopView({
   const activePinType = mapAppIdToPinType(activeAppId);
   const minimizedPinType = mapAppIdToPinType(minimizedAppId);
   const noteCards = useMemo(
-    () =>
-      notes.map((node) => {
+    () => {
+      let nextTop = 176;
+      return notes.map((node) => {
         const style = (node.style as { width?: number; height?: number } | undefined) ?? {};
-        const width = typeof style.width === "number" ? style.width : NOTE_WIDTH;
+        const width = Math.min(typeof style.width === "number" ? style.width : NOTE_WIDTH, NOTE_WIDTH);
         const height = typeof style.height === "number" ? style.height : NOTE_HEIGHT;
+        const top = nextTop;
+        nextTop += height + 18;
         return {
           node,
           data: normalizeNotesNodeData(node.data),
-          left: node.position.x * canvasViewport.zoom + canvasViewport.x,
-          top: node.position.y * canvasViewport.zoom + canvasViewport.y,
-          width: width * canvasViewport.zoom,
-          height: height * canvasViewport.zoom,
+          top,
+          width,
+          height,
         };
-      }),
-    [canvasViewport.x, canvasViewport.y, canvasViewport.zoom, notes],
+      });
+    },
+    [notes],
   );
 
   useEffect(() => {
@@ -207,15 +191,15 @@ export function StandardDesktopView({
       aria-label="Vista estándar Foldder"
     >
       <CanvasWallpaperTransition activeId={canvasBgId} options={CANVAS_BACKGROUNDS} />
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_16%,rgba(99,212,253,0.24),transparent_34%),radial-gradient(circle_at_82%_72%,rgba(253,176,75,0.2),transparent_38%),linear-gradient(180deg,rgba(0,0,0,0.15),rgba(0,0,0,0.72))]" />
+      <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_18%_16%,rgba(99,212,253,0.16),transparent_34%),radial-gradient(circle_at_82%_72%,rgba(253,176,75,0.12),transparent_38%),linear-gradient(180deg,rgba(0,0,0,0.03),rgba(0,0,0,0.18))]" />
 
-      <div className="pointer-events-none absolute inset-0 z-[1]">
-        {noteCards.map(({ node, data, left, top, width, height }) => (
+      <div className="pointer-events-none absolute inset-0 z-[3]">
+        {noteCards.map(({ node, data, top, width, height }) => (
           <div
             key={node.id}
             className="pointer-events-auto absolute"
             style={{
-              left,
+              right: 36,
               top,
               width,
               height,
@@ -252,19 +236,18 @@ export function StandardDesktopView({
         <span className="text-[11px] font-semibold uppercase tracking-[0.18em]">Nueva nota</span>
       </button>
 
-      <main className="relative z-[2] flex h-full w-full items-center justify-center px-8 pb-32 pt-28">
-        <div className="absolute left-10 top-28 w-[min(980px,calc(100vw-5rem))]">
-          <div className="mb-6">
+      <main className="pointer-events-none relative z-[2] flex h-full w-full items-center justify-center px-8 pb-32 pt-28">
+        <div className="pointer-events-auto absolute left-10 top-28 w-[min(560px,calc(100vw-5rem))]">
+          <div className="mb-5">
             <p className="text-[10px] font-light uppercase tracking-[0.26em] text-white/42">
               Project Desktop
             </p>
             <h1 className="mt-1 text-3xl font-light tracking-[0.08em] text-white">Foldder</h1>
-            <p className="mt-2 max-w-lg text-[12px] font-light leading-relaxed text-white/48">
+            <p className="mt-2 max-w-md text-[12px] font-light leading-relaxed text-white/48">
               En Vista Pro, Foldder es un nodo. En Vista estándar, Foldder es el escritorio del proyecto.
             </p>
           </div>
-          <div className="rounded-[22px] border border-white/10 bg-black/14 p-3.5 backdrop-blur-[2px] md:p-4">
-            <div className="mx-auto grid max-w-[860px] grid-cols-2 gap-3 lg:grid-cols-4">
+          <div className="flex flex-wrap gap-4">
             <DesktopFolderTile
               title="Imported Media"
               subtitle="Uploads, URLs, logos y referencias"
@@ -297,11 +280,13 @@ export function StandardDesktopView({
               icon={<PackageOpen className="h-5 w-5 text-emerald-100" strokeWidth={1.6} />}
               onOpen={() => openFoldderSection("exports")}
             />
-            </div>
           </div>
         </div>
 
-        {folderOpen && (
+      </main>
+
+      {folderOpen && (
+        <div className="pointer-events-auto fixed inset-0 z-[140] flex items-center justify-center p-5">
           <ProjectFolderView
             files={rows}
             importedMedia={importedMedia}
@@ -316,8 +301,8 @@ export function StandardDesktopView({
             onOpenFoldderFullscreen={onOpenFoldderFullscreen}
             initialSection={folderSection}
           />
-        )}
-      </main>
+        </div>
+      )}
 
       {launcherApp && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 p-5 backdrop-blur-sm">
