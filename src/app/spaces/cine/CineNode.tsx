@@ -4,6 +4,7 @@ import React, { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { NodeProps, useEdges, useNodes, useReactFlow } from "@xyflow/react";
 import { Film } from "lucide-react";
 import { defaultDataForCanvasDropNode } from "@/lib/canvas-connect-end-drop";
+import { tryExtractKnowledgeFilesKeyFromUrl } from "@/lib/s3-media-hydrate";
 import { CineStudio } from "../CineStudio";
 import {
   CINE_MODE_LABELS,
@@ -13,7 +14,20 @@ import {
   type CineImageStudioSession,
   type CineNodeData,
 } from "../cine-types";
-import { applyCineImageStudioResult } from "../cine-engine";
+import {
+  applyCineImageStudioResult,
+  buildCineMediaListOutput,
+  getEffectiveCharacterSheetAsset,
+  getEffectiveCharacterSheetS3Key,
+  getEffectiveCineBackgroundAsset,
+  getEffectiveCineBackgroundS3Key,
+  getEffectiveCineCharacterAsset,
+  getEffectiveCineCharacterS3Key,
+  getEffectiveCineFrameAsset,
+  getEffectiveCineFrameS3Key,
+  getEffectiveLocationSheetAsset,
+  getEffectiveLocationSheetS3Key,
+} from "../cine-engine";
 import { withFoldderCanvasIntro } from "../spaces-canvas-intro";
 import {
   StudioCanvasNodeShell,
@@ -28,12 +42,105 @@ import {
   registerPendingNanoStudioOpenFromCine,
 } from "./cine-nano-open-pending";
 
+type CineCanvasPreviewImage = {
+  src: string;
+  s3Key?: string;
+  title: string;
+  label: string;
+};
+
+function latestCineCanvasImage(data: CineNodeData): CineCanvasPreviewImage | null {
+  const candidates: CineCanvasPreviewImage[] = [];
+  const push = (src: string | undefined, s3Key: string | undefined, title: string, label: string) => {
+    if (src) candidates.push({ src, s3Key, title, label });
+  };
+  push(getEffectiveCharacterSheetAsset(data), getEffectiveCharacterSheetS3Key(data), "Hoja de continuidad", "Reparto");
+  push(getEffectiveLocationSheetAsset(data), getEffectiveLocationSheetS3Key(data), "Hoja de localizaciones", "Fondos");
+  data.characters.forEach((character) =>
+    push(getEffectiveCineCharacterAsset(character), getEffectiveCineCharacterS3Key(character), character.name || "Personaje", "Personaje"),
+  );
+  data.backgrounds.forEach((background) =>
+    push(getEffectiveCineBackgroundAsset(background), getEffectiveCineBackgroundS3Key(background), background.name || "Fondo", "Fondo"),
+  );
+  data.scenes.forEach((scene) => {
+    push(getEffectiveCineFrameAsset(scene.frames.single), getEffectiveCineFrameS3Key(scene.frames.single), scene.title || "Escena", `Escena ${scene.order}`);
+    push(getEffectiveCineFrameAsset(scene.frames.start), getEffectiveCineFrameS3Key(scene.frames.start), scene.title || "Escena", `Escena ${scene.order} · inicio`);
+    push(getEffectiveCineFrameAsset(scene.frames.end), getEffectiveCineFrameS3Key(scene.frames.end), scene.title || "Escena", `Escena ${scene.order} · final`);
+  });
+  return candidates.at(-1) ?? null;
+}
+
+const CINE_NODE_S3_URL_TTL_MS = 50 * 60 * 1000;
+const cineNodePresignedUrlCache = new globalThis.Map<string, { url: string; expiresAt: number }>();
+const cineNodePresignInFlight = new globalThis.Map<string, Promise<string | null>>();
+
+function resolveCineNodeS3Key(src?: string, s3Key?: string): string | undefined {
+  const direct = typeof s3Key === "string" && s3Key.trim() ? s3Key.trim() : "";
+  if (direct) return direct;
+  const fromUrl = typeof src === "string" ? tryExtractKnowledgeFilesKeyFromUrl(src) : null;
+  return fromUrl || undefined;
+}
+
+async function presignCineNodeS3Key(key: string): Promise<string | null> {
+  const cached = cineNodePresignedUrlCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.url;
+  const pending = cineNodePresignInFlight.get(key);
+  if (pending) return pending;
+  const promise = (async () => {
+    try {
+      const res = await fetch("/api/spaces/s3-presign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keys: [key] }),
+      });
+      if (!res.ok) return null;
+      const payload = (await res.json()) as { urls?: Record<string, string> };
+      const url = payload.urls?.[key];
+      if (!url) return null;
+      cineNodePresignedUrlCache.set(key, { url, expiresAt: Date.now() + CINE_NODE_S3_URL_TTL_MS });
+      return url;
+    } catch {
+      return null;
+    } finally {
+      cineNodePresignInFlight.delete(key);
+    }
+  })();
+  cineNodePresignInFlight.set(key, promise);
+  return promise;
+}
+
+function useCineNodeResolvedImageUrl(src?: string, s3Key?: string): { url?: string; refresh: () => void } {
+  const [resolved, setResolved] = useState<{ cacheKey: string; url: string } | null>(null);
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const key = resolveCineNodeS3Key(src, s3Key);
+  const cacheKey = `${src || ""}\u0001${key || ""}`;
+  useEffect(() => {
+    let cancelled = false;
+    if (!key) return () => {
+      cancelled = true;
+    };
+    void (async () => {
+      const fresh = await presignCineNodeS3Key(key);
+      if (!cancelled && fresh) setResolved({ cacheKey, url: fresh });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cacheKey, key, refreshNonce]);
+  return {
+    url: key ? (resolved?.cacheKey === cacheKey ? resolved.url : undefined) : src,
+    refresh: () => {
+      if (key) cineNodePresignedUrlCache.delete(key);
+      setRefreshNonce((value) => value + 1);
+    },
+  };
+}
+
 const CINE_NODE_HANDLES: StudioCanvasNodeHandleSpec[] = [
   { side: "left", top: "30%", type: "target", id: "prompt", dataType: "prompt", label: "Guion" },
   { side: "left", top: "54%", type: "target", id: "text", dataType: "txt", label: "Text" },
   { side: "left", top: "78%", type: "target", id: "brain", dataType: "brain", label: "Brain" },
-  { side: "right", top: "40%", type: "source", id: "storyboard", dataType: "generic", label: "Storyboard" },
-  { side: "right", top: "68%", type: "source", id: "videoScenes", dataType: "generic", label: "Video plan" },
+  { side: "right", top: "52%", type: "source", id: "media_list", dataType: "generic", label: "Media List" },
 ];
 
 export const CineNode = memo(function CineNode({ id, data, selected }: NodeProps) {
@@ -42,7 +149,7 @@ export const CineNode = memo(function CineNode({ id, data, selected }: NodeProps
   const nodes = useNodes();
   const edges = useEdges();
   const [studioReturn, setStudioReturn] = useState<{
-    tab?: "script" | "cast" | "backgrounds" | "storyboard" | "output";
+    tab?: "direction" | "script" | "cast" | "backgrounds" | "storyboard" | "output";
     sceneId?: string;
   } | null>(null);
   const { isStudioOpen, openStudio, closeStudio } = useStudioNodeController({
@@ -76,6 +183,7 @@ export const CineNode = memo(function CineNode({ id, data, selected }: NodeProps
 
   const patchData = useCallback(
     (next: CineNodeData) => {
+      const mediaListOutput = buildCineMediaListOutput(next, id);
       setNodes((nds) =>
         nds.map((node) =>
           node.id === id
@@ -84,14 +192,16 @@ export const CineNode = memo(function CineNode({ id, data, selected }: NodeProps
                 data: {
                   ...node.data,
                   ...next,
-                  value: next.value || JSON.stringify({ scenes: next.scenes.length, framesPrepared }),
+                  mediaListOutput,
+                  media_list: mediaListOutput,
+                  value: JSON.stringify(mediaListOutput),
                 },
               }
             : node,
         ),
       );
     },
-    [framesPrepared, id, setNodes],
+    [id, setNodes],
   );
 
   const getOrCreateCineImageStudioNode = useCallback((): string | null => {
@@ -156,18 +266,28 @@ export const CineNode = memo(function CineNode({ id, data, selected }: NodeProps
         result?: CineImageStudioResult;
       }>).detail;
       if (detail?.cineNodeId !== id) return;
-      if (detail.session && detail.result?.assetId) {
-        setNodes((nds) =>
-          nds.map((node) =>
-            node.id === id
-              ? {
-                  ...node,
-                  data: applyCineImageStudioResult(normalizeCineData(node.data), detail.session!, detail.result!),
-                }
-              : node,
-          ),
-        );
-      }
+	      if (detail.session && detail.result?.assetId) {
+	        setNodes((nds) =>
+	          nds.map((node) =>
+	            node.id === id
+	              ? (() => {
+	                  const next = applyCineImageStudioResult(normalizeCineData(node.data), detail.session!, detail.result!);
+	                  const mediaListOutput = buildCineMediaListOutput(next, id);
+	                  return {
+	                    ...node,
+	                    data: {
+	                      ...node.data,
+	                      ...next,
+	                      mediaListOutput,
+	                      media_list: mediaListOutput,
+	                      value: JSON.stringify(mediaListOutput),
+	                    },
+	                  };
+	                })()
+	              : node,
+	          ),
+	        );
+	      }
       setStudioReturn({ tab: mapReturnTab(detail.returnTab), sceneId: detail.returnSceneId });
       openStudio();
     };
@@ -177,6 +297,17 @@ export const CineNode = memo(function CineNode({ id, data, selected }: NodeProps
 
   const statusLabel = CINE_STATUS_LABELS[nodeData.status];
   const modeLabel = CINE_MODE_LABELS[nodeData.mode];
+  const previewImage = latestCineCanvasImage(nodeData);
+  const { url: previewUrl, refresh: refreshPreviewUrl } = useCineNodeResolvedImageUrl(previewImage?.src, previewImage?.s3Key);
+  const [previewRetriedFor, setPreviewRetriedFor] = useState<string | null>(null);
+  const previewRetryKey = `${previewImage?.src || ""}\u0001${previewImage?.s3Key || ""}`;
+  const scriptTitle = nodeData.sourceScript?.title || nodeData.label || nodeData.detected?.logline || "Cine";
+  const metricClassName = previewImage
+    ? "rounded-xl border border-white/15 bg-black/35 px-2 py-1.5 text-[10px] font-semibold text-white/88 shadow-sm backdrop-blur-md"
+    : "rounded-xl border border-slate-200/70 bg-white/80 px-2 py-1.5 text-[10px] font-semibold text-slate-700";
+  const compactPillClassName = previewImage
+    ? "rounded-full border border-white/15 bg-black/30 px-2.5 py-1 text-[10px] font-semibold text-white/78 backdrop-blur-md"
+    : "";
 
   return (
     <StudioCanvasNodeShell
@@ -192,47 +323,96 @@ export const CineNode = memo(function CineNode({ id, data, selected }: NodeProps
       width={292}
       handles={CINE_NODE_HANDLES}
     >
-      <div className="node-content flex flex-col gap-3 px-3 pb-3 pt-2">
-        <div className="rounded-2xl border border-slate-200/60 bg-slate-50/60 p-3 shadow-inner">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <span className="node-label">Mesa de dirección</span>
-              <h3 className="mt-1 text-[18px] font-semibold leading-tight tracking-[-0.035em] text-slate-950">
-                {statusLabel}
+      <div
+        className={
+          previewImage
+            ? "node-content relative flex min-h-[410px] flex-col justify-end gap-3 overflow-hidden rounded-[28px] px-3 pb-3 pt-3"
+            : "node-content flex flex-col gap-3 px-3 pb-3 pt-2"
+        }
+      >
+        {previewImage ? (
+          <>
+            {previewUrl ? (
+              // S3 presigned URLs and canvas nodes need a plain img so object-cover stays deterministic inside React Flow.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={previewUrl}
+                alt={previewImage.title}
+                className="absolute inset-0 h-full w-full object-cover"
+                draggable={false}
+                onError={() => {
+                  if (previewRetriedFor !== previewRetryKey) {
+                    setPreviewRetriedFor(previewRetryKey);
+                    refreshPreviewUrl();
+                  }
+                }}
+              />
+            ) : null}
+          </>
+        ) : null}
+
+        <div className={previewImage ? "relative z-10" : "rounded-2xl border border-slate-200/60 bg-slate-50/60 p-3 shadow-inner"}>
+          {previewImage ? (
+            <div className="mb-3">
+              <h3 className="line-clamp-3 text-[20px] font-semibold leading-[1.02] tracking-[-0.045em] text-white drop-shadow-sm">
+                {scriptTitle}
               </h3>
-              <p className="mt-1 line-clamp-2 text-[11px] font-light leading-relaxed text-slate-600">
-                {nodeData.detected?.logline || sourceScriptText || "Convierte guion en escenas, reparto, fondos y frames."}
-              </p>
             </div>
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200/80 bg-slate-900 text-cyan-100 shadow-sm">
-              <Film className="h-5 w-5" strokeWidth={1.8} />
+          ) : (
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <span className="node-label">Mesa de dirección</span>
+                <h3 className="mt-1 text-[18px] font-semibold leading-tight tracking-[-0.035em] text-slate-950">
+                  {statusLabel}
+                </h3>
+                <p className="mt-1 line-clamp-2 text-[11px] font-light leading-relaxed text-slate-600">
+                  {nodeData.detected?.logline || sourceScriptText || "Convierte guion en escenas, reparto, fondos y frames."}
+                </p>
+              </div>
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200/80 bg-slate-900 text-cyan-100 shadow-sm">
+                <Film className="h-5 w-5" strokeWidth={1.8} />
+              </div>
             </div>
-          </div>
+          )}
           <div className="mt-3 grid grid-cols-2 gap-1.5">
-            <span className="rounded-xl border border-slate-200/70 bg-white/80 px-2 py-1.5 text-[10px] font-semibold text-slate-700">
+            <span className={metricClassName}>
               {nodeData.scenes.length} escenas
             </span>
-            <span className="rounded-xl border border-slate-200/70 bg-white/80 px-2 py-1.5 text-[10px] font-semibold text-slate-700">
+            <span className={metricClassName}>
               {nodeData.characters.length} personajes
             </span>
-            <span className="rounded-xl border border-slate-200/70 bg-white/80 px-2 py-1.5 text-[10px] font-semibold text-slate-700">
+            <span className={metricClassName}>
               {nodeData.backgrounds.length} fondos
             </span>
-            <span className="rounded-xl border border-slate-200/70 bg-white/80 px-2 py-1.5 text-[10px] font-semibold text-slate-700">
+            <span className={metricClassName}>
               {framesPrepared}/{framesTotal || 0} frames
             </span>
           </div>
           <div className="mt-3 flex flex-wrap gap-1.5">
-            <StudioCanvasPill active={brainConnected} activeClassName="border-cyan-400/25 bg-cyan-400/10 text-cyan-700">
-              {brainConnected ? "Brain conectado" : "Sin Brain"}
-            </StudioCanvasPill>
-            <StudioCanvasPill active={Boolean(sourceScriptText)} activeClassName="border-amber-400/25 bg-amber-400/10 text-amber-700">
-              {sourceScriptText ? "Guionista conectado" : "Guion manual"}
-            </StudioCanvasPill>
+            {previewImage ? (
+              <>
+                <span className={compactPillClassName}>{brainConnected ? "Brain conectado" : "Sin Brain"}</span>
+                <span className={compactPillClassName}>{sourceScriptText ? "Guionista conectado" : "Guion manual"}</span>
+              </>
+            ) : (
+              <>
+                <StudioCanvasPill active={brainConnected} activeClassName="border-cyan-400/25 bg-cyan-400/10 text-cyan-700">
+                  {brainConnected ? "Brain conectado" : "Sin Brain"}
+                </StudioCanvasPill>
+                <StudioCanvasPill active={Boolean(sourceScriptText)} activeClassName="border-amber-400/25 bg-amber-400/10 text-amber-700">
+                  {sourceScriptText ? "Guionista conectado" : "Guion manual"}
+                </StudioCanvasPill>
+              </>
+            )}
           </div>
         </div>
 
-        <StudioCanvasOpenButton onClick={openStudio} accent="cyan" icon={<Film className="h-4 w-4" strokeWidth={2} />}>
+        <StudioCanvasOpenButton
+          onClick={openStudio}
+          accent="cyan"
+          icon={<Film className="h-4 w-4" strokeWidth={2} />}
+          className={previewImage ? "relative z-10 border-white/20 bg-white/88 shadow-[0_16px_40px_rgba(0,0,0,0.28)] backdrop-blur-md" : undefined}
+        >
           Abrir Cine
         </StudioCanvasOpenButton>
       </div>

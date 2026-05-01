@@ -2081,6 +2081,7 @@ export const NanoBananaNode = memo(function NanoBananaNode({ id, data, selected 
   const photoRoomReturnTargetRef = useRef<string | null>(null);
   const cineReturnSessionRef = useRef<CineImageStudioSession | null>(null);
   const latestStudioAssetRef = useRef<string | null>(null);
+  const latestStudioS3KeyRef = useRef<string | null>(null);
   const [cineStudioPrompt, setCineStudioPrompt] = useState("");
   const [cineStudioSourceImage, setCineStudioSourceImage] = useState<string | null>(null);
   const [cineStudioHistory, setCineStudioHistory] = useState<string[]>([]);
@@ -2171,6 +2172,7 @@ export const NanoBananaNode = memo(function NanoBananaNode({ id, data, selected 
     const cineResult: CineImageStudioResult | null = cineSession
       ? {
           assetId: latestStudioAssetRef.current || undefined,
+          s3Key: latestStudioS3KeyRef.current || undefined,
           originalAssetId: cineSession.sourceAssetId,
           promptUsed: cineSession.prompt,
           negativePromptUsed: cineSession.negativePrompt,
@@ -2179,6 +2181,7 @@ export const NanoBananaNode = memo(function NanoBananaNode({ id, data, selected 
       : null;
     photoRoomReturnTargetRef.current = null;
     cineReturnSessionRef.current = null;
+    latestStudioS3KeyRef.current = null;
     setCineStudioPrompt("");
     setCineStudioSourceImage(null);
     setCineStudioHistory([]);
@@ -2263,6 +2266,7 @@ export const NanoBananaNode = memo(function NanoBananaNode({ id, data, selected 
       photoRoomReturnTargetRef.current = null;
       cineReturnSessionRef.current = session;
       latestStudioAssetRef.current = null;
+      latestStudioS3KeyRef.current = null;
       setCineStudioPrompt(session.prompt);
       setCineStudioSourceImage(session.sourceAssetId || null);
       setCineStudioHistory(session.sourceAssetId ? [session.sourceAssetId] : []);
@@ -2331,6 +2335,7 @@ export const NanoBananaNode = memo(function NanoBananaNode({ id, data, selected 
     photoRoomReturnTargetRef.current = null;
     cineReturnSessionRef.current = pending;
     latestStudioAssetRef.current = null;
+    latestStudioS3KeyRef.current = null;
     setCineStudioPrompt(pending.prompt);
     setCineStudioSourceImage(pending.sourceAssetId || null);
     setCineStudioHistory(pending.sourceAssetId ? [pending.sourceAssetId] : []);
@@ -2826,6 +2831,7 @@ export const NanoBananaNode = memo(function NanoBananaNode({ id, data, selected 
             }}
             onGenerated={(url, s3Key) => {
               latestStudioAssetRef.current = url;
+              latestStudioS3KeyRef.current = s3Key || null;
               const d = brainDiagRef.current;
               brainTelemetry.track({
                 kind: "IMAGE_GENERATED",

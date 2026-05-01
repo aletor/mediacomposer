@@ -1,7 +1,12 @@
 import {
   CINE_MODE_LABELS,
+  CINE_CAMERA_MOVEMENT_LABELS,
+  CINE_COLOR_GRADING_LABELS,
+  CINE_LIGHTING_STYLE_LABELS,
+  CINE_VISUAL_STYLE_LABELS,
   type CineAnalysisResult,
   type CineBackground,
+  type CineCameraMovementType,
   type CineCharacter,
   type CineMode,
   type CineFrame,
@@ -12,9 +17,40 @@ import {
   type CineScene,
   type CineShot,
   type CineVisualDirection,
-  type CineVideoPlan,
-  makeCineId,
-} from "./cine-types";
+	  type CineVideoPlan,
+	  makeCineId,
+	} from "./cine-types";
+import type { MediaListGroup, MediaListItem, MediaListOutput, MediaListOutputStatus } from "./media-list-output";
+
+const CINE_VISUAL_STYLE_PROMPTS: Record<CineVisualDirection["visualStyle"], string> = {
+  naturalistic_realistic: "Naturalistic realistic image language: grounded, believable, human, observed details and restrained stylization.",
+  commercial_cinematic: "Commercial cinematic image language: polished composition, premium production value, clean readable subjects and strong visual clarity.",
+  black_white_noir: "Black and white noir image language: monochrome, strong contrast, controlled shadows, sober camera and graphic light separation.",
+  animation_cartoon: "Animation/cartoon image language: iconic silhouettes, simplified readable forms, expressive staging and animation-friendly character/background descriptions.",
+  retro_vintage: "Retro vintage image language: period texture, nostalgic palette, analog imperfections and classic cinematic framing.",
+  futuristic_sci_fi: "Futuristic sci-fi image language: advanced materials, sleek spatial design, technological atmosphere and precise light accents.",
+  surreal_dreamlike: "Surreal dreamlike image language: poetic, uncanny, symbolic staging and subjective atmosphere without losing narrative readability.",
+  raw_documentary: "Raw documentary image language: naturalistic, immediate, observational, imperfect human camera feeling and real-world texture.",
+};
+
+const CINE_COLOR_GRADING_PROMPTS: Record<CineVisualDirection["colorGrading"], string> = {
+  teal_orange: "Teal and orange cinematic grade with cool shadows, warm skin/light accents and controlled contrast.",
+  golden_hour_warm: "Golden hour warm cinematic grade with amber highlights, soft warmth and inviting atmosphere.",
+  cool_blue_desaturated: "Cool blue desaturated grade with restrained saturation, cold atmosphere and subdued color intensity.",
+  pastel_soft_film: "Pastel soft film look with gentle contrast, airy color, soft tonal transitions and delicate saturation.",
+  high_contrast_crunchy: "High contrast crunchy grade with dense blacks, crisp highlights and strong tonal separation.",
+  film_emulation_kodak_fuji: "Analog film emulation inspired by Kodak/Fuji color response, organic contrast, natural grain and cinematic rolloff.",
+  vibrant_commercial_pop: "Vibrant commercial pop grade with clean saturated color, bright accents and polished advertising clarity.",
+  bleach_bypass: "Bleach bypass grade with muted color, silvery highlights, hard contrast and gritty cinematic texture.",
+  low_contrast_fade_matte: "Low contrast matte fade with lifted blacks, soft highlights and understated editorial finish.",
+  monochrome_color_cast: "Monochrome color cast with a controlled single-color atmosphere and minimal chromatic distraction.",
+};
+
+const CINE_LIGHTING_STYLE_PROMPTS: Record<CineVisualDirection["lightingStyle"], string> = {
+  normal: "Balanced motivated lighting with natural readability and cinematic control.",
+  dark: "Dark low-key lighting, moody shadows, controlled highlights and a more atmospheric visual tone.",
+  bright: "Bright high-key lighting, clean visibility, open highlights and a clear optimistic visual tone.",
+};
 
 export function cleanScriptText(input: string): string {
   return String(input ?? "")
@@ -411,6 +447,41 @@ function inferSceneKind(text: string): CineScene["sceneKind"] {
   return "present";
 }
 
+function isCineCameraMovementType(raw: unknown): raw is CineCameraMovementType {
+  return typeof raw === "string" && raw in CINE_CAMERA_MOVEMENT_LABELS;
+}
+
+function inferCameraMovementType(text: string, visualDirection?: CineVisualDirection): CineCameraMovementType {
+  const lower = normalizeToken(text);
+  if (/descubr|encuentr|revela|aparece|piramide|secreto|comportamiento extraño|extrano/.test(lower)) return "push_in";
+  if (/explor|entra|adentra|camina|sendero|bosque|viaje|camino|recorre|avanza/.test(lower)) return "tracking_forward";
+  if (/tension|miedo|peligro|oscuridad|nervios|amenaza|inestable/.test(lower)) return "handheld";
+  if (/presenta|introduccion|pueblo|casa|amanecer|inicio/.test(lower)) return "static_subtle";
+  if (/revelacion|monumental|altura|desde abajo|desde arriba|vertical|torre|piramide/.test(lower)) return "tilt";
+  if (visualDirection?.visualStyle === "raw_documentary") return "handheld";
+  if (visualDirection?.visualStyle === "commercial_cinematic") return "push_in";
+  if (visualDirection?.visualStyle === "black_white_noir") return "static_subtle";
+  if (visualDirection?.visualStyle === "surreal_dreamlike") return "pull_out";
+  return "static_subtle";
+}
+
+function directionalShotLighting(visualDirection?: CineVisualDirection): string {
+  if (!visualDirection) return "luz naturalista y expresiva";
+  const lighting = CINE_LIGHTING_STYLE_PROMPTS[visualDirection.lightingStyle];
+  const grade = CINE_COLOR_GRADING_PROMPTS[visualDirection.colorGrading];
+  return `${lighting} ${grade}`;
+}
+
+function directionalShotMood(visualDirection?: CineVisualDirection): string {
+  if (!visualDirection) return "cinematografico, claro, con continuidad emocional";
+  return [
+    visualDirection.tone,
+    CINE_VISUAL_STYLE_LABELS[visualDirection.visualStyle],
+    CINE_COLOR_GRADING_LABELS[visualDirection.colorGrading],
+    CINE_LIGHTING_STYLE_LABELS[visualDirection.lightingStyle],
+  ].filter(Boolean).join(" · ");
+}
+
 function inferSceneTitle(block: ParsedAudiovisualBlock, order: number): string {
   const text = cleanScriptText([...block.visualNotes, ...block.narrative, ...block.voiceOver].join(" ")).toLowerCase();
   if (/escalera/.test(text) && order === 1) return "Apertura en la escalera";
@@ -431,9 +502,10 @@ function createScene(args: {
   voiceOver?: string;
   onScreenText?: string[];
   visualNotes?: string;
-  durationSeconds?: number;
-  sceneKind?: CineScene["sceneKind"];
-}): CineScene {
+	  durationSeconds?: number;
+	  sceneKind?: CineScene["sceneKind"];
+	  visualDirection?: CineVisualDirection;
+	}): CineScene {
   const title = cleanScriptText(args.title || sceneTitle(args.order));
   const sourceText = cleanText(args.text);
   const voiceOver = args.voiceOver ? cleanScriptText(args.voiceOver) : undefined;
@@ -441,6 +513,7 @@ function createScene(args: {
   const visualNotes = args.visualNotes ? cleanScriptText(args.visualNotes) : undefined;
   const visualSummary = visualNotes || `Traducir esta parte del guion a un plano claro: ${firstSentence(sourceText || voiceOver || onScreenText.join(" "), title)}`;
   const durationSeconds = args.durationSeconds ?? 5;
+  const cameraMovementType = inferCameraMovementType([title, sourceText, visualNotes, voiceOver].filter(Boolean).join(" "), args.visualDirection);
   return {
     id: makeCineId("cine_scene"),
     order: args.order,
@@ -457,9 +530,10 @@ function createScene(args: {
     shot: {
       shotType: args.order === 1 ? "wide" : args.order % 3 === 0 ? "closeup" : "medium",
       cameraMovement: args.order === 1 ? "travelling lento de introduccion" : "movimiento sutil motivado por la accion",
+      cameraMovementType,
       lensSuggestion: "35mm o 50mm cinematografico",
-      lighting: "luz naturalista y expresiva",
-      mood: "cinematografico, claro, con continuidad emocional",
+      lighting: directionalShotLighting(args.visualDirection),
+      mood: directionalShotMood(args.visualDirection),
       action: firstSentence(sourceText || visualNotes || voiceOver || title, "accion principal de la escena"),
       durationSeconds,
     },
@@ -469,8 +543,10 @@ function createScene(args: {
   };
 }
 
-export function analyzeCineScript(script: string): CineAnalysisResult {
+export function analyzeCineScript(script: string, options: CineAnalyzeOptions = {}): CineAnalysisResult {
   const clean = cleanText(script);
+  const visualDirection = options.visualDirection;
+  const mode = options.mode ?? visualDirection?.mode ?? "short_film";
   const structuredBlocks = parseStructuredScriptBlocks(script);
   const isStructuredScript = structuredBlocks.length > 0;
   const sceneTexts = isStructuredScript
@@ -516,24 +592,26 @@ export function analyzeCineScript(script: string): CineAnalysisResult {
           voiceOver: block.voiceOver.map(cleanScriptText).filter(Boolean).join("\n"),
           onScreenText: block.onScreenText.map(cleanScriptText).filter(Boolean),
           visualNotes: block.visualNotes.map(cleanScriptText).filter(Boolean).join("\n"),
-          durationSeconds: block.durationSeconds,
-          sceneKind: inferSceneKind(text),
-        });
+	          durationSeconds: block.durationSeconds,
+	          sceneKind: inferSceneKind(text),
+	          visualDirection,
+	        });
       })
     : sceneTexts.map((text, index) =>
         createScene({
           text,
-          order: index + 1,
-          characterIds: characters.slice(0, 2).map((character) => character.id),
-          backgroundId: backgrounds[index % Math.max(1, backgrounds.length)]?.id,
-        }),
-      );
+	          order: index + 1,
+	          characterIds: characters.slice(0, 2).map((character) => character.id),
+	          backgroundId: backgrounds[index % Math.max(1, backgrounds.length)]?.id,
+	          visualDirection,
+	        }),
+	      );
   return {
     logline: firstSentence(clean, "Guion cinematografico"),
     summary: clean.length > 420 ? `${clean.slice(0, 417)}...` : clean,
     tone: "cinematografico, emocional y visual",
-    visualStyle: "direccion sobria, continuidad clara, luz motivada y composiciones limpias",
-    suggestedMode: "short_film",
+    visualStyle: visualDirection ? buildCineVisualDirectionPrompt(visualDirection) : "direccion sobria, continuidad clara, luz motivada y composiciones limpias",
+    suggestedMode: mode,
     characters,
     backgrounds,
     scenes,
@@ -600,6 +678,10 @@ export function applyCineAnalysisToData(data: CineNodeData, analysis: CineAnalys
   return {
     ...data,
     mode: analysis.suggestedMode ?? data.mode,
+    visualDirection: {
+      ...data.visualDirection,
+      mode: analysis.suggestedMode ?? data.visualDirection.mode ?? data.mode,
+    },
     detected: analysis,
     characters,
     backgrounds,
@@ -805,6 +887,12 @@ function normalizeAiScene(raw: unknown, index: number, characters: CineCharacter
   const sceneKind = ["present", "flashback", "memory", "other"].includes(asAiString(row.sceneKind || row.scene_kind))
     ? asAiString(row.sceneKind || row.scene_kind) as CineScene["sceneKind"]
     : inferSceneKind(sceneText);
+  const inferredCameraMovementType = inferCameraMovementType([sceneText, visualNotes, visualSummary, asAiString(shot.action || row.action)].filter(Boolean).join(" "));
+  const cameraMovementType = isCineCameraMovementType(shot.cameraMovementType)
+    ? shot.cameraMovementType
+    : isCineCameraMovementType(row.cameraMovementType)
+      ? row.cameraMovementType
+      : inferredCameraMovementType;
   return {
     id: uniqueCleanId(asAiString(row.id) || `${index + 1}_${asAiString(row.title) || visualSummary}`, "cine_scene", usedIds),
     order: typeof row.order === "number" ? row.order : index + 1,
@@ -821,6 +909,8 @@ function normalizeAiScene(raw: unknown, index: number, characters: CineCharacter
     shot: {
       shotType,
       cameraMovement: asAiString(shot.cameraMovement || row.cameraMovement, "movimiento sutil motivado por la accion"),
+      cameraMovementType,
+      cameraDescription: asAiString(shot.cameraDescription || row.cameraDescription),
       lensSuggestion: asAiString(shot.lensSuggestion || row.lensSuggestion, "35mm o 50mm cinematografico"),
       lighting: asAiString(shot.lighting || row.lighting, "luz motivada por la escena"),
       mood: asAiString(shot.mood || row.mood, "cinematografico y claro"),
@@ -1110,6 +1200,30 @@ function line(label: string, value?: string | string[]): string | null {
   return text && text.trim() ? `${label}: ${text.trim()}` : null;
 }
 
+export function getEffectiveSceneVisualDirection(data: CineNodeData, scene?: CineScene): CineVisualDirection {
+  return {
+    ...data.visualDirection,
+    visualStyle: scene?.visualOverride?.visualStyle ?? data.visualDirection.visualStyle,
+    colorGrading: scene?.visualOverride?.colorGrading ?? data.visualDirection.colorGrading,
+    lightingStyle: scene?.visualOverride?.lightingStyle ?? data.visualDirection.lightingStyle,
+  };
+}
+
+export function buildCineVisualDirectionPrompt(visualDirection: CineVisualDirection): string {
+  return [
+    line("Production type", CINE_MODE_LABELS[visualDirection.mode]),
+    line("Aspect ratio", visualDirection.aspectRatio),
+    line("Visual style", `${CINE_VISUAL_STYLE_LABELS[visualDirection.visualStyle]}. ${CINE_VISUAL_STYLE_PROMPTS[visualDirection.visualStyle]}`),
+    line("Color grading", `${CINE_COLOR_GRADING_LABELS[visualDirection.colorGrading]}. ${CINE_COLOR_GRADING_PROMPTS[visualDirection.colorGrading]}`),
+    line("Lighting", `${CINE_LIGHTING_STYLE_LABELS[visualDirection.lightingStyle]}. ${CINE_LIGHTING_STYLE_PROMPTS[visualDirection.lightingStyle]}`),
+    line("Realism level", visualDirection.realismLevel),
+    line("Global style note", visualDirection.globalStylePrompt),
+    line("Tone", visualDirection.tone),
+    line("Pacing", visualDirection.pacing),
+    line("Camera style", visualDirection.cameraStyle),
+  ].filter((item): item is string => Boolean(item)).join("\n");
+}
+
 function sceneKindTreatment(kind?: CineScene["sceneKind"]): string | null {
   if (kind === "flashback") {
     return "Subtle flashback treatment: softer contrast, slightly warmer or gently desaturated memory feeling, temporal shift without heavy blur, dream fog or exaggerated glow.";
@@ -1125,6 +1239,56 @@ function durationFrameDirection(seconds?: number): string {
   if (value <= 8) return "Short scene: make the frame direct, clear and iconic.";
   if (value >= 18) return "Longer scene: allow more narrative depth, spatial context and emotional layering in the frame.";
   return "Medium scene: balance narrative clarity with cinematic atmosphere.";
+}
+
+function describeCameraMovement(shot: CineShot): string | undefined {
+  const type = shot.cameraMovementType ?? (shot.cameraMovement ? inferCameraMovementType(shot.cameraMovement) : "none");
+  const label = CINE_CAMERA_MOVEMENT_LABELS[type];
+  return [label, shot.cameraDescription, shot.cameraMovement].filter(Boolean).join(" · ") || undefined;
+}
+
+function cameraMovementFrameComposition(shot: CineShot): string | undefined {
+  const description = describeCameraMovement(shot);
+  if (!description) return undefined;
+  const type = shot.cameraMovementType ?? (shot.cameraMovement ? inferCameraMovementType(shot.cameraMovement) : "none");
+  const cues: Record<CineCameraMovementType, string> = {
+    none: "Compose as a stable locked-off keyframe with no implied camera travel.",
+    static_subtle: "Compose as a stable frame with subtle living-camera energy and gentle depth.",
+    push_in: "Composition should suggest a slow push-in toward the emotional or narrative focal point.",
+    pull_out: "Composition should suggest a slow pull-out that reveals more space around the subject.",
+    pan: "Composition should imply a horizontal pan through strong lateral staging and readable direction.",
+    tilt: "Composition should imply a vertical tilt, emphasizing height, reveal or scale.",
+    tracking_forward: "Composition should suggest forward tracking through depth, leading lines and motivated movement.",
+    tracking_backward: "Composition should suggest backward tracking, revealing context while keeping the subject readable.",
+    tracking_side: "Composition should suggest lateral tracking with side-to-side motion and clear screen direction.",
+    handheld: "Composition should imply controlled handheld instability, immediacy and tension without making the image messy.",
+    drone: "Composition should suggest elevated or aerial movement with a clean sense of geography.",
+  };
+  return `${cues[type]} Camera movement intent: ${description}.`;
+}
+
+export function buildCineCameraPrompt(scene: CineScene): string {
+  const type = scene.shot.cameraMovementType ?? (scene.shot.cameraMovement ? inferCameraMovementType(scene.shot.cameraMovement) : "none");
+  const fallback: Record<CineCameraMovementType, string> = {
+    none: "Locked-off static camera.",
+    static_subtle: "Static camera with very subtle natural motion.",
+    push_in: "Slow push-in camera movement toward the main subject.",
+    pull_out: "Slow pull-out camera movement revealing the environment.",
+    tracking_forward: "Smooth tracking forward movement following the characters.",
+    tracking_backward: "Smooth tracking backward movement as the characters approach.",
+    tracking_side: "Smooth lateral tracking shot.",
+    pan: "Slow pan following the action.",
+    tilt: "Slow tilt revealing vertical scale.",
+    handheld: "Subtle handheld camera movement, natural and immersive.",
+    drone: "Elevated aerial movement.",
+  };
+  return scene.shot.cameraDescription?.trim()
+    ? `${fallback[type]} Specific direction: ${scene.shot.cameraDescription.trim()}.`
+    : fallback[type];
+}
+
+function cameraMovementVideoInstruction(scene: CineScene): string {
+  return `Camera movement: ${buildCineCameraPrompt(scene)}`;
 }
 
 function visualPriority(scene: CineScene): string {
@@ -1157,14 +1321,12 @@ export function buildCineFramePrompt(args: {
       : "condense the whole scene into one cinematic image";
   const visualDirection = visualPriority(scene);
   const emotionalContext = emotionalIntent(scene);
+  const effectiveDirection = getEffectiveSceneVisualDirection(args.data, scene);
   return [
-    `Create a cinematic ${roleLine} for a ${CINE_MODE_LABELS[args.data.mode]} production.`,
-    line("Aspect ratio", args.data.visualDirection.aspectRatio),
-    line("Realism level", args.data.visualDirection.realismLevel),
-    line("Global visual direction", args.data.visualDirection.globalStylePrompt),
-    line("Tone", args.data.visualDirection.tone),
-    line("Camera style", args.data.visualDirection.cameraStyle),
-    line("Lighting style", args.data.visualDirection.lightingStyle),
+    `Create a cinematic ${roleLine} for a ${CINE_MODE_LABELS[effectiveDirection.mode]} production.`,
+    "GLOBAL AUDIOVISUAL DIRECTION",
+    buildCineVisualDirectionPrompt(effectiveDirection),
+    scene.visualOverride ? "This scene has its own visual direction override. Use it over the global direction for this frame." : null,
     args.brainConnected && args.data.visualDirection.useBrain ? "Use Brain only as continuity and project direction context; do not modify Brain." : null,
     "",
     `SCENE ${scene.order}: ${scene.title}`,
@@ -1181,7 +1343,8 @@ export function buildCineFramePrompt(args: {
     line("Frame role", roleLine),
     line("Frame intention", frameIntent),
     line("Shot type", scene.shot.shotType),
-    line("Camera movement", scene.shot.cameraMovement),
+    line("Camera movement", describeCameraMovement(scene.shot)),
+    cameraMovementFrameComposition(scene.shot),
     line("Lens suggestion", scene.shot.lensSuggestion),
     line("Scene lighting", scene.shot.lighting),
     line("Mood", scene.shot.mood),
@@ -1233,14 +1396,41 @@ export function getEffectiveCineCharacterAsset(character?: CineCharacter): strin
   return character.approvedImageAssetId || character.editedImageAssetId || character.generatedImageAssetId || character.referenceImageAssetId;
 }
 
+export function getEffectiveCineCharacterS3Key(character?: CineCharacter): string | undefined {
+  if (!character) return undefined;
+  return character.approvedImageS3Key || character.editedImageS3Key || character.generatedImageS3Key || character.referenceImageS3Key;
+}
+
 export function getEffectiveCineBackgroundAsset(background?: CineBackground): string | undefined {
   if (!background) return undefined;
   return background.approvedImageAssetId || background.editedImageAssetId || background.generatedImageAssetId || background.referenceImageAssetId;
 }
 
+export function getEffectiveCineBackgroundS3Key(background?: CineBackground): string | undefined {
+  if (!background) return undefined;
+  return background.approvedImageS3Key || background.editedImageS3Key || background.generatedImageS3Key || background.referenceImageS3Key;
+}
+
 export function getEffectiveCineFrameAsset(frame?: CineFrame): string | undefined {
   if (!frame) return undefined;
-  return frame.editedImageAssetId || frame.imageAssetId;
+  if (frame.status === "approved") return frame.approvedImageAssetId || frame.editedImageAssetId || frame.imageAssetId;
+  return frame.editedImageAssetId || frame.imageAssetId || frame.approvedImageAssetId;
+}
+
+export function getEffectiveCineFrameS3Key(frame?: CineFrame): string | undefined {
+  if (!frame) return undefined;
+  if (frame.status === "approved") return frame.approvedImageS3Key || frame.editedImageS3Key || frame.imageS3Key;
+  return frame.editedImageS3Key || frame.imageS3Key || frame.approvedImageS3Key;
+}
+
+export function getEffectiveCineVideoAsset(video?: CineVideoPlan): string | undefined {
+  if (!video) return undefined;
+  return video.approvedVideoAssetId || video.editedVideoAssetId || video.generatedVideoAssetId || video.videoAssetId || video.videoUrl;
+}
+
+export function getEffectiveCineVideoS3Key(video?: CineVideoPlan): string | undefined {
+  if (!video) return undefined;
+  return video.approvedVideoS3Key || video.editedVideoS3Key || video.generatedVideoS3Key || video.videoS3Key;
 }
 
 export function getEffectiveCharacterSheetAsset(data: CineNodeData): string | undefined {
@@ -1248,9 +1438,19 @@ export function getEffectiveCharacterSheetAsset(data: CineNodeData): string | un
   return sheet?.editedAssetId || sheet?.assetId;
 }
 
+export function getEffectiveCharacterSheetS3Key(data: CineNodeData): string | undefined {
+  const sheet = data.continuity?.characterSheet;
+  return sheet?.editedAssetS3Key || sheet?.assetS3Key;
+}
+
 export function getEffectiveLocationSheetAsset(data: CineNodeData): string | undefined {
   const sheet = data.continuity?.locationSheet;
   return sheet?.editedAssetId || sheet?.assetId;
+}
+
+export function getEffectiveLocationSheetS3Key(data: CineNodeData): string | undefined {
+  const sheet = data.continuity?.locationSheet;
+  return sheet?.editedAssetS3Key || sheet?.assetS3Key;
 }
 
 export function getCineFrameReferenceAssetIds(data: CineNodeData, sceneId: string): string[] {
@@ -1268,15 +1468,75 @@ export function getCineFrameReferenceAssetIds(data: CineNodeData, sceneId: strin
   ]);
 }
 
+export function getCineFrameReferenceS3Keys(data: CineNodeData, sceneId: string): string[] {
+  const scene = data.scenes.find((item) => item.id === sceneId);
+  if (!scene) return [];
+  const characters = scene.characters
+    .map((characterId) => data.characters.find((character) => character.id === characterId))
+    .map(getEffectiveCineCharacterS3Key);
+  const background = getEffectiveCineBackgroundS3Key(data.backgrounds.find((item) => item.id === scene.backgroundId));
+  return uniqueAssetIds([
+    data.continuity?.useCharacterSheetForFrames ? getEffectiveCharacterSheetS3Key(data) : undefined,
+    data.continuity?.useLocationSheetForFrames ? getEffectiveLocationSheetS3Key(data) : undefined,
+    ...characters,
+    background,
+  ]);
+}
+
+export function getCineVideoMissingFrames(data: CineNodeData, sceneId: string): Array<"single" | "start" | "end"> {
+  const scene = data.scenes.find((item) => item.id === sceneId);
+  if (!scene) return ["single"];
+  if (scene.framesMode === "start_end") {
+    return (["start", "end"] as const).filter((role) => !getEffectiveCineFrameAsset(scene.frames[role]));
+  }
+  return getEffectiveCineFrameAsset(scene.frames.single) ? [] : ["single"];
+}
+
+export function getCineVideoReferenceAssetIds(data: CineNodeData, sceneId: string): string[] {
+  const scene = data.scenes.find((item) => item.id === sceneId);
+  if (!scene) return [];
+  const characters = scene.characters
+    .map((characterId) => data.characters.find((character) => character.id === characterId))
+    .map(getEffectiveCineCharacterAsset);
+  const background = getEffectiveCineBackgroundAsset(data.backgrounds.find((item) => item.id === scene.backgroundId));
+  const frameAssets = scene.framesMode === "start_end"
+    ? [getEffectiveCineFrameAsset(scene.frames.start), getEffectiveCineFrameAsset(scene.frames.end)]
+    : [getEffectiveCineFrameAsset(scene.frames.single)];
+  return uniqueAssetIds([
+    data.continuity?.useCharacterSheetForFrames ? getEffectiveCharacterSheetAsset(data) : undefined,
+    data.continuity?.useLocationSheetForFrames ? getEffectiveLocationSheetAsset(data) : undefined,
+    ...characters,
+    background,
+    ...frameAssets,
+  ]);
+}
+
+export function getCineVideoReferenceS3Keys(data: CineNodeData, sceneId: string): string[] {
+  const scene = data.scenes.find((item) => item.id === sceneId);
+  if (!scene) return [];
+  const characters = scene.characters
+    .map((characterId) => data.characters.find((character) => character.id === characterId))
+    .map(getEffectiveCineCharacterS3Key);
+  const background = getEffectiveCineBackgroundS3Key(data.backgrounds.find((item) => item.id === scene.backgroundId));
+  const frameKeys = scene.framesMode === "start_end"
+    ? [getEffectiveCineFrameS3Key(scene.frames.start), getEffectiveCineFrameS3Key(scene.frames.end)]
+    : [getEffectiveCineFrameS3Key(scene.frames.single)];
+  return uniqueAssetIds([
+    data.continuity?.useCharacterSheetForFrames ? getEffectiveCharacterSheetS3Key(data) : undefined,
+    data.continuity?.useLocationSheetForFrames ? getEffectiveLocationSheetS3Key(data) : undefined,
+    ...characters,
+    background,
+    ...frameKeys,
+  ]);
+}
+
 export function buildCineCharacterPrompt(data: CineNodeData, characterId: string): string {
   const character = data.characters.find((item) => item.id === characterId);
   if (!character) return "";
   return [
     `Create a clean cinematic character reference image for ${character.name}.`,
-    line("Production mode", CINE_MODE_LABELS[data.mode]),
-    line("Aspect ratio", data.visualDirection.aspectRatio),
-    line("Realism level", data.visualDirection.realismLevel),
-    line("Global visual direction", data.visualDirection.globalStylePrompt),
+    "GLOBAL AUDIOVISUAL DIRECTION",
+    buildCineVisualDirectionPrompt(data.visualDirection),
     line("Character role", character.role),
     line("Character description", character.description),
     line("Visual prompt", character.visualPrompt),
@@ -1306,10 +1566,9 @@ export function buildCineCharacterSheetPrompt(data: CineNodeData): string {
   const layout = getCineCharacterSheetLayout(data);
   return [
     "Create a clean cinematic character continuity reference sheet.",
-    line("Production mode", CINE_MODE_LABELS[data.mode]),
+    "GLOBAL AUDIOVISUAL DIRECTION",
+    buildCineVisualDirectionPrompt(data.visualDirection),
     line("Layout", layout),
-    line("Realism level", data.visualDirection.realismLevel),
-    line("Global visual direction", data.visualDirection.globalStylePrompt),
     "Use a neutral background, consistent soft studio lighting, consistent scale and readable proportions.",
     "Do not create a dramatic scene or environment. This is a reference sheet for continuity.",
     "Do not render written names, labels, captions, logos, typography, watermarks or UI.",
@@ -1350,10 +1609,8 @@ export function buildCineBackgroundPrompt(data: CineNodeData, backgroundId: stri
   if (!background) return "";
   return [
     `Create a clean cinematic location reference image for: ${background.name}.`,
-    line("Production mode", CINE_MODE_LABELS[data.mode]),
-    line("Aspect ratio", data.visualDirection.aspectRatio),
-    line("Realism level", data.visualDirection.realismLevel),
-    line("Global visual direction", data.visualDirection.globalStylePrompt),
+    "GLOBAL AUDIOVISUAL DIRECTION",
+    buildCineVisualDirectionPrompt(data.visualDirection),
     line("Location type", background.type),
     line("Description", background.description),
     line("Visual prompt", background.visualPrompt),
@@ -1372,10 +1629,9 @@ export function buildCineLocationSheetPrompt(data: CineNodeData): string {
   const layout = data.backgrounds.length <= 1 ? "single" : "grid";
   return [
     "Create a clean cinematic environment/location continuity reference sheet.",
-    line("Production mode", CINE_MODE_LABELS[data.mode]),
+    "GLOBAL AUDIOVISUAL DIRECTION",
+    buildCineVisualDirectionPrompt(data.visualDirection),
     line("Layout", layout),
-    line("Realism level", data.visualDirection.realismLevel),
-    line("Global visual direction", data.visualDirection.globalStylePrompt),
     "Use one clear panel per location, separated visually through composition, not typography.",
     "Keep a consistent visual style, neutral presentation and readable spatial layout.",
     "No characters unless explicitly required by a location description.",
@@ -1429,16 +1685,51 @@ export function createCineFrameDraft(args: {
     status: "draft",
     metadata: {
       generatedFrom: "cine-node",
+      cineAssetKind: "scene-frame",
       cineNodeId: args.cineNodeId,
       sceneId: args.sceneId,
       frameRole: args.frameRole,
+      prompt,
+      negativePrompt: buildCineFrameNegativePrompt(),
       charactersUsed: scene?.characters ?? [],
       backgroundUsed: scene?.backgroundId,
       brainNodeId: args.brainConnected && args.data.visualDirection.useBrain ? args.data.metadata?.brainNodeId : undefined,
       visualCapsuleIds: args.data.visualDirection.visualCapsuleIds,
       sourceScriptNodeId: args.data.metadata?.sourceScriptNodeId,
       referenceAssetIds: scene ? getCineFrameReferenceAssetIds(args.data, scene.id) : [],
+      referenceAssetS3Keys: scene ? getCineFrameReferenceS3Keys(args.data, scene.id) : [],
+      characterSheetAssetId: args.data.continuity?.useCharacterSheetForFrames ? getEffectiveCharacterSheetAsset(args.data) : undefined,
+      characterSheetS3Key: args.data.continuity?.useCharacterSheetForFrames ? getEffectiveCharacterSheetS3Key(args.data) : undefined,
+      locationSheetAssetId: args.data.continuity?.useLocationSheetForFrames ? getEffectiveLocationSheetAsset(args.data) : undefined,
+      locationSheetS3Key: args.data.continuity?.useLocationSheetForFrames ? getEffectiveLocationSheetS3Key(args.data) : undefined,
+      createdAt: new Date().toISOString(),
     },
+  };
+}
+
+export function approveCineFrame(data: CineNodeData, sceneId: string, frameRole: CineFrame["role"]): CineNodeData {
+  return {
+    ...data,
+    scenes: data.scenes.map((scene) => {
+      if (scene.id !== sceneId) return scene;
+      const frame = scene.frames[frameRole];
+      const approvedImageAssetId = frame?.editedImageAssetId || frame?.imageAssetId || frame?.approvedImageAssetId;
+      const approvedImageS3Key = frame?.editedImageS3Key || frame?.imageS3Key || frame?.approvedImageS3Key;
+      if (!frame || !approvedImageAssetId) return scene;
+      return {
+        ...scene,
+        frames: {
+          ...scene.frames,
+          [frameRole]: {
+            ...frame,
+            approvedImageAssetId,
+            approvedImageS3Key,
+            status: "approved",
+          },
+        },
+        status: "approved",
+      };
+    }),
   };
 }
 
@@ -1457,7 +1748,9 @@ export function applyCineImageStudioResult(
           ? {
               ...character,
               generatedImageAssetId: result.mode === "generate" ? assetId : character.generatedImageAssetId,
+              generatedImageS3Key: result.mode === "generate" ? result.s3Key : character.generatedImageS3Key,
               editedImageAssetId: result.mode === "edit" ? assetId : character.editedImageAssetId,
+              editedImageS3Key: result.mode === "edit" ? result.s3Key : character.editedImageS3Key,
             }
           : character,
       ),
@@ -1471,7 +1764,9 @@ export function applyCineImageStudioResult(
           ? {
               ...background,
               generatedImageAssetId: result.mode === "generate" ? assetId : background.generatedImageAssetId,
+              generatedImageS3Key: result.mode === "generate" ? result.s3Key : background.generatedImageS3Key,
               editedImageAssetId: result.mode === "edit" ? assetId : background.editedImageAssetId,
+              editedImageS3Key: result.mode === "edit" ? result.s3Key : background.editedImageS3Key,
             }
           : background,
       ),
@@ -1499,12 +1794,34 @@ export function applyCineImageStudioResult(
               prompt: session.prompt || existing.prompt,
               negativePrompt: session.negativePrompt || existing.negativePrompt,
               imageAssetId: result.mode === "generate" ? assetId : existing.imageAssetId,
+              imageS3Key: result.mode === "generate" ? result.s3Key : existing.imageS3Key,
               editedImageAssetId: result.mode === "edit" ? assetId : existing.editedImageAssetId,
+              editedImageS3Key: result.mode === "edit" ? result.s3Key : existing.editedImageS3Key,
+              approvedImageAssetId: existing.approvedImageAssetId,
+              approvedImageS3Key: existing.approvedImageS3Key,
               status: result.mode === "edit" ? "edited" : "generated",
               generatedFromStudio: true,
               metadata: {
                 ...existing.metadata,
+                generatedFrom: "cine-node",
+                cineAssetKind: "scene-frame",
+                cineNodeId: session.cineNodeId,
+                sceneId: session.sceneId,
+                frameRole,
+                prompt: session.prompt || existing.prompt,
+                negativePrompt: session.negativePrompt || existing.negativePrompt,
+                charactersUsed: session.metadata?.charactersUsed ?? existing.metadata?.charactersUsed ?? scene.characters,
+                backgroundUsed: session.metadata?.backgroundUsed ?? existing.metadata?.backgroundUsed ?? scene.backgroundId,
+                brainNodeId: session.metadata?.brainNodeId ?? existing.metadata?.brainNodeId,
+                visualCapsuleIds: session.metadata?.visualCapsuleIds ?? existing.metadata?.visualCapsuleIds,
+                sourceScriptNodeId: session.metadata?.sourceScriptNodeId ?? existing.metadata?.sourceScriptNodeId,
                 referenceAssetIds: session.metadata?.referenceAssetIds ?? existing.metadata?.referenceAssetIds,
+                referenceAssetS3Keys: session.metadata?.referenceAssetS3Keys ?? existing.metadata?.referenceAssetS3Keys,
+                characterSheetAssetId: session.metadata?.characterSheetAssetId ?? existing.metadata?.characterSheetAssetId,
+                characterSheetS3Key: session.metadata?.characterSheetS3Key ?? existing.metadata?.characterSheetS3Key,
+                locationSheetAssetId: session.metadata?.locationSheetAssetId ?? existing.metadata?.locationSheetAssetId,
+                locationSheetS3Key: session.metadata?.locationSheetS3Key ?? existing.metadata?.locationSheetS3Key,
+                createdAt: existing.metadata?.createdAt || session.metadata?.createdAt || new Date().toISOString(),
               },
             },
           },
@@ -1525,11 +1842,13 @@ export function applyCineImageStudioResult(
           cineNodeId: session.cineNodeId,
           characterIds: previous?.characterIds ?? data.characters.map((item) => item.id),
           assetId: result.mode === "generate" ? assetId : previous?.assetId,
+          assetS3Key: result.mode === "generate" ? result.s3Key : previous?.assetS3Key,
           status: result.mode === "edit" ? "edited" : "ready",
           layout: previous?.layout || getCineCharacterSheetLayout(data),
           prompt: session.prompt || previous?.prompt || "",
           negativePrompt: session.negativePrompt || previous?.negativePrompt,
           editedAssetId: result.mode === "edit" ? assetId : previous?.editedAssetId,
+          editedAssetS3Key: result.mode === "edit" ? result.s3Key : previous?.editedAssetS3Key,
           createdAt: previous?.createdAt || now,
           updatedAt: now,
         },
@@ -1548,11 +1867,13 @@ export function applyCineImageStudioResult(
           cineNodeId: session.cineNodeId,
           backgroundIds: previous?.backgroundIds ?? data.backgrounds.map((item) => item.id),
           assetId: result.mode === "generate" ? assetId : previous?.assetId,
+          assetS3Key: result.mode === "generate" ? result.s3Key : previous?.assetS3Key,
           status: result.mode === "edit" ? "edited" : "ready",
           layout: previous?.layout || (data.backgrounds.length <= 1 ? "single" : "grid"),
           prompt: session.prompt || previous?.prompt || "",
           negativePrompt: session.negativePrompt || previous?.negativePrompt,
           editedAssetId: result.mode === "edit" ? assetId : previous?.editedAssetId,
+          editedAssetS3Key: result.mode === "edit" ? result.s3Key : previous?.editedAssetS3Key,
           createdAt: previous?.createdAt || now,
           updatedAt: now,
         },
@@ -1567,43 +1888,560 @@ export function buildVideoPromptForScene(data: CineNodeData, sceneId: string): s
   if (!scene) return "";
   const visualAction = visualPriority(scene);
   const intent = emotionalIntent(scene);
+  const characters = data.characters.filter((character) => scene.characters.includes(character.id));
+  const background = data.backgrounds.find((item) => item.id === scene.backgroundId);
+  const effectiveDirection = getEffectiveSceneVisualDirection(data, scene);
+  const sceneKindLine = scene.sceneKind === "flashback"
+    ? "Use a subtle memory/flashback treatment without heavy blur, dream fog or exaggerated glow."
+    : scene.sceneKind === "memory"
+      ? "Use a reflective, intimate memory feeling with soft motivated light."
+      : "Keep the scene grounded in the main present-time visual style.";
   return [
-    `Video para escena ${scene.order}: ${scene.title}`,
-    line("Tipo temporal", scene.sceneKind),
-    line("Accion visual principal", visualAction),
-    line("Intencion emocional", intent),
-    line("Movimiento de camara", scene.shot.cameraMovement),
-    line("Ritmo", data.visualDirection.pacing),
-    line("Emocion", scene.shot.mood),
-    line("Duracion", `${scene.durationSeconds ?? scene.shot.durationSeconds ?? 5}s`),
-    line("Voz en off", scene.voiceOver),
-    scene.onScreenText?.length ? `Texto en pantalla como overlay externo: ${scene.onScreenText.join(" / ")}` : null,
-    line("Notas visuales", scene.visualNotes),
-    "Mantener continuidad con los frames aprobados y evitar cambios de identidad, fondo o escala.",
+    `Create a cinematic video shot from the approved storyboard frame for scene ${scene.order}: ${scene.title}.`,
+    "GLOBAL AUDIOVISUAL DIRECTION",
+    buildCineVisualDirectionPrompt(effectiveDirection),
+    scene.visualOverride ? "This scene has its own visual direction override. Use it over the global direction for this video shot." : null,
+    line("Duration", `${scene.durationSeconds ?? scene.shot.durationSeconds ?? 5} seconds`),
+    line("Visual action", visualAction),
+    line("Concrete action", scene.shot.action),
+    line("Emotional intent", intent),
+    line("Mood", scene.shot.mood),
+    line("Scene kind", scene.sceneKind),
+    sceneKindLine,
+    cameraMovementVideoInstruction(scene),
+    line("Pacing", data.visualDirection.pacing),
+    characters.length ? `Characters on screen: ${characters.map((character) => character.name).join(", ")}.` : null,
+    background ? `Location continuity: ${background.name}. ${background.description || background.visualPrompt || ""}`.trim() : null,
+    scene.voiceOver ? `Voice-over context, for emotional timing only: ${scene.voiceOver}` : null,
+    scene.onScreenText?.length ? `On-screen text exists as external overlay only: ${scene.onScreenText.join(" / ")}` : null,
+    "Maintain character identity, location continuity, lighting direction, scale and visual tone from the storyboard frame and continuity references.",
+    "Do not render any written text, subtitles, captions, logos or typography inside the video. On-screen text will be added later as a separate overlay.",
+    "Do not generate audio, voiceover or music in this step.",
   ].filter((item): item is string => Boolean(item)).join("\n");
 }
 
-export function prepareSceneForVideo(data: CineNodeData, sceneId: string): CineVideoPlan {
+export function prepareSceneForVideo(data: CineNodeData, sceneId: string, cineNodeId = "cine-node"): CineVideoPlan {
   const scene = data.scenes.find((item) => item.id === sceneId);
+  if (!scene) {
+    return {
+      sceneId,
+      mode: "image_to_video",
+      status: "error",
+      durationSeconds: 5,
+      aspectRatio: data.visualDirection.aspectRatio,
+      prompt: "",
+      characters: [],
+      referenceAssetIds: [],
+      missingFrames: ["single"],
+      warnings: ["Scene not found."],
+    };
+  }
+  const mode = scene.framesMode === "start_end" ? "start_end_frames" : "image_to_video";
+  const missingFrames = getCineVideoMissingFrames(data, sceneId);
+  const singleFrameAssetId = getEffectiveCineFrameAsset(scene.frames.single);
+  const startFrameAssetId = getEffectiveCineFrameAsset(scene.frames.start);
+  const endFrameAssetId = getEffectiveCineFrameAsset(scene.frames.end);
+  const singleFrameS3Key = getEffectiveCineFrameS3Key(scene.frames.single);
+  const startFrameS3Key = getEffectiveCineFrameS3Key(scene.frames.start);
+  const endFrameS3Key = getEffectiveCineFrameS3Key(scene.frames.end);
+  const characterAssetIds = uniqueAssetIds(scene.characters.map((characterId) => getEffectiveCineCharacterAsset(data.characters.find((character) => character.id === characterId))));
+  const characterS3Keys = uniqueAssetIds(scene.characters.map((characterId) => getEffectiveCineCharacterS3Key(data.characters.find((character) => character.id === characterId))));
+  const backgroundAssetId = getEffectiveCineBackgroundAsset(data.backgrounds.find((item) => item.id === scene.backgroundId));
+  const backgroundS3Key = getEffectiveCineBackgroundS3Key(data.backgrounds.find((item) => item.id === scene.backgroundId));
+  const effectiveDirection = getEffectiveSceneVisualDirection(data, scene);
+  const frameAssetIds = uniqueAssetIds(mode === "start_end_frames" ? [startFrameAssetId, endFrameAssetId] : [singleFrameAssetId]);
+  const frameS3Keys = uniqueAssetIds(mode === "start_end_frames" ? [startFrameS3Key, endFrameS3Key] : [singleFrameS3Key]);
+  const now = new Date().toISOString();
+  const previousVideo = scene.video;
+  const status: CineVideoPlan["status"] = missingFrames.length
+    ? "missing_frames"
+    : previousVideo?.status === "generated" && (previousVideo.videoAssetId || previousVideo.videoUrl)
+      ? "generated"
+      : "prepared";
   return {
     sceneId,
-    mode: scene?.framesMode === "start_end" ? "start_end_frames" : "image_to_video",
+    mode,
+    status,
     prompt: buildVideoPromptForScene(data, sceneId),
-    visualAction: scene ? visualPriority(scene) : undefined,
-    emotionalIntent: scene ? emotionalIntent(scene) : undefined,
-    voiceOver: scene?.voiceOver,
-    onScreenText: scene?.onScreenText,
-    visualNotes: scene?.visualNotes,
-    sceneKind: scene?.sceneKind,
-    startFramePrompt: scene?.frames.start?.prompt || scene?.frames.single?.prompt,
-    endFramePrompt: scene?.frames.end?.prompt,
-    durationSeconds: scene?.durationSeconds ?? scene?.shot.durationSeconds ?? 5,
+    negativePrompt: "text, subtitles, captions, logos, typography, watermark, distorted identity, inconsistent character, inconsistent location, flicker, low quality, blurry motion, broken anatomy",
+    visualAction: visualPriority(scene),
+    emotionalIntent: emotionalIntent(scene),
+    voiceOver: scene.voiceOver,
+    visualNotes: scene.visualNotes,
+    sceneKind: scene.sceneKind,
+    cameraMovementType: scene.shot.cameraMovementType,
+    cameraDescription: scene.shot.cameraDescription || scene.shot.cameraMovement,
+    cameraPrompt: buildCineCameraPrompt(scene),
+    overlayTextPlan: {
+      texts: scene.onScreenText ?? [],
+      timingHint: "separate overlay after video generation",
+      shouldRenderInVideo: false,
+    },
+    voiceoverPlan: {
+      text: scene.voiceOver,
+      timingHint: "voiceover track to be added after video generation",
+    },
+    characters: scene.characters,
+    backgroundId: scene.backgroundId,
+    referenceAssetIds: getCineVideoReferenceAssetIds(data, sceneId),
+    referenceAssetS3Keys: getCineVideoReferenceS3Keys(data, sceneId),
+    videoAssetId: previousVideo?.videoAssetId,
+    videoS3Key: previousVideo?.videoS3Key,
+    videoUrl: previousVideo?.videoUrl,
+    generatedVideoAssetId: previousVideo?.generatedVideoAssetId,
+    generatedVideoS3Key: previousVideo?.generatedVideoS3Key,
+    editedVideoAssetId: previousVideo?.editedVideoAssetId,
+    editedVideoS3Key: previousVideo?.editedVideoS3Key,
+    approvedVideoAssetId: previousVideo?.approvedVideoAssetId,
+    approvedVideoS3Key: previousVideo?.approvedVideoS3Key,
+    videoProvider: previousVideo?.videoProvider,
+    generatedAt: previousVideo?.generatedAt,
+    errorMessage: previousVideo?.status === "error" ? previousVideo.errorMessage : undefined,
+    missingFrames,
+    warnings: [
+      ...missingFrames.map((role) => `Missing ${role} frame asset.`),
+      ...(frameAssetIds.length && scene.framesMode === "single" && scene.frames.single?.status !== "approved" ? ["Using an effective frame that has not been explicitly approved."] : []),
+    ],
+    startFramePrompt: scene.frames.start?.prompt || scene.frames.single?.prompt,
+    endFramePrompt: scene.frames.end?.prompt,
+    durationSeconds: scene.durationSeconds ?? scene.shot.durationSeconds ?? 5,
+    aspectRatio: effectiveDirection.aspectRatio,
+    singleFrameAssetId,
+    singleFrameS3Key,
+    startFrameAssetId,
+    startFrameS3Key,
+    endFrameAssetId,
+    endFrameS3Key,
+    cameraMovement: describeCameraMovement(scene.shot),
+    action: scene.shot.action,
+    mood: scene.shot.mood,
+    metadata: {
+      generatedFrom: "cine-node",
+      cineNodeId,
+      sourceScriptNodeId: data.metadata?.sourceScriptNodeId,
+      characterSheetAssetId: data.continuity?.useCharacterSheetForFrames ? getEffectiveCharacterSheetAsset(data) : undefined,
+      characterSheetS3Key: data.continuity?.useCharacterSheetForFrames ? getEffectiveCharacterSheetS3Key(data) : undefined,
+      locationSheetAssetId: data.continuity?.useLocationSheetForFrames ? getEffectiveLocationSheetAsset(data) : undefined,
+      locationSheetS3Key: data.continuity?.useLocationSheetForFrames ? getEffectiveLocationSheetS3Key(data) : undefined,
+      characterAssetIds,
+      characterS3Keys,
+      backgroundAssetId,
+      backgroundS3Key,
+      frameAssetIds,
+      frameS3Keys,
+      createdAt: scene.video?.metadata?.createdAt || now,
+      updatedAt: now,
+    },
+  };
+}
+
+function mediaListConfig(data: CineNodeData): Required<NonNullable<CineNodeData["mediaListOutputConfig"]>> {
+  return {
+    includeCharacters: data.mediaListOutputConfig?.includeCharacters ?? false,
+    includeBackgrounds: data.mediaListOutputConfig?.includeBackgrounds ?? false,
+    includeSheets: data.mediaListOutputConfig?.includeSheets ?? true,
+    includeFrames: data.mediaListOutputConfig?.includeFrames ?? true,
+    includeVideos: data.mediaListOutputConfig?.includeVideos ?? true,
+    includeOnlyApprovedVideos: data.mediaListOutputConfig?.includeOnlyApprovedVideos ?? false,
+    includePlaceholders: data.mediaListOutputConfig?.includePlaceholders ?? true,
+  };
+}
+
+function mediaListVisualDirection(data: CineNodeData) {
+  return {
+    mode: data.visualDirection.mode,
     aspectRatio: data.visualDirection.aspectRatio,
-    startFrameAssetId: scene?.frames.start?.editedImageAssetId || scene?.frames.start?.imageAssetId,
-    endFrameAssetId: scene?.frames.end?.editedImageAssetId || scene?.frames.end?.imageAssetId,
-    cameraMovement: scene?.shot.cameraMovement,
-    action: scene?.shot.action,
-    mood: scene?.shot.mood,
-    status: "ready",
+    visualStyle: data.visualDirection.visualStyle,
+    colorGrading: data.visualDirection.colorGrading,
+    lightingStyle: data.visualDirection.lightingStyle,
+  };
+}
+
+function frameMediaStatus(frame?: CineFrame): MediaListItem["status"] {
+  if (!frame) return "missing";
+  if (frame.status === "approved" || frame.approvedImageAssetId) return "approved";
+  if (frame.status === "edited" || frame.editedImageAssetId) return "edited";
+  if (frame.status === "error") return "error";
+  if (frame.imageAssetId) return "generated";
+  return "pending";
+}
+
+function videoMediaStatus(video?: CineVideoPlan): MediaListItem["status"] {
+  if (!video) return "missing";
+  if (video.approvedVideoAssetId) return "approved";
+  if (video.editedVideoAssetId) return "edited";
+  if (getEffectiveCineVideoAsset(video)) return "generated";
+  if (video.status === "error") return "error";
+  return "pending";
+}
+
+function addGroup(groups: MediaListGroup[], role: MediaListGroup["role"], title: string, itemIds: string[]) {
+  if (!itemIds.length) return;
+  groups.push({ id: `group_${role}`, title, role, itemIds });
+}
+
+export function buildCineMediaListOutput(data: CineNodeData, sourceNodeId = data.metadata?.sourceScriptNodeId || "cine-node"): MediaListOutput {
+  const config = mediaListConfig(data);
+  const generatedAt = new Date().toISOString();
+  const items: MediaListItem[] = [];
+  const groups: MediaListGroup[] = [];
+  const sheetIds: string[] = [];
+  const characterIds: string[] = [];
+  const backgroundIds: string[] = [];
+  const storyboardIds: string[] = [];
+  const videoIds: string[] = [];
+  const approvedVideoIds: string[] = [];
+  const script = (data.manualScript || data.sourceScript?.text || "").trim();
+  const visualDirection = mediaListVisualDirection(data);
+  let order = 1;
+  const nextOrder = () => order++;
+
+  const pushItem = (item: Omit<MediaListItem, "order"> & { order?: number }) => {
+    items.push({ ...item, order: item.order ?? nextOrder() });
+    return item.id;
+  };
+
+  const characterSheet = data.continuity?.characterSheet;
+  if (!config.includeOnlyApprovedVideos && config.includeSheets && characterSheet) {
+    const assetId = getEffectiveCharacterSheetAsset(data);
+    const id = pushItem({
+      id: "cine_character_sheet",
+      title: "Hoja de continuidad de personajes",
+      description: `${data.characters.length} personajes incluidos`,
+      mediaType: assetId ? "image" : "placeholder",
+      role: "character_sheet",
+      assetId,
+      url: assetId,
+      s3Key: getEffectiveCharacterSheetS3Key(data),
+      mimeType: assetId ? "image/png" : undefined,
+      status: characterSheet.status === "edited" ? "edited" : assetId ? "generated" : characterSheet.status === "error" ? "error" : "pending",
+      metadata: {
+        generatedFrom: "cine-node",
+        cineNodeId: sourceNodeId,
+        sourceScriptNodeId: data.metadata?.sourceScriptNodeId,
+        prompt: characterSheet.prompt,
+        negativePrompt: characterSheet.negativePrompt,
+        visualDirection,
+        characterIds: characterSheet.characterIds,
+        createdAt: characterSheet.createdAt,
+        updatedAt: characterSheet.updatedAt,
+      },
+    });
+    sheetIds.push(id);
+  }
+
+  const locationSheet = data.continuity?.locationSheet;
+  if (!config.includeOnlyApprovedVideos && config.includeSheets && locationSheet) {
+    const assetId = getEffectiveLocationSheetAsset(data);
+    const id = pushItem({
+      id: "cine_location_sheet",
+      title: "Hoja de continuidad de localizaciones",
+      description: `${data.backgrounds.length} fondos incluidos`,
+      mediaType: assetId ? "image" : "placeholder",
+      role: "location_sheet",
+      assetId,
+      url: assetId,
+      s3Key: getEffectiveLocationSheetS3Key(data),
+      mimeType: assetId ? "image/png" : undefined,
+      status: locationSheet.status === "edited" ? "edited" : assetId ? "generated" : locationSheet.status === "error" ? "error" : "pending",
+      metadata: {
+        generatedFrom: "cine-node",
+        cineNodeId: sourceNodeId,
+        sourceScriptNodeId: data.metadata?.sourceScriptNodeId,
+        prompt: locationSheet.prompt,
+        negativePrompt: locationSheet.negativePrompt,
+        visualDirection,
+        backgroundId: locationSheet.backgroundIds.join(","),
+        createdAt: locationSheet.createdAt,
+        updatedAt: locationSheet.updatedAt,
+      },
+    });
+    sheetIds.push(id);
+  }
+
+  if (!config.includeOnlyApprovedVideos && config.includeCharacters) {
+    data.characters.forEach((character) => {
+      const assetId = getEffectiveCineCharacterAsset(character);
+      if (!assetId) return;
+      const id = pushItem({
+        id: `cine_character_${character.id}`,
+        title: character.name || "Personaje",
+        description: character.description || character.visualPrompt,
+        mediaType: "image",
+        role: "character",
+        assetId,
+        url: assetId,
+        s3Key: getEffectiveCineCharacterS3Key(character),
+        mimeType: "image/png",
+        characterId: character.id,
+        status: character.approvedImageAssetId ? "approved" : character.editedImageAssetId ? "edited" : "generated",
+        metadata: {
+          generatedFrom: "cine-node",
+          cineNodeId: sourceNodeId,
+          sourceScriptNodeId: data.metadata?.sourceScriptNodeId,
+          prompt: character.visualPrompt,
+          negativePrompt: character.negativePrompt,
+          visualDirection,
+        },
+      });
+      characterIds.push(id);
+    });
+  }
+
+  if (!config.includeOnlyApprovedVideos && config.includeBackgrounds) {
+    data.backgrounds.forEach((background) => {
+      const assetId = getEffectiveCineBackgroundAsset(background);
+      if (!assetId) return;
+      const id = pushItem({
+        id: `cine_background_${background.id}`,
+        title: background.name || "Fondo",
+        description: background.description || background.visualPrompt,
+        mediaType: "image",
+        role: "background",
+        assetId,
+        url: assetId,
+        s3Key: getEffectiveCineBackgroundS3Key(background),
+        mimeType: "image/png",
+        backgroundId: background.id,
+        status: background.approvedImageAssetId ? "approved" : background.editedImageAssetId ? "edited" : "generated",
+        metadata: {
+          generatedFrom: "cine-node",
+          cineNodeId: sourceNodeId,
+          sourceScriptNodeId: data.metadata?.sourceScriptNodeId,
+          prompt: background.visualPrompt,
+          negativePrompt: background.negativePrompt,
+          visualDirection,
+          backgroundId: background.id,
+        },
+      });
+      backgroundIds.push(id);
+    });
+  }
+
+  const sceneFrameItemIds = new Map<string, string[]>();
+  if (!config.includeOnlyApprovedVideos && config.includeFrames) {
+    data.scenes.forEach((scene) => {
+      const roles = scene.framesMode === "start_end" ? (["start", "end"] as const) : (["single"] as const);
+      const sceneItemIds: string[] = [];
+      roles.forEach((role) => {
+        const frame = scene.frames[role];
+        const assetId = getEffectiveCineFrameAsset(frame);
+        if (!assetId) return;
+        const id = pushItem({
+          id: `cine_frame_${scene.id}_${role}`,
+          order: scene.order * 10 + (role === "end" ? 2 : role === "start" ? 1 : 0),
+          title: `${scene.title} · ${role === "single" ? "Frame" : role === "start" ? "Inicio" : "Final"}`,
+          description: scene.visualSummary || scene.visualNotes,
+          mediaType: "image",
+          role: "storyboard_frame",
+          assetId,
+          url: assetId,
+          s3Key: getEffectiveCineFrameS3Key(frame),
+          mimeType: "image/png",
+          durationSeconds: scene.durationSeconds ?? scene.shot.durationSeconds,
+          aspectRatio: getEffectiveSceneVisualDirection(data, scene).aspectRatio,
+          sceneId: scene.id,
+          sceneOrder: scene.order,
+          sceneTitle: scene.title,
+          frameRole: role,
+          status: frameMediaStatus(frame),
+          metadata: {
+            generatedFrom: "cine-node",
+            cineNodeId: sourceNodeId,
+            sourceScriptNodeId: data.metadata?.sourceScriptNodeId,
+            prompt: frame?.prompt,
+            negativePrompt: frame?.negativePrompt,
+            visualNotes: scene.visualNotes,
+            voiceOver: scene.voiceOver,
+            onScreenText: scene.onScreenText,
+            cameraMovementType: scene.shot.cameraMovementType,
+            cameraDescription: scene.shot.cameraDescription || scene.shot.cameraMovement,
+            visualDirection: mediaListVisualDirection({ ...data, visualDirection: getEffectiveSceneVisualDirection(data, scene) }),
+            characterIds: scene.characters,
+            backgroundId: scene.backgroundId,
+            referenceAssetIds: frame?.metadata?.referenceAssetIds,
+            createdAt: frame?.metadata?.createdAt,
+          },
+        });
+        sceneItemIds.push(id);
+        storyboardIds.push(id);
+      });
+      sceneFrameItemIds.set(scene.id, sceneItemIds);
+    });
+  }
+
+  if (config.includeVideos) {
+    data.scenes.forEach((scene) => {
+      const video = scene.video;
+      const assetId = getEffectiveCineVideoAsset(video);
+      const onlyApproved = config.includeOnlyApprovedVideos;
+      if (assetId && (!onlyApproved || video?.approvedVideoAssetId)) {
+        const approved = Boolean(video?.approvedVideoAssetId);
+        const id = pushItem({
+          id: `cine_video_${scene.id}`,
+          order: scene.order * 10,
+          title: scene.title,
+          description: video?.visualAction || scene.visualSummary || scene.visualNotes,
+          mediaType: "video",
+          role: approved ? "approved_scene_video" : "scene_video",
+          assetId,
+          url: assetId,
+          s3Key: getEffectiveCineVideoS3Key(video),
+          mimeType: "video/mp4",
+          durationSeconds: video?.durationSeconds ?? scene.durationSeconds ?? scene.shot.durationSeconds,
+          aspectRatio: video?.aspectRatio ?? getEffectiveSceneVisualDirection(data, scene).aspectRatio,
+          sceneId: scene.id,
+          sceneOrder: scene.order,
+          sceneTitle: scene.title,
+          status: videoMediaStatus(video),
+          metadata: {
+            generatedFrom: "cine-node",
+            cineNodeId: sourceNodeId,
+            sourceScriptNodeId: data.metadata?.sourceScriptNodeId,
+            prompt: video?.prompt,
+            negativePrompt: video?.negativePrompt,
+            visualNotes: video?.visualNotes ?? scene.visualNotes,
+            voiceOver: video?.voiceOver ?? scene.voiceOver,
+            onScreenText: scene.onScreenText,
+            cameraMovementType: video?.cameraMovementType,
+            cameraDescription: video?.cameraDescription,
+            cameraPrompt: video?.cameraPrompt,
+            visualDirection: mediaListVisualDirection({ ...data, visualDirection: getEffectiveSceneVisualDirection(data, scene) }),
+            characterIds: scene.characters,
+            backgroundId: scene.backgroundId,
+            referenceAssetIds: video?.referenceAssetIds,
+            overlayTextPlan: video?.overlayTextPlan,
+            voiceoverPlan: video?.voiceoverPlan,
+            createdAt: video?.metadata?.createdAt,
+            updatedAt: video?.metadata?.updatedAt ?? video?.generatedAt,
+          },
+        });
+        videoIds.push(id);
+        if (approved) approvedVideoIds.push(id);
+      } else if (!onlyApproved && config.includePlaceholders && video?.status === "prepared") {
+        const id = pushItem({
+          id: `cine_video_placeholder_${scene.id}`,
+          order: scene.order * 10,
+          title: `${scene.title} · vídeo pendiente`,
+          description: video.visualAction || scene.visualSummary,
+          mediaType: "placeholder",
+          role: "video_placeholder",
+          durationSeconds: video.durationSeconds,
+          aspectRatio: video.aspectRatio,
+          sceneId: scene.id,
+          sceneOrder: scene.order,
+          sceneTitle: scene.title,
+          status: "pending",
+          metadata: {
+            generatedFrom: "cine-node",
+            cineNodeId: sourceNodeId,
+            sourceScriptNodeId: data.metadata?.sourceScriptNodeId,
+            prompt: video.prompt,
+            negativePrompt: video.negativePrompt,
+            visualNotes: video.visualNotes,
+            voiceOver: video.voiceOver,
+            onScreenText: scene.onScreenText,
+            cameraMovementType: video.cameraMovementType,
+            cameraDescription: video.cameraDescription,
+            cameraPrompt: video.cameraPrompt,
+            visualDirection,
+            characterIds: scene.characters,
+            backgroundId: scene.backgroundId,
+            referenceAssetIds: video.referenceAssetIds,
+            overlayTextPlan: video.overlayTextPlan,
+            voiceoverPlan: video.voiceoverPlan,
+            createdAt: video.metadata?.createdAt,
+            updatedAt: video.metadata?.updatedAt,
+          },
+        });
+        videoIds.push(id);
+      }
+    });
+  }
+
+  if (config.includePlaceholders && !config.includeOnlyApprovedVideos) {
+    data.scenes.forEach((scene) => {
+      const hasFrameItems = (sceneFrameItemIds.get(scene.id) ?? []).length > 0;
+      const needsPlaceholder = !hasFrameItems || (scene.framesMode === "start_end" && (sceneFrameItemIds.get(scene.id) ?? []).length < 2);
+      if (!needsPlaceholder) return;
+      const id = pushItem({
+        id: `cine_storyboard_placeholder_${scene.id}`,
+        order: scene.order * 10 + 9,
+        title: `${scene.title} · pendiente`,
+        description: scene.visualSummary || scene.visualNotes,
+        mediaType: "placeholder",
+        role: "storyboard_placeholder",
+        durationSeconds: scene.durationSeconds ?? scene.shot.durationSeconds,
+        aspectRatio: getEffectiveSceneVisualDirection(data, scene).aspectRatio,
+        sceneId: scene.id,
+        sceneOrder: scene.order,
+        sceneTitle: scene.title,
+        status: hasFrameItems ? "missing" : "pending",
+        metadata: {
+          generatedFrom: "cine-node",
+          cineNodeId: sourceNodeId,
+          sourceScriptNodeId: data.metadata?.sourceScriptNodeId,
+          visualNotes: scene.visualNotes,
+          voiceOver: scene.voiceOver,
+          onScreenText: scene.onScreenText,
+          cameraMovementType: scene.shot.cameraMovementType,
+          cameraDescription: scene.shot.cameraDescription || scene.shot.cameraMovement,
+          visualDirection: mediaListVisualDirection({ ...data, visualDirection: getEffectiveSceneVisualDirection(data, scene) }),
+          characterIds: scene.characters,
+          backgroundId: scene.backgroundId,
+        },
+      });
+      storyboardIds.push(id);
+    });
+  }
+
+  addGroup(groups, "sheets", "Hojas de continuidad", sheetIds);
+  addGroup(groups, "characters", "Personajes", characterIds);
+  addGroup(groups, "backgrounds", "Fondos", backgroundIds);
+  addGroup(groups, "storyboard", "Storyboard", storyboardIds);
+  addGroup(groups, "videos", "Vídeos", videoIds);
+  addGroup(groups, "approved_videos", "Vídeos aprobados", approvedVideoIds);
+
+  const totalScenes = data.scenes.length;
+  const totalFrameSlots = data.scenes.reduce((count, scene) => count + (scene.framesMode === "start_end" ? 2 : 1), 0);
+  const generatedFrameSlots = data.scenes.reduce((count, scene) => {
+    const roles = scene.framesMode === "start_end" ? (["start", "end"] as const) : (["single"] as const);
+    return count + roles.filter((role) => Boolean(getEffectiveCineFrameAsset(scene.frames[role]))).length;
+  }, 0);
+  const totalVideos = data.scenes.filter((scene) => Boolean(getEffectiveCineVideoAsset(scene.video))).length;
+  const approvedVideos = data.scenes.filter((scene) => Boolean(scene.video?.approvedVideoAssetId)).length;
+  let status: MediaListOutputStatus = "empty";
+  if (!script && !data.scenes.length && !items.length) status = "empty";
+  else if (script && !data.scenes.length) status = "script_pending";
+  else if (approvedVideos > 0) status = "approved_ready";
+  else if (totalVideos > 0 && totalVideos >= totalScenes && totalScenes > 0) status = "videos_ready";
+  else if (totalVideos > 0) status = "videos_partial";
+  else if (generatedFrameSlots > 0 && generatedFrameSlots >= totalFrameSlots && totalFrameSlots > 0) status = "frames_ready";
+  else if (generatedFrameSlots > 0) status = "frames_partial";
+  else if (data.scenes.length) status = "storyboard_ready";
+  else if (data.detected) status = "script_produced";
+
+  return {
+    kind: "media_list",
+    sourceNodeId,
+    sourceNodeType: "cine",
+    title: data.sourceScript?.title || data.label || data.detected?.logline || "Cine",
+    status,
+    items: items.sort((a, b) => a.order - b.order),
+    groups,
+    metadata: {
+      cineNodeId: sourceNodeId,
+      scriptTitle: data.sourceScript?.title || data.detected?.logline,
+      mode: data.visualDirection.mode,
+      aspectRatio: data.visualDirection.aspectRatio,
+      visualStyle: data.visualDirection.visualStyle,
+      colorGrading: data.visualDirection.colorGrading,
+      lightingStyle: data.visualDirection.lightingStyle,
+      totalScenes,
+      totalFrames: generatedFrameSlots,
+      totalVideos,
+      approvedVideos,
+      generatedAt,
+    },
   };
 }

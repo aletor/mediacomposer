@@ -4,7 +4,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronRight } from 'lucide-react';
 import { NODE_REGISTRY } from './nodeRegistry';
-import { NodeIcon, NodeIconMono } from './foldder-icons';
+import { NodeIcon } from './foldder-icons';
 import { SIDEBAR_HOVER_HELP } from './sidebarHoverHelp';
 import {
   TopbarGlyphBrain,
@@ -88,6 +88,8 @@ const HIGH_END_PRODUCTION_ITEMS: Array<{ type: string; label: string }> = [
   { type: 'geminiVideo', label: 'Video Creation' },
   { type: 'projectAssets', label: 'Foldder' },
   { type: 'presenter', label: 'Presenter' },
+  { type: 'export_multimedia', label: 'Export Multimedia' },
+  { type: 'videoEditor', label: 'Video Editor' },
 ];
 
 const TOOL_ITEMS: Array<{ type: string; label: string }> = [
@@ -153,8 +155,9 @@ const Sidebar = ({
   useEffect(() => {
     if (!paletteDragActive) return;
     clearLibraryTipTimer();
-    setLibraryTip(null);
   }, [paletteDragActive, clearLibraryTipTimer]);
+
+  const visibleLibraryTip = paletteDragActive ? null : libraryTip;
 
   const onLibraryTileEnter = useCallback(
     (e: React.MouseEvent<HTMLDivElement>, nodeType: string) => {
@@ -187,26 +190,26 @@ const Sidebar = ({
   );
 
   const libraryTipPortal =
-    libraryTip && SIDEBAR_HOVER_HELP[libraryTip.type]
+    visibleLibraryTip && SIDEBAR_HOVER_HELP[visibleLibraryTip.type]
       ? createPortal(
           <div
             role="tooltip"
             className="pointer-events-none fixed z-[10060] rounded-xl border border-white/45 bg-white/[0.16] px-3.5 py-2.5 shadow-[0_12px_40px_rgba(15,23,42,0.15)] backdrop-blur-2xl"
             style={{
-              left: libraryTip.centerX,
-              top: libraryTip.anchorY,
+              left: visibleLibraryTip.centerX,
+              top: visibleLibraryTip.anchorY,
               width: LIBRARY_TIP_WIDTH,
               transform:
-                libraryTip.placement === 'above'
+                visibleLibraryTip.placement === 'above'
                   ? 'translate(-50%, calc(-100% - 10px))'
                   : 'translate(-50%, 10px)',
             }}
           >
             <div className="text-[10px] font-black uppercase tracking-[0.12em] text-amber-900/85 mb-1">
-              {SIDEBAR_HOVER_HELP[libraryTip.type].title}
+              {SIDEBAR_HOVER_HELP[visibleLibraryTip.type].title}
             </div>
             <p className="text-[11px] leading-snug text-slate-700/95 m-0">
-              {SIDEBAR_HOVER_HELP[libraryTip.type].line}
+              {SIDEBAR_HOVER_HELP[visibleLibraryTip.type].line}
             </p>
           </div>,
           document.body

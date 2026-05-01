@@ -1,4 +1,4 @@
-export type HandleType = 'image' | 'video' | 'audio' | 'prompt' | 'mask' | 'pdf' | 'txt' | 'url' | 'json' | 'brain';
+export type HandleType = 'image' | 'video' | 'audio' | 'prompt' | 'mask' | 'pdf' | 'txt' | 'url' | 'json' | 'brain' | 'media_list';
 
 export interface NodeMetadata {
   type: string;
@@ -158,10 +158,9 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
       { id: 'text', label: 'Texto / Guion', type: 'txt' },
       { id: 'brain', label: 'Brain', type: 'brain' },
     ],
-    outputs: [
-      { id: 'storyboard', label: 'Storyboard', type: 'json' },
-      { id: 'videoScenes', label: 'Video scenes', type: 'json' },
-    ],
+	    outputs: [
+	      { id: 'media_list', label: 'Media List', type: 'media_list' as HandleType },
+	    ],
     dataSchema: {
       sourceScript: '{ nodeId?, text, title? }',
       manualScript: 'string',
@@ -171,9 +170,41 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
       characters: 'CineCharacter[]',
       backgrounds: 'CineBackground[]',
       scenes: 'CineScene[]',
-      value: 'string (JSON summary for downstream planning)',
-    },
-  },
+	      value: 'string (JSON summary for downstream planning)',
+	      mediaListOutput: 'MediaListOutput (single structured output for Export Multiple / Video Editor)',
+	    },
+	  },
+	  export_multimedia: {
+	    type: 'export_multimedia',
+	    label: 'Export Multimedia',
+	    description: 'Recibe una media_list y permite revisar, filtrar, descargar medios y exportar un manifest JSON.',
+	    inputs: [{ id: 'media_list', label: 'Media List', type: 'media_list' as HandleType, required: true }],
+	    outputs: [],
+	    dataSchema: {
+	      label: 'string',
+	    },
+	  },
+	  exportMultiple: {
+	    type: 'exportMultiple',
+	    label: 'Export Multiple',
+	    description: 'Alias legacy de Export Multimedia para proyectos existentes.',
+	    inputs: [{ id: 'media_list', label: 'Media List', type: 'media_list' as HandleType, required: true }],
+	    outputs: [],
+	    dataSchema: {
+	      label: 'string',
+	    },
+	  },
+	  videoEditor: {
+	    type: 'videoEditor',
+	    label: 'Video Editor',
+	    description: 'Recibe una media_list y crea una timeline inicial ordenada con vídeos o still frames.',
+	    inputs: [{ id: 'media_list', label: 'Media List', type: 'media_list' as HandleType, required: true }],
+	    outputs: [],
+	    dataSchema: {
+	      label: 'string',
+	      clips: 'VideoEditorClip[] (timeline local derivada de media_list)',
+	    },
+	  },
   grokProcessor: {
     type: 'grokProcessor',
     label: 'Grok Video',

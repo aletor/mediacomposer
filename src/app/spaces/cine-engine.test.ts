@@ -2,14 +2,22 @@ import { describe, expect, it } from "vitest";
 
 import {
   analyzeCineScript,
+  approveCineFrame,
   applyCineImageStudioResult,
   buildCineCharacterSheetPrompt,
+  buildCineFramePrompt,
+  buildCineMediaListOutput,
+  buildCineVisualDirectionPrompt,
+  buildVideoPromptForScene,
   cleanScriptText,
   getCineFrameReferenceAssetIds,
   getEffectiveCharacterSheetAsset,
+  getEffectiveCineFrameAsset,
+  getEffectiveSceneVisualDirection,
+  prepareSceneForVideo,
   validateAndNormalizeCineAIAnalysis,
 } from "./cine-engine";
-import { createEmptyCineNodeData, type CineBackground, type CineCharacter, type CineImageStudioSession, type CineScene } from "./cine-types";
+import { createEmptyCineNodeData, normalizeCineData, type CineBackground, type CineCharacter, type CineImageStudioSession, type CineScene } from "./cine-types";
 
 const SARA_SCRIPT = `
 **Voz en off:** En la vida, cada escalón puede ser un desafío, un miedo que debemos superar. Para Sara, hoy es la escalera de su edificio.
@@ -267,5 +275,367 @@ describe("Cine analyzer V1.7", () => {
       "asset://mateo-edit",
       "asset://forest",
     ]);
+  });
+
+  it("approves a Cine frame without deleting generated or edited assets", () => {
+    const data = createEmptyCineNodeData();
+    data.scenes = [
+      {
+        id: "scene_1",
+        order: 1,
+        title: "Frame test",
+        sourceText: "",
+        visualSummary: "A cinematic frame.",
+        characters: [],
+        shot: { shotType: "wide", durationSeconds: 5 },
+        framesMode: "single",
+        frames: {
+          single: {
+            id: "frame_1",
+            role: "single",
+            prompt: "Create a cinematic frame.",
+            status: "edited",
+            imageAssetId: "asset://generated",
+            editedImageAssetId: "asset://edited",
+            approvedImageAssetId: "asset://old-approved",
+          },
+        },
+        status: "frame_generated",
+      },
+    ];
+
+    const next = approveCineFrame(data, "scene_1", "single");
+    const frame = next.scenes[0]?.frames.single;
+
+    expect(frame?.approvedImageAssetId).toBe("asset://edited");
+    expect(frame?.imageAssetId).toBe("asset://generated");
+    expect(frame?.editedImageAssetId).toBe("asset://edited");
+    expect(frame?.status).toBe("approved");
+    expect(getEffectiveCineFrameAsset(frame)).toBe("asset://edited");
+  });
+
+  it("includes camera movement intent in frame and video prompts", () => {
+    const data = createEmptyCineNodeData();
+    data.scenes = [
+      {
+        id: "scene_1",
+        order: 1,
+        title: "Descubrimiento",
+        sourceText: "Puffy detecta algo extraño.",
+        visualSummary: "Puffy mira hacia una pirámide escondida.",
+        visualNotes: "Claro del bosque con una pirámide antigua revelándose.",
+        characters: [],
+        shot: {
+          shotType: "wide",
+          cameraMovementType: "push_in",
+          cameraDescription: "slow push-in towards Puffy and the pyramid",
+          durationSeconds: 8,
+        },
+        framesMode: "single",
+        frames: {},
+        status: "draft",
+      },
+    ];
+
+    const framePrompt = buildCineFramePrompt({ data, sceneId: "scene_1", frameRole: "single", cineNodeId: "cine_1" });
+    const videoPrompt = buildVideoPromptForScene(data, "scene_1");
+
+    expect(framePrompt).toContain("slow push-in towards Puffy and the pyramid");
+    expect(framePrompt).toContain("Composition should suggest a slow push-in");
+    expect(videoPrompt).toContain("Camera movement: Slow push-in camera movement toward the main subject.");
+    expect(videoPrompt).toContain("Specific direction: slow push-in towards Puffy and the pyramid.");
+  });
+
+  it("prepares a V3 video plan with overlays, voiceover and references", () => {
+    const data = createEmptyCineNodeData();
+    data.continuity = {
+      useCharacterSheetForFrames: true,
+      useLocationSheetForFrames: true,
+      characterSheet: {
+        id: "sheet_char",
+        cineNodeId: "cine_1",
+        characterIds: ["puffy"],
+        assetId: "asset://char-sheet",
+        status: "ready",
+        layout: "single",
+        prompt: "sheet",
+      },
+      locationSheet: {
+        id: "sheet_location",
+        cineNodeId: "cine_1",
+        backgroundIds: ["forest"],
+        assetId: "asset://location-sheet",
+        status: "ready",
+        layout: "grid",
+        prompt: "sheet",
+      },
+    };
+    data.characters = [
+      { id: "puffy", name: "Puffy", role: "protagonist", description: "Dog", visualPrompt: "golden dog", lockedTraits: [], approvedImageAssetId: "asset://puffy" },
+    ];
+    data.backgrounds = [
+      { id: "forest", name: "Sendero del bosque", type: "natural", description: "Forest path", visualPrompt: "forest path", approvedImageAssetId: "asset://forest" },
+    ];
+    data.scenes = [
+      {
+        id: "scene_1",
+        order: 1,
+        title: "Camino",
+        sourceText: "Puffy entra en el bosque.",
+        visualSummary: "Puffy avanza por el sendero.",
+        visualNotes: "Sendero del bosque con luz suave.",
+        voiceOver: "Puffy sabe que algo está cerca.",
+        onScreenText: ["Continuará"],
+        characters: ["puffy"],
+        backgroundId: "forest",
+        shot: { shotType: "wide", cameraMovementType: "tracking_forward", durationSeconds: 6 },
+        framesMode: "single",
+        frames: {
+          single: {
+            id: "frame_1",
+            role: "single",
+            prompt: "frame",
+            imageAssetId: "asset://frame",
+            status: "generated",
+          },
+        },
+        status: "frame_generated",
+      },
+    ];
+
+    const plan = prepareSceneForVideo(data, "scene_1", "cine_1");
+
+    expect(plan.status).toBe("prepared");
+    expect(plan.mode).toBe("image_to_video");
+    expect(plan.singleFrameAssetId).toBe("asset://frame");
+    expect(plan.overlayTextPlan).toEqual({ texts: ["Continuará"], timingHint: "separate overlay after video generation", shouldRenderInVideo: false });
+    expect(plan.voiceoverPlan?.text).toContain("Puffy sabe");
+    expect(plan.referenceAssetIds).toEqual(["asset://char-sheet", "asset://location-sheet", "asset://puffy", "asset://forest", "asset://frame"]);
+    expect(plan.prompt).toContain("Do not render any written text");
+  });
+
+  it("normalizes Cine visual direction defaults for old nodes", () => {
+    const data = normalizeCineData({
+      mode: "advertising",
+      visualDirection: {
+        aspectRatio: "9:16",
+      },
+    });
+
+    expect(data.visualDirection.mode).toBe("advertising");
+    expect(data.visualDirection.visualStyle).toBe("naturalistic_realistic");
+    expect(data.visualDirection.colorGrading).toBe("film_emulation_kodak_fuji");
+    expect(data.visualDirection.lightingStyle).toBe("normal");
+  });
+
+  it("uses visual direction and scene overrides in frame and video prompts", () => {
+    const data = createEmptyCineNodeData();
+    data.visualDirection = {
+      ...data.visualDirection,
+      mode: "fashion_film",
+      visualStyle: "commercial_cinematic",
+      colorGrading: "golden_hour_warm",
+      lightingStyle: "bright",
+      globalStylePrompt: "Elegant editorial pacing.",
+    };
+    data.scenes = [
+      {
+        id: "scene_noir",
+        order: 1,
+        title: "Recuerdo",
+        sourceText: "Sara recuerda una pérdida.",
+        visualSummary: "Sara quieta en un pasillo.",
+        visualNotes: "Pasillo estrecho con sombras marcadas.",
+        sceneKind: "memory",
+        visualOverride: {
+          visualStyle: "black_white_noir",
+          colorGrading: "monochrome_color_cast",
+          lightingStyle: "dark",
+        },
+        characters: [],
+        shot: { shotType: "medium", durationSeconds: 6 },
+        framesMode: "single",
+        frames: {},
+        status: "draft",
+      },
+    ];
+
+    const effective = getEffectiveSceneVisualDirection(data, data.scenes[0]);
+    const framePrompt = buildCineFramePrompt({ data, sceneId: "scene_noir", frameRole: "single", cineNodeId: "cine_1" });
+    const videoPrompt = buildVideoPromptForScene(data, "scene_noir");
+
+    expect(effective.visualStyle).toBe("black_white_noir");
+    expect(buildCineVisualDirectionPrompt(effective)).toContain("Black and white noir");
+    expect(framePrompt).toContain("This scene has its own visual direction override");
+    expect(framePrompt).toContain("Black and white noir");
+    expect(videoPrompt).toContain("This scene has its own visual direction override");
+    expect(videoPrompt).toContain("Dark low-key lighting");
+  });
+
+  it("lets the local analyzer inherit Cine direction as fallback context", () => {
+    const data = createEmptyCineNodeData();
+    data.visualDirection = {
+      ...data.visualDirection,
+      mode: "documentary",
+      visualStyle: "raw_documentary",
+      colorGrading: "cool_blue_desaturated",
+      lightingStyle: "dark",
+    };
+
+    const analysis = analyzeCineScript("Puffy camina por una calle de noche buscando una puerta.", {
+      mode: data.visualDirection.mode,
+      visualDirection: data.visualDirection,
+    });
+
+    expect(analysis.suggestedMode).toBe("documentary");
+    expect(analysis.visualStyle).toContain("Raw documentary");
+    expect(analysis.scenes[0]?.shot?.lighting).toContain("Dark low-key lighting");
+    expect(analysis.scenes[0]?.shot?.mood).toContain("Documental crudo");
+  });
+
+  it("marks V3 video plans as missing_frames when storyboard assets are absent", () => {
+    const data = createEmptyCineNodeData();
+    data.scenes = [
+      {
+        id: "scene_1",
+        order: 1,
+        title: "Entrada",
+        sourceText: "",
+        visualSummary: "Entrada a la pirámide.",
+        characters: [],
+        shot: { shotType: "wide", durationSeconds: 5 },
+        framesMode: "start_end",
+        frames: {
+          start: { id: "start", role: "start", prompt: "start", imageAssetId: "asset://start", status: "generated" },
+        },
+        status: "frame_generated",
+      },
+    ];
+
+    const plan = prepareSceneForVideo(data, "scene_1", "cine_1");
+
+    expect(plan.status).toBe("missing_frames");
+    expect(plan.missingFrames).toEqual(["end"]);
+    expect(plan.startFrameAssetId).toBe("asset://start");
+    expect(plan.endFrameAssetId).toBeUndefined();
+  });
+
+  it("builds an empty media_list for a Cine node without script", () => {
+    const output = buildCineMediaListOutput(createEmptyCineNodeData(), "cine_1");
+
+    expect(output.kind).toBe("media_list");
+    expect(output.sourceNodeId).toBe("cine_1");
+    expect(output.status).toBe("empty");
+    expect(output.items).toHaveLength(0);
+  });
+
+  it("builds storyboard placeholders when scenes exist without frames", () => {
+    const data = createEmptyCineNodeData();
+    data.manualScript = "Puffy sale de casa.";
+    data.scenes = [
+      {
+        id: "scene_1",
+        order: 1,
+        title: "Casa",
+        sourceText: "Puffy sale de casa.",
+        visualSummary: "Casa soleada.",
+        visualNotes: "Casa soleada en el pueblo.",
+        voiceOver: "Empieza la aventura.",
+        onScreenText: ["Puffy"],
+        characters: ["puffy"],
+        backgroundId: "house",
+        shot: { shotType: "wide", cameraMovementType: "static_subtle", durationSeconds: 6 },
+        framesMode: "single",
+        frames: {},
+        status: "draft",
+      },
+    ];
+
+    const output = buildCineMediaListOutput(data, "cine_1");
+
+    expect(output.status).toBe("storyboard_ready");
+    expect(output.items).toHaveLength(1);
+    expect(output.items[0]?.mediaType).toBe("placeholder");
+    expect(output.items[0]?.role).toBe("storyboard_placeholder");
+    expect(output.items[0]?.metadata?.onScreenText).toEqual(["Puffy"]);
+  });
+
+  it("builds a partial frames media_list with generated frames and missing placeholders", () => {
+    const data = createEmptyCineNodeData();
+    data.manualScript = "Dos escenas.";
+    data.scenes = [
+      {
+        id: "scene_1",
+        order: 1,
+        title: "Casa",
+        sourceText: "",
+        visualSummary: "Casa soleada.",
+        characters: [],
+        shot: { shotType: "wide", durationSeconds: 6 },
+        framesMode: "single",
+        frames: { single: { id: "frame_1", role: "single", prompt: "frame", imageAssetId: "asset://frame-1", status: "generated" } },
+        status: "frame_generated",
+      },
+      {
+        id: "scene_2",
+        order: 2,
+        title: "Bosque",
+        sourceText: "",
+        visualSummary: "Bosque.",
+        characters: [],
+        shot: { shotType: "wide", durationSeconds: 5 },
+        framesMode: "single",
+        frames: {},
+        status: "draft",
+      },
+    ];
+
+    const output = buildCineMediaListOutput(data, "cine_1");
+
+    expect(output.status).toBe("frames_partial");
+    expect(output.items.some((item) => item.role === "storyboard_frame" && item.assetId === "asset://frame-1")).toBe(true);
+    expect(output.items.some((item) => item.role === "storyboard_placeholder" && item.sceneId === "scene_2")).toBe(true);
+  });
+
+  it("prioritizes approved videos in media_list output", () => {
+    const data = createEmptyCineNodeData();
+    data.mediaListOutputConfig = {
+      ...data.mediaListOutputConfig,
+      includeOnlyApprovedVideos: true,
+    };
+    data.scenes = [
+      {
+        id: "scene_1",
+        order: 1,
+        title: "Casa",
+        sourceText: "",
+        visualSummary: "Casa soleada.",
+        characters: [],
+        shot: { shotType: "wide", durationSeconds: 6 },
+        framesMode: "single",
+        frames: { single: { id: "frame_1", role: "single", prompt: "frame", imageAssetId: "asset://frame-1", status: "generated" } },
+        video: {
+          sceneId: "scene_1",
+          mode: "image_to_video",
+          status: "generated",
+          durationSeconds: 6,
+          aspectRatio: "16:9",
+          singleFrameAssetId: "asset://frame-1",
+          prompt: "video",
+          characters: [],
+          referenceAssetIds: [],
+          generatedVideoAssetId: "asset://video-generated",
+          approvedVideoAssetId: "asset://video-approved",
+        },
+        status: "ready_for_video",
+      },
+    ];
+
+    const output = buildCineMediaListOutput(data, "cine_1");
+
+    expect(output.status).toBe("approved_ready");
+    expect(output.items).toHaveLength(1);
+    expect(output.items[0]?.role).toBe("approved_scene_video");
+    expect(output.items[0]?.assetId).toBe("asset://video-approved");
   });
 });

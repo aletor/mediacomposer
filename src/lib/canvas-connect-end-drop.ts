@@ -75,6 +75,7 @@ export const HANDLE_DROP_MAP: Record<string, string> = {
   "prompt:target": "promptInput",
   /** Salida document (json) del Designer → suelta en el lienzo crea Presenter. */
   "json:source": "presenter",
+  "media_list:source": "export_multimedia",
   "image:source": "imageExport",
   "image:target": "nanoBanana",
   "video:source": "imageExport",
@@ -193,6 +194,12 @@ export function defaultDataForCanvasDropNode(nodeType: string): Record<string, u
       };
     case "presenter":
       return { label: "Presenter" };
+    case "export_multimedia":
+      return { label: "Export Multimedia" };
+    case "exportMultiple":
+      return { label: "Export Multiple" };
+    case "videoEditor":
+      return { label: "Video Editor" };
     case "projectBrain":
       return { label: "Brain" };
     case "projectAssets":
