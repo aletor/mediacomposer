@@ -13,6 +13,7 @@ describe("Studio node architecture", () => {
     expect(STUDIO_NODE_MANIFESTS.photoRoom.ownsPortal).toBe(true);
     expect(STUDIO_NODE_MANIFESTS.guionista.chrome).toBe("editorial");
     expect(STUDIO_NODE_MANIFESTS.cine.chrome).toBe("cinematic");
+    expect(STUDIO_NODE_MANIFESTS.nanoBanana.modulePath).toContain("nano-banana/NanoBananaNode");
   });
 
   it("resolves manifests by node type or app id", () => {

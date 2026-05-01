@@ -10,7 +10,6 @@ import {
   ConcatenatorNode,
   ListadoNode,
   EnhancerNode,
-  NanoBananaNode,
   BackgroundRemoverNode,
   MediaDescriberNode,
   ImageExportNode,
@@ -31,6 +30,7 @@ import {
 } from "./CustomNodes";
 import { CineNode } from "./cine/CineNode";
 import { GuionistaNode } from "./guionista/GuionistaNode";
+import { NanoBananaNode } from "./nano-banana/NanoBananaNode";
 import { PhotoRoomNode } from "./photo-room/PhotoRoomNode";
 import { CanvasGroupNode } from "./CanvasGroupNode";
 

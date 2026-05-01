@@ -3,10 +3,15 @@ import {
   type CineAnalysisResult,
   type CineBackground,
   type CineCharacter,
+  type CineMode,
   type CineFrame,
   type CineFrame as Frame,
+  type CineImageStudioResult,
+  type CineImageStudioSession,
   type CineNodeData,
   type CineScene,
+  type CineShot,
+  type CineVisualDirection,
   type CineVideoPlan,
   makeCineId,
 } from "./cine-types";
@@ -606,6 +611,500 @@ export function applyCineAnalysisToData(data: CineNodeData, analysis: CineAnalys
   };
 }
 
+type CineAnalyzeOptions = {
+  mode?: CineMode;
+  visualDirection?: CineVisualDirection;
+  signal?: AbortSignal;
+};
+
+function asAiRecord(raw: unknown): Record<string, unknown> {
+  return raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+}
+
+function asAiArray(raw: unknown): unknown[] {
+  return Array.isArray(raw) ? raw : [];
+}
+
+function asAiString(raw: unknown, fallback = ""): string {
+  return typeof raw === "string" ? cleanScriptText(raw) : fallback;
+}
+
+function asAiStringArray(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map((item) => asAiString(item)).filter(Boolean);
+  const text = asAiString(raw);
+  return text ? [text] : [];
+}
+
+function asAiNumber(raw: unknown, fallback?: number): number | undefined {
+  if (typeof raw === "number" && Number.isFinite(raw)) return Math.max(0, Math.round(raw));
+  if (typeof raw === "string") {
+    const parsedDuration = parseDurationSeconds(raw);
+    if (parsedDuration != null) return parsedDuration;
+    const numeric = Number(raw.replace(",", "."));
+    if (Number.isFinite(numeric)) return Math.max(0, Math.round(numeric));
+  }
+  return fallback;
+}
+
+function uniqueCleanId(seed: string, prefix: string, used: Set<string>): string {
+  const base = normalizeToken(seed).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 42);
+  let id = base ? `${prefix}_${base}` : makeCineId(prefix);
+  let index = 2;
+  while (used.has(id)) {
+    id = `${base ? `${prefix}_${base}` : makeCineId(prefix)}_${index}`;
+    index += 1;
+  }
+  used.add(id);
+  return id;
+}
+
+function isInvalidAiCharacterName(name: string): boolean {
+  const token = normalizeToken(name);
+  if (!token || token.length < 2) return true;
+  if (STRUCTURAL_LABELS.has(token)) return true;
+  return new Set([
+    "paso",
+    "cada",
+    "hoy",
+    "vida",
+    "texto",
+    "pantalla",
+    "notas",
+    "visuales",
+    "duracion",
+    "voz",
+    "off",
+    "escena",
+    "plano",
+    "primer",
+    "vista",
+    "luz",
+    "sol",
+    "puerta",
+    "salida",
+    "continuara",
+    "continuará",
+  ]).has(token);
+}
+
+function normalizeAiCharacter(raw: unknown, index: number, usedIds: Set<string>): CineCharacter | null {
+  const row = asAiRecord(raw);
+  const name = asAiString(row.name || row.nombre || row.title || row.label, `Personaje ${index + 1}`);
+  if (isInvalidAiCharacterName(name)) return null;
+  const role = ["protagonist", "secondary", "extra", "object"].includes(asAiString(row.role))
+    ? row.role as CineCharacter["role"]
+    : index === 0 ? "protagonist" : "secondary";
+  const description = asAiString(row.description || row.descripcion, role === "object" ? "Objeto con función narrativa visual." : "Entidad visual del guion.");
+  return {
+    id: uniqueCleanId(asAiString(row.id) || name, "cine_character", usedIds),
+    name,
+    role,
+    description,
+    visualPrompt: asAiString(row.visualPrompt || row.prompt, `${name}: ${description}. Mantener continuidad visual consistente entre escenas.`),
+    negativePrompt: asAiString(row.negativePrompt) || undefined,
+    referenceImageAssetId: asAiString(row.referenceImageAssetId) || undefined,
+    approvedImageAssetId: asAiString(row.approvedImageAssetId) || undefined,
+    lockedTraits: asAiStringArray(row.lockedTraits),
+    wardrobe: asAiString(row.wardrobe) || undefined,
+    emotionalRange: asAiStringArray(row.emotionalRange),
+    notes: asAiString(row.notes) || undefined,
+    isLocked: Boolean(row.isLocked),
+  };
+}
+
+function normalizeAiBackground(raw: unknown, index: number, usedIds: Set<string>): CineBackground | null {
+  const row = asAiRecord(raw);
+  const name = asAiString(row.name || row.nombre || row.title || row.label, "");
+  const description = asAiString(row.description || row.descripcion || row.visualSummary, "");
+  if (!name && !description) return null;
+  const type = asAiString(row.type);
+  const cleanName = name || `Fondo ${index + 1}`;
+  return {
+    id: uniqueCleanId(asAiString(row.id) || cleanName, "cine_background", usedIds),
+    name: cleanName,
+    type: ["interior", "exterior", "natural", "urban", "studio", "abstract", "other"].includes(type)
+      ? type as CineBackground["type"]
+      : inferBackgroundType(`${cleanName} ${description}`),
+    description: description || `Localización reutilizable: ${cleanName}.`,
+    visualPrompt: asAiString(row.visualPrompt || row.prompt, `${cleanName}: continuidad espacial clara, escala cinematográfica, luz motivada y sin texto visible.`),
+    negativePrompt: asAiString(row.negativePrompt) || undefined,
+    referenceImageAssetId: asAiString(row.referenceImageAssetId) || undefined,
+    approvedImageAssetId: asAiString(row.approvedImageAssetId) || undefined,
+    lighting: asAiString(row.lighting) || undefined,
+    palette: asAiStringArray(row.palette),
+    textures: asAiStringArray(row.textures),
+    lockedElements: asAiStringArray(row.lockedElements),
+    notes: asAiString(row.notes) || undefined,
+    isLocked: Boolean(row.isLocked),
+  };
+}
+
+function resolveAiCharacterIds(raw: unknown, characters: CineCharacter[], sceneText: string): string[] {
+  const rows = asAiArray(raw);
+  const tokens = rows.flatMap((item) => {
+    if (typeof item === "string") return [item];
+    const row = asAiRecord(item);
+    return [row.id, row.name, row.nombre, row.title].map((value) => asAiString(value)).filter(Boolean);
+  });
+  const resolved = characters.filter((character) => {
+    const byToken = tokens.some((token) => {
+      const cleanToken = normalizeToken(token);
+      const cleanId = normalizeToken(character.id);
+      const cleanName = normalizeToken(character.name);
+      return cleanToken === cleanId || cleanToken === cleanName || cleanId.endsWith(`_${cleanToken}`);
+    });
+    const bySceneText = new RegExp(`\\b${character.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(sceneText);
+    return byToken || bySceneText;
+  }).map((character) => character.id);
+  return Array.from(new Set(resolved)).slice(0, 4);
+}
+
+function resolveAiBackgroundId(raw: unknown, backgrounds: CineBackground[], sceneText: string, index: number): string | undefined {
+  const token = asAiString(raw);
+  const byToken = backgrounds.find((background) => {
+    const cleanToken = normalizeToken(token);
+    const cleanId = normalizeToken(background.id);
+    const cleanName = normalizeToken(background.name);
+    return cleanToken === cleanId || cleanToken === cleanName || cleanId.endsWith(`_${cleanToken}`);
+  });
+  if (byToken) return byToken.id;
+  const inferred = inferBackgroundName(sceneText);
+  const byInferred = backgrounds.find((background) => normalizeToken(background.name) === normalizeToken(inferred) || normalizeToken(background.description).includes(normalizeToken(inferred)));
+  return byInferred?.id ?? backgrounds[index % Math.max(1, backgrounds.length)]?.id;
+}
+
+function normalizeAiScene(raw: unknown, index: number, characters: CineCharacter[], backgrounds: CineBackground[], usedIds: Set<string>): CineScene {
+  const row = asAiRecord(raw);
+  const shot = asAiRecord(row.shot);
+  const sourceText = asAiString(row.sourceText || row.text || row.guion || row.narrative, "");
+  const voiceOver = asAiString(row.voiceOver || row.voice_over) || undefined;
+  const onScreenText = asAiStringArray(row.onScreenText || row.on_screen_text);
+  const visualNotes = asAiString(row.visualNotes || row.visual_notes || row.notasVisuales) || undefined;
+  const visualSummary =
+    asAiString(row.visualSummary || row.visual_summary || row.summary, "") ||
+    visualNotes ||
+    firstSentence(sourceText || voiceOver || onScreenText.join(" "), `Escena ${index + 1}`);
+  const sceneText = cleanText([sourceText, voiceOver, visualNotes, visualSummary, onScreenText.join(" ")].filter(Boolean).join(" "));
+  const durationSeconds = asAiNumber(row.durationSeconds ?? row.duration_seconds ?? shot.durationSeconds, 5) ?? 5;
+  const shotType = Object.keys({
+    extreme_wide: true,
+    wide: true,
+    medium: true,
+    medium_closeup: true,
+    closeup: true,
+    extreme_closeup: true,
+    detail: true,
+    over_shoulder: true,
+    pov: true,
+    top_shot: true,
+    low_angle: true,
+    high_angle: true,
+  }).includes(asAiString(shot.shotType || row.shotType))
+    ? asAiString(shot.shotType || row.shotType) as CineShot["shotType"]
+    : "medium";
+  const sceneKind = ["present", "flashback", "memory", "other"].includes(asAiString(row.sceneKind || row.scene_kind))
+    ? asAiString(row.sceneKind || row.scene_kind) as CineScene["sceneKind"]
+    : inferSceneKind(sceneText);
+  return {
+    id: uniqueCleanId(asAiString(row.id) || `${index + 1}_${asAiString(row.title) || visualSummary}`, "cine_scene", usedIds),
+    order: typeof row.order === "number" ? row.order : index + 1,
+    title: asAiString(row.title, sceneTitle(index + 1)),
+    sourceText: sourceText || sceneText,
+    visualSummary,
+    voiceOver,
+    onScreenText,
+    visualNotes,
+    durationSeconds,
+    sceneKind,
+    characters: resolveAiCharacterIds(row.characters, characters, sceneText),
+    backgroundId: resolveAiBackgroundId(row.backgroundId || row.background || row.location || row.fondo, backgrounds, sceneText, index),
+    shot: {
+      shotType,
+      cameraMovement: asAiString(shot.cameraMovement || row.cameraMovement, "movimiento sutil motivado por la accion"),
+      lensSuggestion: asAiString(shot.lensSuggestion || row.lensSuggestion, "35mm o 50mm cinematografico"),
+      lighting: asAiString(shot.lighting || row.lighting, "luz motivada por la escena"),
+      mood: asAiString(shot.mood || row.mood, "cinematografico y claro"),
+      action: asAiString(shot.action || row.action, firstSentence(sceneText, "accion principal de la escena")),
+      durationSeconds,
+    },
+    framesMode: "single",
+    frames: {},
+    status: "draft",
+  };
+}
+
+function dedupeBackgrounds(backgrounds: CineBackground[]): CineBackground[] {
+  const seen = new Set<string>();
+  const result: CineBackground[] = [];
+  for (const background of backgrounds) {
+    const key = normalizeToken(background.name);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(background);
+  }
+  return result;
+}
+
+function sceneLocationText(scene: CineScene): string {
+  return cleanText([
+    scene.visualNotes,
+    scene.visualSummary,
+    scene.shot.action,
+    scene.sourceText,
+    scene.voiceOver,
+  ].filter(Boolean).join(" "));
+}
+
+function inferNarrativeBackgroundSpec(text: string): Pick<CineBackground, "name" | "type" | "description" | "visualPrompt" | "lighting" | "textures" | "lockedElements"> | null {
+  const lower = normalizeToken(text);
+  if (!lower) return null;
+  const mentionsPyramid = /piramide|pirámide|templo|estructura antigua/.test(lower);
+  if (mentionsPyramid && /\bbase\b|\bpie\b|entrada|frente|fachada|suben|escalones/.test(lower)) {
+    return {
+      name: "Base de la pirámide antigua",
+      type: "exterior",
+      description: "Base exterior de una pirámide antigua, escala monumental y entrada visible.",
+      visualPrompt: "Base exterior de pirámide antigua, piedra erosionada, entrada misteriosa, escala monumental y vegetación cercana.",
+      lighting: "Luz natural filtrada, contraste de aventura.",
+      textures: ["piedra antigua", "musgo", "tierra", "vegetación"],
+      lockedElements: ["base de pirámide", "entrada", "piedra antigua"],
+    };
+  }
+  const entering = /se adentran|adentran|\bentran\b|\bentra\b|dentro|interior|linternas|linterna|oscuridad|explorar dentro|exploran dentro/.test(lower);
+  if (mentionsPyramid && entering) {
+    return {
+      name: "Interior de la pirámide",
+      type: "interior",
+      description: "Interior oscuro de una pirámide antigua, exploración con linternas, ambiente misterioso.",
+      visualPrompt: "Interior de una pirámide antigua, corredores de piedra, sombras profundas, linternas como fuente de luz, misterio cinematográfico.",
+      lighting: "Luz baja de linternas, contraste suave y atmósfera de descubrimiento.",
+      textures: ["piedra antigua", "polvo", "sombras", "relieves erosionados"],
+      lockedElements: ["interior de pirámide", "linternas", "piedra antigua"],
+    };
+  }
+  if (mentionsPyramid && /claro|aparece|descubre|descubren|encuentra|encuentran|escondida|estructura/.test(lower)) {
+    return {
+      name: "Claro con pirámide escondida",
+      type: "natural",
+      description: "Claro del bosque donde aparece una pirámide antigua escondida entre vegetación.",
+      visualPrompt: "Claro de bosque con pirámide antigua parcialmente oculta por vegetación, sensación de descubrimiento y aventura.",
+      lighting: "Luz natural entre árboles, atmósfera de hallazgo.",
+      textures: ["vegetación", "piedra", "tierra", "hojas"],
+      lockedElements: ["claro del bosque", "pirámide escondida", "vegetación"],
+    };
+  }
+  if (/sendero|camino|bosque|arboles|árboles|ramas|hojas/.test(lower)) {
+    return {
+      name: "Sendero del bosque",
+      type: "natural",
+      description: "Sendero rodeado de árboles, camino de aventura hacia un descubrimiento.",
+      visualPrompt: "Sendero de bosque con árboles alrededor, camino natural, profundidad visual y tono de aventura familiar.",
+      lighting: "Luz natural filtrada por árboles.",
+      textures: ["hojas", "tierra", "corteza", "vegetación"],
+      lockedElements: ["sendero", "árboles", "camino natural"],
+    };
+  }
+  if (/casa|hogar|pueblo|mañana soleada|manana soleada|ventana|salon|salón|cocina/.test(lower)) {
+    return {
+      name: "Casa soleada en el pueblo",
+      type: "interior",
+      description: "Casa cálida y luminosa en un pueblo, punto de partida cotidiano de la aventura.",
+      visualPrompt: "Casa soleada de pueblo, ambiente cálido, detalles domésticos, luz de mañana y sensación de inicio de aventura.",
+      lighting: "Luz cálida de mañana entrando por ventanas.",
+      textures: ["madera", "paredes cálidas", "textiles domésticos"],
+      lockedElements: ["casa de pueblo", "luz de mañana", "ambiente familiar"],
+    };
+  }
+  if (/puerta|entrada|salida|hall/.test(lower)) {
+    return {
+      name: "Entrada o salida iluminada",
+      type: "interior",
+      description: "Zona de entrada o salida con luz marcada, transición narrativa.",
+      visualPrompt: "Hall o puerta iluminada, transición espacial clara, luz de salida y composición cinematográfica.",
+      lighting: "Luz direccional desde la puerta.",
+      textures: ["suelo", "marco de puerta", "luz ambiental"],
+      lockedElements: ["puerta", "zona de transición", "luz de salida"],
+    };
+  }
+  return null;
+}
+
+function createBackgroundFromSpec(spec: NonNullable<ReturnType<typeof inferNarrativeBackgroundSpec>>, usedIds: Set<string>): CineBackground {
+  return {
+    id: uniqueCleanId(spec.name, "cine_background", usedIds),
+    name: spec.name,
+    type: spec.type,
+    description: spec.description,
+    visualPrompt: spec.visualPrompt,
+    lighting: spec.lighting,
+    palette: [],
+    textures: spec.textures ?? [],
+    lockedElements: spec.lockedElements ?? [],
+    notes: "Fondo creado por normalización narrativa del Nodo Cine.",
+    isLocked: false,
+  };
+}
+
+function findMatchingBackground(backgrounds: CineBackground[], spec: NonNullable<ReturnType<typeof inferNarrativeBackgroundSpec>>): CineBackground | undefined {
+  const specName = normalizeToken(spec.name);
+  return backgrounds.find((background) => {
+    const name = normalizeToken(background.name);
+    if (name === specName) return true;
+    if (specName.includes("interior") && specName.includes("piramide")) return name.includes("interior") && name.includes("piramide");
+    if (specName.includes("base") && specName.includes("piramide")) return name.includes("base") && name.includes("piramide");
+    if (specName.includes("claro") && specName.includes("piramide")) return name.includes("claro") && name.includes("piramide");
+    if (specName.includes("sendero") && specName.includes("bosque")) return name.includes("sendero") || name.includes("bosque");
+    if (specName.includes("casa")) return name.includes("casa") || name.includes("hogar");
+    return false;
+  });
+}
+
+function titleFromSceneBeat(scene: CineScene): string {
+  const text = normalizeToken(sceneLocationText(scene));
+  if (/continuara|continuará|continuar/.test(text)) return "Continuará";
+  if (/interior|dentro|linternas|adentran|entran/.test(text) && /piramide|pirámide/.test(text)) return "Entrada al interior";
+  if (/base|entrada|frente|fachada/.test(text) && /piramide|pirámide/.test(text)) return "Exploración de la pirámide";
+  if (/claro|descubre|descubren|encuentra|aparece|estructura/.test(text) && /piramide|pirámide/.test(text)) return "Descubrimiento de la pirámide";
+  if (/puffy/.test(text) && /raro|extraño|extrano|olfatea|detecta|se detiene/.test(text)) return "El comportamiento extraño de Puffy";
+  if (/sendero|camino|bosque|arboles|árboles/.test(text)) return "Camino hacia el bosque";
+  if (/casa|hogar|pueblo|mañana|manana/.test(text)) return "Introducción en el pueblo";
+  return cleanScriptText(scene.title || sceneTitle(scene.order));
+}
+
+function enrichBackgroundsAndScenes(backgroundsInput: CineBackground[], scenesInput: CineScene[], usedBackgroundIds: Set<string>): { backgrounds: CineBackground[]; scenes: CineScene[] } {
+  let backgrounds = dedupeBackgrounds(backgroundsInput);
+  const scenes = scenesInput.map((scene, index) => {
+    const spec = inferNarrativeBackgroundSpec(sceneLocationText(scene));
+    let backgroundId = scene.backgroundId;
+    if (spec) {
+      let background = findMatchingBackground(backgrounds, spec);
+      if (!background) {
+        background = createBackgroundFromSpec(spec, usedBackgroundIds);
+        backgrounds = [...backgrounds, background];
+      }
+      backgroundId = background.id;
+    } else if (!backgroundId || !backgrounds.some((background) => background.id === backgroundId)) {
+      backgroundId = backgrounds[index % Math.max(1, backgrounds.length)]?.id;
+    }
+    const visualSummary = scene.visualSummary || scene.visualNotes || firstSentence(scene.sourceText || scene.voiceOver || scene.title, scene.title);
+    return {
+      ...scene,
+      order: index + 1,
+      title: titleFromSceneBeat({ ...scene, visualSummary }),
+      visualSummary,
+      backgroundId,
+      durationSeconds: scene.durationSeconds ?? scene.shot.durationSeconds ?? 5,
+      shot: {
+        ...scene.shot,
+        durationSeconds: scene.durationSeconds ?? scene.shot.durationSeconds ?? 5,
+      },
+      framesMode: "single" as const,
+      frames: {},
+      status: "draft" as const,
+    };
+  });
+
+  if (!backgrounds.length) {
+    backgrounds = [createBackgroundFromSpec({
+      name: "Localización principal",
+      type: "other",
+      description: "Localización narrativa principal sin pistas visuales suficientes.",
+      visualPrompt: "Localización cinematográfica principal, clara y reutilizable.",
+      lighting: "Luz motivada por la escena.",
+      textures: [],
+      lockedElements: [],
+    }, usedBackgroundIds)];
+  }
+  return { backgrounds, scenes };
+}
+
+export function validateAndNormalizeCineAIAnalysis(result: unknown, fallbackScript = ""): CineAnalysisResult {
+  const root = asAiRecord(result);
+  const payload = asAiRecord(root.analysis || root.result || root.data || root);
+  const usedCharacterIds = new Set<string>();
+  const usedBackgroundIds = new Set<string>();
+  const usedSceneIds = new Set<string>();
+  const rawCharacters = asAiArray(payload.characters || payload.personajes);
+  let characters = rawCharacters
+    .map((item, index) => normalizeAiCharacter(item, index, usedCharacterIds))
+    .filter((item): item is CineCharacter => Boolean(item));
+  if (!characters.length) {
+    characters = inferCharacterNames(fallbackScript).map((name, index) => makeCharacter(name, index));
+  }
+
+  const rawBackgrounds = asAiArray(payload.backgrounds || payload.fondos || payload.locations || payload.localizaciones);
+  let backgrounds = rawBackgrounds
+    .map((item, index) => normalizeAiBackground(item, index, usedBackgroundIds))
+    .filter((item): item is CineBackground => Boolean(item));
+  backgrounds = dedupeBackgrounds(backgrounds);
+  const rawScenes = asAiArray(payload.scenes || payload.escenas);
+  if (!backgrounds.length) {
+    const sceneTexts = rawScenes.map((scene) => {
+      const row = asAiRecord(scene);
+      return cleanText([
+        asAiString(row.visualNotes || row.visual_notes),
+        asAiString(row.visualSummary || row.visual_summary),
+        asAiString(row.sourceText || row.text),
+      ].join(" "));
+    }).filter(Boolean);
+    const hints = Array.from(new Set(sceneTexts.map(inferBackgroundName))).filter((name) => name !== "Localización principal");
+    backgrounds = (hints.length ? hints : ["Localización narrativa"]).map((name, index) => makeBackground(`Localización detectada: ${name}`, index));
+    backgrounds.forEach((background, index) => {
+      background.id = uniqueCleanId(background.name, "cine_background", usedBackgroundIds);
+      if (hints[index]) background.name = hints[index];
+    });
+  }
+
+  let scenes = rawScenes.map((item, index) => normalizeAiScene(item, index, characters, backgrounds, usedSceneIds));
+  if (!scenes.length) {
+    scenes = analyzeCineScript(fallbackScript).scenes.map((scene, index) => normalizeAiScene(scene, index, characters, backgrounds, usedSceneIds));
+  }
+  scenes = scenes
+    .sort((a, b) => a.order - b.order)
+    .map((scene, index) => ({
+      ...scene,
+      order: index + 1,
+      visualSummary: scene.visualSummary || scene.visualNotes || firstSentence(scene.sourceText || scene.voiceOver || scene.title, scene.title),
+      durationSeconds: scene.durationSeconds ?? 5,
+      framesMode: "single",
+      frames: {},
+      status: "draft",
+    }));
+  const enriched = enrichBackgroundsAndScenes(backgrounds, scenes, usedBackgroundIds);
+  backgrounds = enriched.backgrounds;
+  scenes = enriched.scenes;
+
+  return {
+    logline: asAiString(payload.logline, firstSentence(fallbackScript, "Guion cinematografico")),
+    summary: asAiString(payload.summary || payload.resumen, firstSentence(fallbackScript, "Resumen pendiente")),
+    tone: asAiString(payload.tone || payload.tono, "cinematografico, narrativo y visual"),
+    visualStyle: asAiString(payload.visualStyle || payload.estiloVisual, "direccion cinematografica clara, continuidad visual y localizaciones reconocibles"),
+    suggestedMode: Object.keys(CINE_MODE_LABELS).includes(asAiString(payload.suggestedMode)) ? payload.suggestedMode as CineMode : undefined,
+    characters,
+    backgrounds,
+    scenes,
+  };
+}
+
+export async function analyzeCineScriptWithAI(script: string, options: CineAnalyzeOptions = {}): Promise<CineAnalysisResult> {
+  const response = await fetch("/api/spaces/cine/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      script,
+      mode: options.mode,
+      visualDirection: options.visualDirection,
+    }),
+    signal: options.signal,
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(error?.error || "No se pudo analizar con IA.");
+  }
+  const json = await response.json();
+  return validateAndNormalizeCineAIAnalysis(json, script);
+}
+
 function line(label: string, value?: string | string[]): string | null {
   const text = Array.isArray(value) ? value.filter(Boolean).join(", ") : value;
   return text && text.trim() ? `${label}: ${text.trim()}` : null;
@@ -725,6 +1224,194 @@ export function buildCineFrameNegativePrompt(): string {
   ].join(", ");
 }
 
+function uniqueAssetIds(items: Array<string | undefined | null>): string[] {
+  return Array.from(new Set(items.filter((item): item is string => typeof item === "string" && item.trim().length > 0)));
+}
+
+export function getEffectiveCineCharacterAsset(character?: CineCharacter): string | undefined {
+  if (!character) return undefined;
+  return character.approvedImageAssetId || character.editedImageAssetId || character.generatedImageAssetId || character.referenceImageAssetId;
+}
+
+export function getEffectiveCineBackgroundAsset(background?: CineBackground): string | undefined {
+  if (!background) return undefined;
+  return background.approvedImageAssetId || background.editedImageAssetId || background.generatedImageAssetId || background.referenceImageAssetId;
+}
+
+export function getEffectiveCineFrameAsset(frame?: CineFrame): string | undefined {
+  if (!frame) return undefined;
+  return frame.editedImageAssetId || frame.imageAssetId;
+}
+
+export function getEffectiveCharacterSheetAsset(data: CineNodeData): string | undefined {
+  const sheet = data.continuity?.characterSheet;
+  return sheet?.editedAssetId || sheet?.assetId;
+}
+
+export function getEffectiveLocationSheetAsset(data: CineNodeData): string | undefined {
+  const sheet = data.continuity?.locationSheet;
+  return sheet?.editedAssetId || sheet?.assetId;
+}
+
+export function getCineFrameReferenceAssetIds(data: CineNodeData, sceneId: string): string[] {
+  const scene = data.scenes.find((item) => item.id === sceneId);
+  if (!scene) return [];
+  const characters = scene.characters
+    .map((characterId) => data.characters.find((character) => character.id === characterId))
+    .map(getEffectiveCineCharacterAsset);
+  const background = getEffectiveCineBackgroundAsset(data.backgrounds.find((item) => item.id === scene.backgroundId));
+  return uniqueAssetIds([
+    data.continuity?.useCharacterSheetForFrames ? getEffectiveCharacterSheetAsset(data) : undefined,
+    data.continuity?.useLocationSheetForFrames ? getEffectiveLocationSheetAsset(data) : undefined,
+    ...characters,
+    background,
+  ]);
+}
+
+export function buildCineCharacterPrompt(data: CineNodeData, characterId: string): string {
+  const character = data.characters.find((item) => item.id === characterId);
+  if (!character) return "";
+  return [
+    `Create a clean cinematic character reference image for ${character.name}.`,
+    line("Production mode", CINE_MODE_LABELS[data.mode]),
+    line("Aspect ratio", data.visualDirection.aspectRatio),
+    line("Realism level", data.visualDirection.realismLevel),
+    line("Global visual direction", data.visualDirection.globalStylePrompt),
+    line("Character role", character.role),
+    line("Character description", character.description),
+    line("Visual prompt", character.visualPrompt),
+    line("Wardrobe", character.wardrobe),
+    character.isLocked ? line("Locked continuity traits", character.lockedTraits) : null,
+    line("Emotional range", character.emotionalRange),
+    "",
+    "REFERENCE GOAL",
+    "Generate a clean visual identity reference, not a full narrative scene.",
+    "Use simple cinematic lighting and neutral readable staging so this character can be reused across storyboard frames.",
+    "No typography, logos, subtitles, watermarks or UI.",
+  ].filter((item): item is string => Boolean(item)).join("\n");
+}
+
+function characterSheetLayout(count: number): "single" | "three_columns" | "three_by_two" | "paginated" {
+  if (count <= 1) return "single";
+  if (count <= 3) return "three_columns";
+  if (count <= 6) return "three_by_two";
+  return "paginated";
+}
+
+export function getCineCharacterSheetLayout(data: CineNodeData): "single" | "three_columns" | "three_by_two" | "paginated" {
+  return characterSheetLayout(data.characters.length);
+}
+
+export function buildCineCharacterSheetPrompt(data: CineNodeData): string {
+  const layout = getCineCharacterSheetLayout(data);
+  return [
+    "Create a clean cinematic character continuity reference sheet.",
+    line("Production mode", CINE_MODE_LABELS[data.mode]),
+    line("Layout", layout),
+    line("Realism level", data.visualDirection.realismLevel),
+    line("Global visual direction", data.visualDirection.globalStylePrompt),
+    "Use a neutral background, consistent soft studio lighting, consistent scale and readable proportions.",
+    "Do not create a dramatic scene or environment. This is a reference sheet for continuity.",
+    "Do not render written names, labels, captions, logos, typography, watermarks or UI.",
+    "",
+    "CHARACTER REQUIREMENTS",
+    "For each character, show front face portrait, side profile portrait, and full body view with base wardrobe.",
+    "Use character names only as metadata for this prompt, never as visible text inside the image.",
+    ...data.characters.flatMap((character, index) => [
+      "",
+      `Character ${index + 1}: ${character.name}`,
+      line("Role", character.role),
+      line("Description", character.description),
+      line("Visual prompt", character.visualPrompt),
+      line("Wardrobe", character.wardrobe),
+      line("Locked traits to preserve exactly", character.lockedTraits),
+    ]),
+  ].filter((item): item is string => Boolean(item)).join("\n");
+}
+
+export function buildCineCharacterSheetNegativePrompt(): string {
+  return [
+    "cinematic action scene",
+    "complex background",
+    "text artifacts",
+    "captions",
+    "labels",
+    "logos",
+    "distorted faces",
+    "inconsistent identity",
+    "extra limbs",
+    "blurry",
+    "watermark",
+  ].join(", ");
+}
+
+export function buildCineBackgroundPrompt(data: CineNodeData, backgroundId: string): string {
+  const background = data.backgrounds.find((item) => item.id === backgroundId);
+  if (!background) return "";
+  return [
+    `Create a clean cinematic location reference image for: ${background.name}.`,
+    line("Production mode", CINE_MODE_LABELS[data.mode]),
+    line("Aspect ratio", data.visualDirection.aspectRatio),
+    line("Realism level", data.visualDirection.realismLevel),
+    line("Global visual direction", data.visualDirection.globalStylePrompt),
+    line("Location type", background.type),
+    line("Description", background.description),
+    line("Visual prompt", background.visualPrompt),
+    line("Lighting", background.lighting),
+    line("Textures", background.textures),
+    background.isLocked ? line("Locked location elements", background.lockedElements) : null,
+    "",
+    "REFERENCE GOAL",
+    "Generate a reusable location/background reference without characters unless explicitly requested in the location description.",
+    "Keep space, scale, light direction and materials clear for continuity.",
+    "No typography, logos, subtitles, watermarks or UI.",
+  ].filter((item): item is string => Boolean(item)).join("\n");
+}
+
+export function buildCineLocationSheetPrompt(data: CineNodeData): string {
+  const layout = data.backgrounds.length <= 1 ? "single" : "grid";
+  return [
+    "Create a clean cinematic environment/location continuity reference sheet.",
+    line("Production mode", CINE_MODE_LABELS[data.mode]),
+    line("Layout", layout),
+    line("Realism level", data.visualDirection.realismLevel),
+    line("Global visual direction", data.visualDirection.globalStylePrompt),
+    "Use one clear panel per location, separated visually through composition, not typography.",
+    "Keep a consistent visual style, neutral presentation and readable spatial layout.",
+    "No characters unless explicitly required by a location description.",
+    "Do not render written names, labels, captions, logos, typography, watermarks or UI.",
+    "",
+    "LOCATIONS",
+    ...data.backgrounds.flatMap((background, index) => [
+      "",
+      `Location ${index + 1}: ${background.name}`,
+      line("Type", background.type),
+      line("Description", background.description),
+      line("Visual prompt", background.visualPrompt),
+      line("Lighting", background.lighting),
+      line("Palette", background.palette),
+      line("Textures", background.textures),
+      line("Locked elements", background.lockedElements),
+    ]),
+  ].filter((item): item is string => Boolean(item)).join("\n");
+}
+
+export function buildCineLocationSheetNegativePrompt(): string {
+  return [
+    "characters",
+    "people",
+    "crowded scene",
+    "text artifacts",
+    "captions",
+    "labels",
+    "logos",
+    "inconsistent location style",
+    "distorted architecture",
+    "blurry",
+    "watermark",
+  ].join(", ");
+}
+
 export function createCineFrameDraft(args: {
   data: CineNodeData;
   sceneId: string;
@@ -750,8 +1437,129 @@ export function createCineFrameDraft(args: {
       brainNodeId: args.brainConnected && args.data.visualDirection.useBrain ? args.data.metadata?.brainNodeId : undefined,
       visualCapsuleIds: args.data.visualDirection.visualCapsuleIds,
       sourceScriptNodeId: args.data.metadata?.sourceScriptNodeId,
+      referenceAssetIds: scene ? getCineFrameReferenceAssetIds(args.data, scene.id) : [],
     },
   };
+}
+
+export function applyCineImageStudioResult(
+  data: CineNodeData,
+  session: CineImageStudioSession,
+  result: CineImageStudioResult,
+): CineNodeData {
+  const assetId = result.assetId;
+  if (!assetId) return data;
+  if (session.kind === "character" && session.characterId) {
+    return {
+      ...data,
+      characters: data.characters.map((character) =>
+        character.id === session.characterId
+          ? {
+              ...character,
+              generatedImageAssetId: result.mode === "generate" ? assetId : character.generatedImageAssetId,
+              editedImageAssetId: result.mode === "edit" ? assetId : character.editedImageAssetId,
+            }
+          : character,
+      ),
+    };
+  }
+  if (session.kind === "background" && session.backgroundId) {
+    return {
+      ...data,
+      backgrounds: data.backgrounds.map((background) =>
+        background.id === session.backgroundId
+          ? {
+              ...background,
+              generatedImageAssetId: result.mode === "generate" ? assetId : background.generatedImageAssetId,
+              editedImageAssetId: result.mode === "edit" ? assetId : background.editedImageAssetId,
+            }
+          : background,
+      ),
+    };
+  }
+  if (session.kind === "frame" && session.sceneId && session.frameRole) {
+    const frameRole = session.frameRole;
+    return {
+      ...data,
+      scenes: data.scenes.map((scene) => {
+        if (scene.id !== session.sceneId) return scene;
+        const existing = scene.frames[frameRole] ?? {
+          id: makeCineId("cine_frame"),
+          role: frameRole,
+          prompt: session.prompt,
+          negativePrompt: session.negativePrompt,
+          status: "draft" as const,
+        };
+        return {
+          ...scene,
+          frames: {
+            ...scene.frames,
+            [frameRole]: {
+              ...existing,
+              prompt: session.prompt || existing.prompt,
+              negativePrompt: session.negativePrompt || existing.negativePrompt,
+              imageAssetId: result.mode === "generate" ? assetId : existing.imageAssetId,
+              editedImageAssetId: result.mode === "edit" ? assetId : existing.editedImageAssetId,
+              status: result.mode === "edit" ? "edited" : "generated",
+              generatedFromStudio: true,
+              metadata: {
+                ...existing.metadata,
+                referenceAssetIds: session.metadata?.referenceAssetIds ?? existing.metadata?.referenceAssetIds,
+              },
+            },
+          },
+          status: scene.framesMode === "start_end" ? "frames_generated" : "frame_generated",
+        };
+      }),
+    };
+  }
+  if (session.kind === "character_sheet") {
+    const now = new Date().toISOString();
+    const previous = data.continuity?.characterSheet;
+    return {
+      ...data,
+      continuity: {
+        ...data.continuity,
+        characterSheet: {
+          id: previous?.id || makeCineId("cine_character_sheet"),
+          cineNodeId: session.cineNodeId,
+          characterIds: previous?.characterIds ?? data.characters.map((item) => item.id),
+          assetId: result.mode === "generate" ? assetId : previous?.assetId,
+          status: result.mode === "edit" ? "edited" : "ready",
+          layout: previous?.layout || getCineCharacterSheetLayout(data),
+          prompt: session.prompt || previous?.prompt || "",
+          negativePrompt: session.negativePrompt || previous?.negativePrompt,
+          editedAssetId: result.mode === "edit" ? assetId : previous?.editedAssetId,
+          createdAt: previous?.createdAt || now,
+          updatedAt: now,
+        },
+      },
+    };
+  }
+  if (session.kind === "location_sheet") {
+    const now = new Date().toISOString();
+    const previous = data.continuity?.locationSheet;
+    return {
+      ...data,
+      continuity: {
+        ...data.continuity,
+        locationSheet: {
+          id: previous?.id || makeCineId("cine_location_sheet"),
+          cineNodeId: session.cineNodeId,
+          backgroundIds: previous?.backgroundIds ?? data.backgrounds.map((item) => item.id),
+          assetId: result.mode === "generate" ? assetId : previous?.assetId,
+          status: result.mode === "edit" ? "edited" : "ready",
+          layout: previous?.layout || (data.backgrounds.length <= 1 ? "single" : "grid"),
+          prompt: session.prompt || previous?.prompt || "",
+          negativePrompt: session.negativePrompt || previous?.negativePrompt,
+          editedAssetId: result.mode === "edit" ? assetId : previous?.editedAssetId,
+          createdAt: previous?.createdAt || now,
+          updatedAt: now,
+        },
+      },
+    };
+  }
+  return data;
 }
 
 export function buildVideoPromptForScene(data: CineNodeData, sceneId: string): string {

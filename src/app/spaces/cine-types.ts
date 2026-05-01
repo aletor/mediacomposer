@@ -40,6 +40,8 @@ export type CineCharacter = {
   description: string;
   visualPrompt: string;
   negativePrompt?: string;
+  generatedImageAssetId?: string;
+  editedImageAssetId?: string;
   referenceImageAssetId?: string;
   approvedImageAssetId?: string;
   lockedTraits: string[];
@@ -56,6 +58,8 @@ export type CineBackground = {
   description: string;
   visualPrompt: string;
   negativePrompt?: string;
+  generatedImageAssetId?: string;
+  editedImageAssetId?: string;
   referenceImageAssetId?: string;
   approvedImageAssetId?: string;
   lighting?: string;
@@ -107,7 +111,43 @@ export type CineFrame = {
     brainNodeId?: string;
     visualCapsuleIds?: string[];
     sourceScriptNodeId?: string;
+    referenceAssetIds?: string[];
   };
+};
+
+export type CineCharacterContinuitySheet = {
+  id: string;
+  cineNodeId: string;
+  characterIds: string[];
+  assetId?: string;
+  status: "draft" | "generating" | "ready" | "edited" | "error";
+  layout: "single" | "three_columns" | "three_by_two" | "paginated";
+  prompt: string;
+  negativePrompt?: string;
+  editedAssetId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type CineLocationContinuitySheet = {
+  id: string;
+  cineNodeId: string;
+  backgroundIds: string[];
+  assetId?: string;
+  status: "draft" | "generating" | "ready" | "edited" | "error";
+  layout: "single" | "grid";
+  prompt: string;
+  negativePrompt?: string;
+  editedAssetId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type CineContinuitySettings = {
+  characterSheet?: CineCharacterContinuitySheet;
+  locationSheet?: CineLocationContinuitySheet;
+  useCharacterSheetForFrames?: boolean;
+  useLocationSheetForFrames?: boolean;
 };
 
 export type CineVideoPlan = {
@@ -130,6 +170,51 @@ export type CineVideoPlan = {
   action?: string;
   mood?: string;
   status?: "idle" | "ready" | "sent" | "generating" | "done" | "error";
+};
+
+export type CineImageStudioSession = {
+  cineNodeId: string;
+  nanoNodeId: string;
+  kind: "character" | "background" | "frame" | "character_sheet" | "location_sheet";
+  characterId?: string;
+  backgroundId?: string;
+  sceneId?: string;
+  frameRole?: "single" | "start" | "end";
+  prompt: string;
+  negativePrompt?: string;
+  sourceAssetId?: string;
+  returnTab: "reparto" | "fondos" | "storyboard";
+  returnSceneId?: string;
+  mode: "generate" | "edit";
+  metadata?: {
+    generatedFrom: "cine-node";
+    cineAssetKind:
+      | "character"
+      | "background"
+      | "scene-frame"
+      | "character-sheet"
+      | "location-sheet";
+    cineNodeId: string;
+    characterId?: string;
+    backgroundId?: string;
+    sceneId?: string;
+    frameRole?: "single" | "start" | "end";
+    charactersUsed?: string[];
+    backgroundUsed?: string;
+    sourceScriptNodeId?: string;
+    brainNodeId?: string;
+    visualCapsuleIds?: string[];
+    referenceAssetIds?: string[];
+    createdAt?: string;
+  };
+};
+
+export type CineImageStudioResult = {
+  assetId?: string;
+  originalAssetId?: string;
+  promptUsed?: string;
+  negativePromptUsed?: string;
+  mode: "generate" | "edit";
 };
 
 export type CineScene = {
@@ -189,6 +274,7 @@ export type CineNodeData = {
   characters: CineCharacter[];
   backgrounds: CineBackground[];
   scenes: CineScene[];
+  continuity?: CineContinuitySettings;
   selectedSceneId?: string;
   value?: string;
   metadata?: {
@@ -261,6 +347,10 @@ export function createEmptyCineNodeData(now = new Date().toISOString()): CineNod
     characters: [],
     backgrounds: [],
     scenes: [],
+    continuity: {
+      useCharacterSheetForFrames: true,
+      useLocationSheetForFrames: true,
+    },
     value: "",
     metadata: {
       createdAt: now,
@@ -280,6 +370,58 @@ function asString(raw: unknown, fallback = ""): string {
 function asStringArray(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+}
+
+function normalizeCharacterSheet(raw: unknown): CineCharacterContinuitySheet | undefined {
+  const row = asRecord(raw);
+  const id = asString(row.id);
+  const prompt = asString(row.prompt);
+  const assetId = asString(row.assetId) || undefined;
+  const editedAssetId = asString(row.editedAssetId) || undefined;
+  if (!id && !prompt && !assetId && !editedAssetId) return undefined;
+  return {
+    id: id || makeCineId("cine_character_sheet"),
+    cineNodeId: asString(row.cineNodeId),
+    characterIds: asStringArray(row.characterIds),
+    assetId,
+    status: ["draft", "generating", "ready", "edited", "error"].includes(asString(row.status))
+      ? (row.status as CineCharacterContinuitySheet["status"])
+      : assetId || editedAssetId ? "ready" : "draft",
+    layout: ["single", "three_columns", "three_by_two", "paginated"].includes(asString(row.layout))
+      ? (row.layout as CineCharacterContinuitySheet["layout"])
+      : "single",
+    prompt,
+    negativePrompt: asString(row.negativePrompt) || undefined,
+    editedAssetId,
+    createdAt: asString(row.createdAt) || undefined,
+    updatedAt: asString(row.updatedAt) || undefined,
+  };
+}
+
+function normalizeLocationSheet(raw: unknown): CineLocationContinuitySheet | undefined {
+  const row = asRecord(raw);
+  const id = asString(row.id);
+  const prompt = asString(row.prompt);
+  const assetId = asString(row.assetId) || undefined;
+  const editedAssetId = asString(row.editedAssetId) || undefined;
+  if (!id && !prompt && !assetId && !editedAssetId) return undefined;
+  return {
+    id: id || makeCineId("cine_location_sheet"),
+    cineNodeId: asString(row.cineNodeId),
+    backgroundIds: asStringArray(row.backgroundIds),
+    assetId,
+    status: ["draft", "generating", "ready", "edited", "error"].includes(asString(row.status))
+      ? (row.status as CineLocationContinuitySheet["status"])
+      : assetId || editedAssetId ? "ready" : "draft",
+    layout: ["single", "grid"].includes(asString(row.layout))
+      ? (row.layout as CineLocationContinuitySheet["layout"])
+      : "grid",
+    prompt,
+    negativePrompt: asString(row.negativePrompt) || undefined,
+    editedAssetId,
+    createdAt: asString(row.createdAt) || undefined,
+    updatedAt: asString(row.updatedAt) || undefined,
+  };
 }
 
 function normalizeFrame(raw: unknown, fallbackRole: CineFrame["role"]): CineFrame | undefined {
@@ -308,6 +450,7 @@ export function normalizeCineData(raw: unknown): CineNodeData {
   const row = asRecord(raw);
   const visual = asRecord(row.visualDirection);
   const metadata = asRecord(row.metadata);
+  const continuityRaw = asRecord(row.continuity);
   const sourceScript = asRecord(row.sourceScript);
   const mode = Object.keys(CINE_MODE_LABELS).includes(asString(row.mode)) ? (row.mode as CineMode) : base.mode;
   const status = Object.keys(CINE_STATUS_LABELS).includes(asString(row.status)) ? (row.status as CineStatus) : base.status;
@@ -330,6 +473,8 @@ export function normalizeCineData(raw: unknown): CineNodeData {
           description: asString(character.description),
           visualPrompt: asString(character.visualPrompt),
           negativePrompt: asString(character.negativePrompt),
+          generatedImageAssetId: asString(character.generatedImageAssetId) || undefined,
+          editedImageAssetId: asString(character.editedImageAssetId) || undefined,
           referenceImageAssetId: asString(character.referenceImageAssetId) || undefined,
           approvedImageAssetId: asString(character.approvedImageAssetId) || undefined,
           lockedTraits: asStringArray(character.lockedTraits),
@@ -354,6 +499,8 @@ export function normalizeCineData(raw: unknown): CineNodeData {
           description: asString(background.description),
           visualPrompt: asString(background.visualPrompt),
           negativePrompt: asString(background.negativePrompt),
+          generatedImageAssetId: asString(background.generatedImageAssetId) || undefined,
+          editedImageAssetId: asString(background.editedImageAssetId) || undefined,
           referenceImageAssetId: asString(background.referenceImageAssetId) || undefined,
           approvedImageAssetId: asString(background.approvedImageAssetId) || undefined,
           lighting: asString(background.lighting),
@@ -443,6 +590,16 @@ export function normalizeCineData(raw: unknown): CineNodeData {
     characters,
     backgrounds,
     scenes,
+    continuity: {
+      characterSheet: normalizeCharacterSheet(continuityRaw.characterSheet),
+      locationSheet: normalizeLocationSheet(continuityRaw.locationSheet),
+      useCharacterSheetForFrames: typeof continuityRaw.useCharacterSheetForFrames === "boolean"
+        ? continuityRaw.useCharacterSheetForFrames
+        : base.continuity?.useCharacterSheetForFrames,
+      useLocationSheetForFrames: typeof continuityRaw.useLocationSheetForFrames === "boolean"
+        ? continuityRaw.useLocationSheetForFrames
+        : base.continuity?.useLocationSheetForFrames,
+    },
     selectedSceneId: asString(row.selectedSceneId) || scenes[0]?.id,
     value: asString(row.value),
     metadata: {

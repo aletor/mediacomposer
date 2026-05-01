@@ -1,15 +1,20 @@
 "use client";
 
-import React, { memo, useCallback, useMemo } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { NodeProps, useEdges, useNodes, useReactFlow } from "@xyflow/react";
 import { Film } from "lucide-react";
+import { defaultDataForCanvasDropNode } from "@/lib/canvas-connect-end-drop";
 import { CineStudio } from "../CineStudio";
 import {
   CINE_MODE_LABELS,
   CINE_STATUS_LABELS,
   normalizeCineData,
+  type CineImageStudioResult,
+  type CineImageStudioSession,
   type CineNodeData,
 } from "../cine-types";
+import { applyCineImageStudioResult } from "../cine-engine";
+import { withFoldderCanvasIntro } from "../spaces-canvas-intro";
 import {
   StudioCanvasNodeShell,
   StudioCanvasOpenButton,
@@ -18,6 +23,10 @@ import {
 } from "../studio-node/studio-canvas-node";
 import { useStudioNodeController } from "../studio-node/studio-node-architecture";
 import { textFromStudioSourceNode } from "../studio-node/source-node-text";
+import {
+  dispatchOpenNanoStudioFromCine,
+  registerPendingNanoStudioOpenFromCine,
+} from "./cine-nano-open-pending";
 
 const CINE_NODE_HANDLES: StudioCanvasNodeHandleSpec[] = [
   { side: "left", top: "30%", type: "target", id: "prompt", dataType: "prompt", label: "Guion" },
@@ -29,9 +38,13 @@ const CINE_NODE_HANDLES: StudioCanvasNodeHandleSpec[] = [
 
 export const CineNode = memo(function CineNode({ id, data, selected }: NodeProps) {
   const nodeData = normalizeCineData(data);
-  const { setNodes } = useReactFlow();
+  const { setNodes, getNodes, fitView } = useReactFlow();
   const nodes = useNodes();
   const edges = useEdges();
+  const [studioReturn, setStudioReturn] = useState<{
+    tab?: "script" | "cast" | "backgrounds" | "storyboard" | "output";
+    sceneId?: string;
+  } | null>(null);
   const { isStudioOpen, openStudio, closeStudio } = useStudioNodeController({
     nodeId: id,
     nodeType: "cine",
@@ -80,6 +93,87 @@ export const CineNode = memo(function CineNode({ id, data, selected }: NodeProps
     },
     [framesPrepared, id, setNodes],
   );
+
+  const getOrCreateCineImageStudioNode = useCallback((): string | null => {
+    const nodesNow = getNodes() as Array<{ id: string; type?: string; position: { x: number; y: number }; data?: Record<string, unknown> }>;
+    const existing = nodesNow.find((node) =>
+      node.type === "nanoBanana" &&
+      node.data?.companionFor === "cine-node" &&
+      node.data?.cineNodeId === id,
+    );
+    if (existing) return existing.id;
+    const cineNode = nodesNow.find((node) => node.id === id);
+    if (!cineNode) return null;
+    const nanoId = `nanoBanana_cine_${id}_${Date.now()}`;
+    const defaults = defaultDataForCanvasDropNode("nanoBanana") as Record<string, unknown>;
+    const nanoNode = {
+      id: nanoId,
+      type: "nanoBanana",
+      position: {
+        x: cineNode.position.x + 360,
+        y: cineNode.position.y + 18,
+      },
+      data: withFoldderCanvasIntro("nanoBanana", {
+        ...defaults,
+        label: "Cine · Crear Imagen",
+        companionFor: "cine-node",
+        cineNodeId: id,
+      }),
+    };
+    setNodes((nds) => [...nds, nanoNode as (typeof nds)[number]]);
+    return nanoId;
+  }, [getNodes, id, setNodes]);
+
+  const openImageStudioFromCine = useCallback((sessionBase: Omit<CineImageStudioSession, "nanoNodeId">) => {
+    const nanoNodeId = getOrCreateCineImageStudioNode();
+    if (!nanoNodeId) return;
+    const session: CineImageStudioSession = { ...sessionBase, nanoNodeId };
+    registerPendingNanoStudioOpenFromCine(nanoNodeId, session);
+    closeStudio();
+    requestAnimationFrame(() => {
+      void fitView({
+        nodes: [{ id }, { id: nanoNodeId }],
+        padding: 0.45,
+        duration: 560,
+      });
+      dispatchOpenNanoStudioFromCine(nanoNodeId, session);
+    });
+  }, [closeStudio, fitView, getOrCreateCineImageStudioNode, id]);
+
+  useEffect(() => {
+    const mapReturnTab = (tab?: CineImageStudioSession["returnTab"]) => {
+      if (tab === "reparto") return "cast" as const;
+      if (tab === "fondos") return "backgrounds" as const;
+      if (tab === "storyboard") return "storyboard" as const;
+      return "script" as const;
+    };
+    const onOpenCine = (ev: Event) => {
+      const detail = (ev as CustomEvent<{
+        cineNodeId?: string;
+        returnTab?: CineImageStudioSession["returnTab"];
+        returnSceneId?: string;
+        session?: CineImageStudioSession;
+        result?: CineImageStudioResult;
+      }>).detail;
+      if (detail?.cineNodeId !== id) return;
+      if (detail.session && detail.result?.assetId) {
+        setNodes((nds) =>
+          nds.map((node) =>
+            node.id === id
+              ? {
+                  ...node,
+                  data: applyCineImageStudioResult(normalizeCineData(node.data), detail.session!, detail.result!),
+                }
+              : node,
+          ),
+        );
+      }
+      setStudioReturn({ tab: mapReturnTab(detail.returnTab), sceneId: detail.returnSceneId });
+      openStudio();
+    };
+    window.addEventListener("foldder-open-cine-studio", onOpenCine as EventListener);
+    return () => window.removeEventListener("foldder-open-cine-studio", onOpenCine as EventListener);
+  }, [id, openStudio, setNodes]);
 
   const statusLabel = CINE_STATUS_LABELS[nodeData.status];
   const modeLabel = CINE_MODE_LABELS[nodeData.mode];
@@ -152,6 +246,9 @@ export const CineNode = memo(function CineNode({ id, data, selected }: NodeProps
           brainConnected={brainConnected}
           sourceScriptText={sourceScriptText}
           sourceScriptNodeId={sourceScriptNode?.id}
+          initialTab={studioReturn?.tab}
+          initialSceneId={studioReturn?.sceneId}
+          onOpenImageStudio={openImageStudioFromCine}
         />
       ) : null}
     </StudioCanvasNodeShell>

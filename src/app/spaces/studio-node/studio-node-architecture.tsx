@@ -113,7 +113,7 @@ export const STUDIO_NODE_MANIFESTS = {
     appId: "nanoBanana",
     label: "Imagen IA",
     chrome: "generator",
-    modulePath: "src/app/spaces/CustomNodes.tsx#NanoBananaNode",
+    modulePath: "src/app/spaces/nano-banana/NanoBananaNode.tsx",
     ownsPortal: true,
     supportsStandardShell: true,
     description: "Generación y edición de imágenes con referencias.",
