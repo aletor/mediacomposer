@@ -5,6 +5,7 @@ import {
   appendKnowledgeImageVisualDnaSlots,
   appendPendingCapsuleImageVisualDnaSlots,
   listKnowledgeImageRefsMissingVisualDnaSlot,
+  upgradeAnalyzedKnowledgeImageVisualDnaSlots,
 } from "@/lib/brain/visual-dna-slot/slot-sync";
 import {
   createVisualDnaSlotFromImage,
@@ -336,6 +337,49 @@ describe("VisualDnaSlot library", () => {
       },
     });
     expect(appendKnowledgeImageVisualDnaSlots(withPlaceholder).appended).toHaveLength(0);
+  });
+
+  it("upgradeAnalyzedKnowledgeImageVisualDnaSlots hidrata placeholders sin perder mosaico", () => {
+    const assets = normalizeProjectAssets({
+      ...baseKnowledgeImageAssets(),
+      knowledge: {
+        ...baseKnowledgeImageAssets().knowledge,
+        documents: [
+          {
+            ...baseKnowledgeImageAssets().knowledge.documents[0],
+            brainSourceScope: "capsule",
+            scope: "context",
+            s3Path: "knowledge-files/look.png",
+          },
+        ],
+      },
+    });
+    const placeholder = appendPendingCapsuleImageVisualDnaSlots(assets).appended[0];
+    const withReadyMosaic = normalizeProjectAssets({
+      ...assets,
+      strategy: {
+        ...assets.strategy,
+        visualDnaSlots: [
+          applyMosaicSuccessToSlot(placeholder, {
+            imageUrl: "https://example.com/mosaic.png",
+            s3Path: "knowledge-files/mosaic.png",
+            mosaicPrompt: "mosaic prompt",
+            safeRulesDigest: [],
+          }),
+        ],
+      },
+    });
+
+    const { nextSlots, upgraded } = upgradeAnalyzedKnowledgeImageVisualDnaSlots(withReadyMosaic);
+
+    expect(upgraded).toHaveLength(1);
+    expect(nextSlots).toHaveLength(1);
+    expect(nextSlots[0].id).toBe(placeholder.id);
+    expect(nextSlots[0].status).toBe("ready");
+    expect(nextSlots[0].mosaic.s3Path).toBe("knowledge-files/mosaic.png");
+    expect(nextSlots[0].hero.description).toContain("Producto en mesa");
+    expect(nextSlots[0].generalStyle.summary).not.toContain("pendiente");
+    expect(nextSlots[0].palette.dominantColors).toContain("#112233");
   });
 
   it("listKnowledgeImageRefsMissingVisualDnaSlot respeta slots existentes", () => {

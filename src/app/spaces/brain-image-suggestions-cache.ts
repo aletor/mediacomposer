@@ -266,6 +266,9 @@ function normalizeSuggestion(item: unknown, index: number): BrainImageSuggestion
       ...(Array.isArray(v.visualAvoidUsed) ? { visualAvoidUsed: v.visualAvoidUsed as string[] } : {}),
       ...(typeof v.decisionTraceId === "string" ? { decisionTraceId: v.decisionTraceId } : {}),
       ...(decisionTrace ? { decisionTrace } : {}),
+      ...(v.visualCapsuleSelection && typeof v.visualCapsuleSelection === "object"
+        ? { visualCapsuleSelection: v.visualCapsuleSelection as BrainImageSuggestionDiagnostics["visualCapsuleSelection"] }
+        : {}),
     };
   }
   return {

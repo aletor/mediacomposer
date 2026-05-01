@@ -43,6 +43,8 @@ import {
   type KnowledgeDocumentEntry,
   type ProjectAssetsMetadata,
   type VisualCapsule,
+  type VisualCapsuleSuggestion,
+  type VisualCapsuleSuggestionKind,
   type VisualCapsuleStatus,
   type VisualImageClassification,
 } from "./project-assets-metadata";
@@ -119,6 +121,7 @@ import {
   appendKnowledgeImageVisualDnaSlots,
   appendPendingCapsuleImageVisualDnaSlots,
   normalizeVisualDnaSlotSuppressedSourceIds,
+  upgradeAnalyzedKnowledgeImageVisualDnaSlots,
 } from "@/lib/brain/visual-dna-slot/slot-sync";
 import {
   applyMosaicFailureToSlot,
@@ -270,6 +273,71 @@ function compactAssetsForVisualRequest(assets: ProjectAssetsMetadata): ProjectAs
   });
 }
 
+function visualCapsuleSuggestionFromSlotAsset(params: {
+  slotId: string;
+  kind: VisualCapsuleSuggestionKind;
+  role: "same" | "similar";
+  asset?: VisualDnaSlot["people"]["same"];
+  fallbackNotes?: string;
+}): VisualCapsuleSuggestion | null {
+  const { slotId, kind, role, asset, fallbackNotes } = params;
+  const imageUrl = asset?.imageUrl?.trim();
+  const prompt = asset?.prompt?.trim();
+  const fallbackDescription = role === "same" ? fallbackNotes?.trim() : "";
+  const description = asset?.description?.trim() || prompt || fallbackDescription || "";
+  if (!imageUrl && !prompt && !description) return null;
+  return {
+    id: `${slotId}_${kind}_${role}`,
+    kind,
+    title: role === "same" ? "Ejemplo principal" : "Variación compatible",
+    ...(imageUrl ? { imageUrl } : {}),
+    ...(prompt ? { prompt } : {}),
+    ...(description ? { description } : {}),
+  };
+}
+
+function visualCapsuleSuggestionsFromSlotSection(
+  slot: VisualDnaSlot | undefined,
+  kind: VisualCapsuleSuggestionKind,
+  section: VisualDnaSlot["people"] | undefined,
+  prev: VisualCapsuleSuggestion[] | undefined,
+): VisualCapsuleSuggestion[] {
+  const fromSlot = [
+    visualCapsuleSuggestionFromSlotAsset({
+      slotId: slot?.id ?? "slot",
+      kind,
+      role: "same",
+      asset: section?.same,
+      fallbackNotes: section?.notes,
+    }),
+    visualCapsuleSuggestionFromSlotAsset({
+      slotId: slot?.id ?? "slot",
+      kind,
+      role: "similar",
+      asset: section?.similar,
+      fallbackNotes: section?.notes,
+    }),
+  ].filter((item): item is VisualCapsuleSuggestion => Boolean(item));
+  return fromSlot.length ? fromSlot : prev ?? [];
+}
+
+function ignorePendingVisualCapsuleText(raw: string | undefined): string | undefined {
+  const text = raw?.trim();
+  if (!text) return undefined;
+  const key = text.toLowerCase();
+  if (
+    key === "preparando análisis visual…" ||
+    key === "preparando analisis visual…" ||
+    key === "preparando análisis visual..." ||
+    key === "preparando analisis visual..." ||
+    key === "cápsula visual pendiente de análisis." ||
+    key === "capsula visual pendiente de analisis."
+  ) {
+    return undefined;
+  }
+  return text;
+}
+
 function visualCapsuleFromDocAndSlot(params: {
   doc: KnowledgeDocumentEntry;
   analysis?: BrainVisualImageAnalysis;
@@ -309,13 +377,19 @@ function visualCapsuleFromDocAndSlot(params: {
     status: params.status ?? prev?.status ?? "reference",
     analysisStatus,
     scope: "capsule",
-    summary: slot?.generalStyle?.summary || prev?.summary,
-    heroConclusion: slot?.hero?.conclusion || slot?.hero?.description || prev?.heroConclusion,
+    summary:
+      ignorePendingVisualCapsuleText(slot?.generalStyle?.summary) ||
+      ignorePendingVisualCapsuleText(slot?.hero?.description) ||
+      ignorePendingVisualCapsuleText(prev?.summary),
+    heroConclusion:
+      ignorePendingVisualCapsuleText(slot?.hero?.conclusion) ||
+      ignorePendingVisualCapsuleText(slot?.hero?.description) ||
+      ignorePendingVisualCapsuleText(prev?.heroConclusion),
     palette,
-    persons: prev?.persons ?? [],
-    environments: prev?.environments ?? [],
-    textures: prev?.textures ?? [],
-    objects: prev?.objects ?? [],
+    persons: visualCapsuleSuggestionsFromSlotSection(slot, "person", slot?.people, prev?.persons),
+    environments: visualCapsuleSuggestionsFromSlotSection(slot, "environment", slot?.environments, prev?.environments),
+    textures: visualCapsuleSuggestionsFromSlotSection(slot, "texture", slot?.textures, prev?.textures),
+    objects: visualCapsuleSuggestionsFromSlotSection(slot, "object", slot?.objects, prev?.objects),
     moodTags: slot?.generalStyle?.mood?.length ? slot.generalStyle.mood : prev?.moodTags,
     visualTraits: slot?.generalStyle?.composition?.length ? slot.generalStyle.composition : prev?.visualTraits,
     fidelityScore: typeof slot?.confidence === "number" ? slot.confidence : prev?.fidelityScore,
@@ -1924,6 +1998,38 @@ export function ProjectBrainFullscreen({
               })(),
             },
           }));
+        }
+        const upgradedAnalyzedSlots = upgradeAnalyzedKnowledgeImageVisualDnaSlots(assetsSnap).upgraded;
+        if (upgradedAnalyzedSlots.length) {
+          patch(
+            (a) => ({
+              ...a,
+              strategy: {
+                ...a.strategy,
+                visualDnaSlots: (() => {
+                  const live = normalizeVisualDnaSlots(a.strategy.visualDnaSlots);
+                  const byId = new Map(live.map((s) => [s.id, s]));
+                  for (const slot of upgradedAnalyzedSlots) {
+                    const current = byId.get(slot.id);
+                    byId.set(slot.id, {
+                      ...slot,
+                      mosaic: {
+                        ...slot.mosaic,
+                        ...current?.mosaic,
+                      },
+                      lastGenerationPrompts: current?.lastGenerationPrompts ?? slot.lastGenerationPrompts,
+                      status:
+                        current && slotMosaicBusyRef.current.has(current.id)
+                          ? current.status
+                          : slot.status,
+                    });
+                  }
+                  return dedupeVisualDnaSlotsBySourceDocument(Array.from(byId.values()));
+                })(),
+              },
+            }),
+            [BRAIN_STALE_REASON.VISUAL_REFERENCE_CHANGED],
+          );
         }
         const pendingCapsules = appendPendingCapsuleImageVisualDnaSlots(assetsSnap).appended;
         const analyzedSlots = appendKnowledgeImageVisualDnaSlots(

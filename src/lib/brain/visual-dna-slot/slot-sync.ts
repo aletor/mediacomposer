@@ -4,6 +4,7 @@ import { analysisEligibleForKnowledgeVisualDnaSlot } from "./analysis-eligible";
 import {
   createPendingVisualDnaSlotFromKnowledgeDocument,
   createVisualDnaSlotFromImage,
+  normalizeVisualDnaSlot,
   normalizeVisualDnaSlots,
 } from "./normalize";
 import type { VisualDnaSlot } from "./types";
@@ -72,6 +73,107 @@ export function appendKnowledgeImageVisualDnaSlots(assets: ProjectAssetsMetadata
     );
   }
   return { nextSlots: [...existing, ...appended], appended };
+}
+
+const PENDING_ANALYSIS_TEXTS = new Set([
+  "preparando análisis visual…",
+  "preparando analisis visual…",
+  "preparando análisis visual...",
+  "preparando analisis visual...",
+  "cápsula visual pendiente de análisis.",
+  "capsula visual pendiente de analisis.",
+]);
+
+function isPendingAnalysisText(raw: unknown): boolean {
+  if (typeof raw !== "string") return false;
+  return PENDING_ANALYSIS_TEXTS.has(raw.trim().toLowerCase());
+}
+
+function hasSectionSignals(section: VisualDnaSlot["people"] | undefined): boolean {
+  if (!section) return false;
+  return Boolean(
+    section.notes?.trim() ||
+      section.same?.description?.trim() ||
+      section.same?.prompt?.trim() ||
+      section.same?.imageUrl?.trim() ||
+      section.similar?.description?.trim() ||
+      section.similar?.prompt?.trim() ||
+      section.similar?.imageUrl?.trim(),
+  );
+}
+
+function slotStillLooksLikePendingPlaceholder(slot: VisualDnaSlot): boolean {
+  if (isPendingAnalysisText(slot.hero.description) || isPendingAnalysisText(slot.hero.conclusion)) return true;
+  if (isPendingAnalysisText(slot.generalStyle.summary) || isPendingAnalysisText(slot.generalStyle.title)) return true;
+  const hasPalette = slot.palette.dominantColors.some((color) => color.trim().length > 0);
+  const hasStructuredSignals =
+    hasSectionSignals(slot.people) ||
+    hasSectionSignals(slot.objects) ||
+    hasSectionSignals(slot.environments) ||
+    hasSectionSignals(slot.textures);
+  return !hasPalette && !hasStructuredSignals;
+}
+
+function mergeAnalyzedVisualDnaSlotIntoExisting(existing: VisualDnaSlot, analyzed: VisualDnaSlot): VisualDnaSlot {
+  const hasExistingMosaic = Boolean(existing.mosaic.imageUrl?.trim() || existing.mosaic.s3Path?.trim());
+  return (
+    normalizeVisualDnaSlot({
+      ...analyzed,
+      id: existing.id,
+      label: existing.label?.trim() || analyzed.label,
+      createdAt: existing.createdAt || analyzed.createdAt,
+      updatedAt: new Date().toISOString(),
+      sourceImageId: existing.sourceImageId ?? analyzed.sourceImageId,
+      sourceDocumentId: existing.sourceDocumentId ?? analyzed.sourceDocumentId,
+      sourceImageUrl: analyzed.sourceImageUrl ?? existing.sourceImageUrl,
+      sourceS3Path: analyzed.sourceS3Path ?? existing.sourceS3Path,
+      status: hasExistingMosaic ? "ready" : existing.status === "generating" ? "generating" : analyzed.status,
+      mosaic: {
+        ...analyzed.mosaic,
+        ...existing.mosaic,
+      },
+      lastGenerationPrompts: existing.lastGenerationPrompts ?? analyzed.lastGenerationPrompts,
+      lastError: hasExistingMosaic ? undefined : existing.lastError,
+      staleReasons: existing.staleReasons,
+    }) ?? existing
+  );
+}
+
+/**
+ * Repara placeholders de Looks visuales cuando el análisis remoto ya existe.
+ *
+ * La subida crea un slot `pending` para dar feedback inmediato. Cuando luego llega
+ * `visualReferenceAnalysis`, no debemos crear otro slot duplicado: debemos hidratar
+ * el slot existente conservando id, mosaico y estado. Sin esto, la UI podía quedarse
+ * eternamente en "Preparando análisis visual…" aunque el mosaico ya estuviera listo.
+ */
+export function upgradeAnalyzedKnowledgeImageVisualDnaSlots(assets: ProjectAssetsMetadata): {
+  nextSlots: VisualDnaSlot[];
+  upgraded: VisualDnaSlot[];
+} {
+  const existing = normalizeVisualDnaSlots(assets.strategy.visualDnaSlots);
+  const analyses = assets.strategy.visualReferenceAnalysis?.analyses ?? [];
+  const byAsset = new Map(analyses.map((a) => [a.sourceAssetId, a]));
+  const refs = collectVisualImageAssetRefs(assets).filter((r) => r.sourceKind === "knowledge_document");
+  const refById = new Map(refs.map((r) => [r.id, r]));
+  const upgraded: VisualDnaSlot[] = [];
+  const nextSlots = existing.map((slot) => {
+    const docId = slot.sourceDocumentId?.trim();
+    if (!docId) return slot;
+    const ref = refById.get(docId);
+    const analysis = byAsset.get(docId);
+    if (!ref || !analysis || !analysisEligibleForKnowledgeVisualDnaSlot(analysis)) return slot;
+    if (!slotStillLooksLikePendingPlaceholder(slot)) return slot;
+    const analyzedSlot = createVisualDnaSlotFromImage({
+      ref,
+      analysis,
+      brainMeta: assets.brainMeta,
+    });
+    const merged = mergeAnalyzedVisualDnaSlotIntoExisting(slot, analyzedSlot);
+    upgraded.push(merged);
+    return merged;
+  });
+  return { nextSlots, upgraded };
 }
 
 function isKnowledgeImageDocument(doc: ProjectAssetsMetadata["knowledge"]["documents"][number]): boolean {

@@ -18,6 +18,7 @@ import { createPortal, flushSync } from "react-dom";
 import { usePreventBrowserPinchZoom } from "@/lib/use-prevent-browser-pinch-zoom";
 import { useClampedFixedPosition } from "@/lib/use-clamped-fixed-position";
 import { fetchBlobViaSpacesProxy } from "@/lib/spaces-proxy-fetch";
+import type { VisualDnaSlot } from "@/lib/brain/visual-dna-slot/types";
 import {
   X,
   MousePointer2,
@@ -177,6 +178,357 @@ async function rasterizeLogoDataUrlToPng(dataUrl: string, maxSide = 1024): Promi
     img.src = dataUrl;
   });
 }
+
+const BRAIN_VISUAL_LOOK_PARTS: Array<{
+  id: BrainVisualCapsuleSelectionPart;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: "person",
+    label: "Persona",
+    description: "Presencia, actitud, gesto, estilo de persona o interacción. No copia una identidad exacta.",
+  },
+  {
+    id: "texture",
+    label: "Textura",
+    description: "Materiales, superficies, grano, tejido, fondo o tactilidad visual.",
+  },
+  {
+    id: "object",
+    label: "Objeto",
+    description: "Props, producto, elementos físicos o detalles característicos.",
+  },
+  {
+    id: "environment",
+    label: "Entorno",
+    description: "Lugar, ambiente, escena, luz o contexto espacial.",
+  },
+  {
+    id: "palette",
+    label: "Paleta",
+    description: "Colores dominantes, temperatura, contraste y atmósfera cromática.",
+  },
+  {
+    id: "full_look",
+    label: "Look completo",
+    description: "Usa la cápsula completa como referencia visual dominante.",
+  },
+];
+
+type BrainVisualLookExample = {
+  id: string;
+  title: string;
+  description: string;
+  prompt?: string;
+  imageUrl?: string;
+};
+
+function brainVisualLookPartLabel(part: BrainVisualCapsuleSelectionPart): string {
+  return BRAIN_VISUAL_LOOK_PARTS.find((p) => p.id === part)?.label ?? "Look";
+}
+
+function visualCapsuleIsUsableInDesigner(capsule: VisualCapsule): boolean {
+  return (
+    capsule.analysisStatus === "ready" &&
+    capsule.status !== "archived" &&
+    capsule.status !== "promoted_partial"
+  );
+}
+
+function isPendingBrainVisualLookText(value?: string | null): boolean {
+  const text = (value ?? "").trim().toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes("preparando análisis visual") ||
+    text.includes("capsula visual pendiente") ||
+    text.includes("cápsula visual pendiente") ||
+    text.includes("pendiente de análisis")
+  );
+}
+
+function hasUsableBrainVisualLookText(value?: string | null): boolean {
+  const text = (value ?? "").trim();
+  return text.length > 0 && !isPendingBrainVisualLookText(text);
+}
+
+function visualCapsuleSuggestionToLookExample(item: VisualCapsuleSuggestion, index: number): BrainVisualLookExample {
+  const rawDescription = item.description?.trim() || item.prompt?.trim() || "";
+  return {
+    id: item.id,
+    title: item.title?.trim() || `Ejemplo ${index + 1}`,
+    description: hasUsableBrainVisualLookText(rawDescription) ? rawDescription : "Referencia visual del mosaico.",
+    ...(item.prompt?.trim() ? { prompt: item.prompt.trim() } : {}),
+    ...(item.imageUrl?.trim() ? { imageUrl: item.imageUrl.trim() } : {}),
+  };
+}
+
+function compactBrainVisualLookText(parts: Array<string | undefined | null>, maxChars = 520): string {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of parts) {
+    const text = (raw ?? "").trim();
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+  }
+  return out.join(" · ").slice(0, maxChars);
+}
+
+function brainVisualLookExamplesFromSlotSection(
+  slot: VisualDnaSlot | null | undefined,
+  kind: VisualCapsuleSuggestion["kind"],
+  section: VisualDnaSlot["people"] | undefined,
+): BrainVisualLookExample[] {
+  if (!slot || !section) return [];
+  return ([section.same, section.similar] as const)
+    .map((asset, index): BrainVisualLookExample | null => {
+      const description = compactBrainVisualLookText([asset?.description, asset?.prompt, section.notes]);
+      if (!asset?.imageUrl && !hasUsableBrainVisualLookText(description)) return null;
+      const title = asset?.role === "similar" || index === 1 ? "Variación compatible" : "Ejemplo principal";
+      return {
+        id: `${slot.id}_${kind}_${index === 1 ? "similar" : "same"}`,
+        title,
+        description: hasUsableBrainVisualLookText(description) ? description : "Referencia visual del mosaico.",
+        ...(asset?.prompt?.trim() ? { prompt: asset.prompt.trim() } : {}),
+        ...(asset?.imageUrl?.trim() ? { imageUrl: asset.imageUrl.trim() } : {}),
+      };
+    })
+    .filter((item): item is BrainVisualLookExample => Boolean(item))
+    .slice(0, 2);
+}
+
+function findVisualDnaSlotForCapsule(
+  capsule: VisualCapsule | null | undefined,
+  slots: readonly VisualDnaSlot[] | undefined,
+): VisualDnaSlot | null {
+  if (!capsule || !slots?.length) return null;
+  return (
+    slots.find((slot) => capsule.sourceVisualDnaSlotId && slot.id === capsule.sourceVisualDnaSlotId) ??
+    slots.find((slot) => capsule.sourceImageId && slot.sourceDocumentId === capsule.sourceImageId) ??
+    slots.find((slot) => capsule.sourceImageId && slot.sourceImageId === capsule.sourceImageId) ??
+    null
+  );
+}
+
+function fallbackVisualLookExample(
+  capsule: VisualCapsule,
+  slot: VisualDnaSlot | null,
+  part: Exclude<BrainVisualCapsuleSelectionPart, "palette" | "full_look">,
+): BrainVisualLookExample[] {
+  const partLabel = brainVisualLookPartLabel(part);
+  const mosaicUrl = slot?.mosaic.imageUrl || capsule.mosaicImageUrl;
+  if (mosaicUrl) {
+    const labelByPart: Record<typeof part, string> = {
+      person: "PEOPLE / PERSONAS",
+      texture: "TEXTURES / TEXTURAS",
+      object: "OBJECTS / OBJETOS",
+      environment: "ENVIRONMENTS / ENTORNOS",
+    };
+    const promptByPart: Record<typeof part, string> = {
+      person:
+        "Usa únicamente las celdas de personas/interacción del mosaico ADN como referencia: actitud, gesto, composición humana y relación espacial. No copies identidades ni rostros exactos.",
+      texture:
+        "Usa únicamente las celdas TEXTURES/TEXTURAS del mosaico ADN como referencia: materiales, tejido, grano, superficie, tactilidad y atmósfera material.",
+      object:
+        "Usa únicamente las celdas OBJECTS/OBJETOS del mosaico ADN como referencia: props, elementos físicos, detalles de producto y lenguaje objetual.",
+      environment:
+        "Usa únicamente las celdas ENVIRONMENTS/ENTORNOS del mosaico ADN como referencia: espacio, luz, escala, atmósfera y contexto visual.",
+    };
+    return [
+      {
+        id: `${capsule.id}_${part}_mosaic_focus`,
+        title: `${partLabel} del mosaico`,
+        description: `Referencia desde la sección ${labelByPart[part]} del mosaico ADN.`,
+        prompt: promptByPart[part],
+        imageUrl: mosaicUrl,
+      },
+    ];
+  }
+  const section =
+    part === "person"
+      ? slot?.people
+      : part === "texture"
+        ? slot?.textures
+        : part === "object"
+          ? slot?.objects
+          : slot?.environments;
+  const description = compactBrainVisualLookText([
+    section?.notes,
+    capsule.heroConclusion,
+    capsule.summary,
+    capsule.visualTraits?.join(", "),
+    capsule.moodTags?.join(", "),
+  ]);
+  if (!hasUsableBrainVisualLookText(description) && !capsule.sourceImageUrl && !capsule.mosaicImageUrl) return [];
+  return [
+    {
+      id: `${capsule.id}_${part}_focus`,
+      title: `${partLabel} del look`,
+      description: hasUsableBrainVisualLookText(description)
+        ? description
+        : "Usa la imagen fuente de esta cápsula como dirección visual focal para esta categoría.",
+      imageUrl: capsule.sourceImageUrl || capsule.mosaicImageUrl,
+    },
+  ];
+}
+
+function visualCapsuleHasUsableDesignerDna(capsule: VisualCapsule, slots?: readonly VisualDnaSlot[]): boolean {
+  const slot = findVisualDnaSlotForCapsule(capsule, slots);
+  const usableText = [
+    capsule.summary,
+    capsule.heroConclusion,
+    capsule.moodTags?.join(", "),
+    capsule.visualTraits?.join(", "),
+    slot?.hero.description,
+    slot?.hero.conclusion,
+    slot?.generalStyle.summary,
+    slot?.people.notes,
+    slot?.textures.notes,
+    slot?.objects.notes,
+    slot?.environments.notes,
+    slot?.palette.colorNotes,
+  ].some(hasUsableBrainVisualLookText);
+  const usablePalette = Boolean(capsule.palette.length || slot?.palette.dominantColors.length);
+  const usableReferenceImage = Boolean(capsule.sourceImageUrl || capsule.mosaicImageUrl || slot?.sourceImageUrl || slot?.mosaic.imageUrl);
+  return visualCapsuleIsUsableInDesigner(capsule) && (usableText || usablePalette || usableReferenceImage);
+}
+
+function brainVisualCapsuleSelectionIsUsable(selection: BrainVisualCapsuleSelection | null): boolean {
+  if (!selection) return true;
+  return Boolean(
+    hasUsableBrainVisualLookText(selection.selectedExampleDescription) ||
+      hasUsableBrainVisualLookText(selection.selectedExamplePrompt) ||
+      hasUsableBrainVisualLookText(selection.capsuleSummary) ||
+      hasUsableBrainVisualLookText(selection.heroConclusion) ||
+      selection.selectedExampleImageUrl,
+  );
+}
+
+function visualCapsuleExamplesForPart(
+  capsule: VisualCapsule | null | undefined,
+  part: BrainVisualCapsuleSelectionPart | null,
+  slots?: readonly VisualDnaSlot[],
+): BrainVisualLookExample[] {
+  if (!capsule || !part) return [];
+  const slot = findVisualDnaSlotForCapsule(capsule, slots);
+  if (part === "person") {
+    const direct = capsule.persons.slice(0, 2).map(visualCapsuleSuggestionToLookExample);
+    return direct.length ? direct : brainVisualLookExamplesFromSlotSection(slot, "person", slot?.people).concat(fallbackVisualLookExample(capsule, slot, "person")).slice(0, 2);
+  }
+  if (part === "texture") {
+    const direct = capsule.textures.slice(0, 2).map(visualCapsuleSuggestionToLookExample);
+    return direct.length ? direct : brainVisualLookExamplesFromSlotSection(slot, "texture", slot?.textures).concat(fallbackVisualLookExample(capsule, slot, "texture")).slice(0, 2);
+  }
+  if (part === "object") {
+    const direct = capsule.objects.slice(0, 2).map(visualCapsuleSuggestionToLookExample);
+    return direct.length ? direct : brainVisualLookExamplesFromSlotSection(slot, "object", slot?.objects).concat(fallbackVisualLookExample(capsule, slot, "object")).slice(0, 2);
+  }
+  if (part === "environment") {
+    const direct = capsule.environments.slice(0, 2).map(visualCapsuleSuggestionToLookExample);
+    return direct.length ? direct : brainVisualLookExamplesFromSlotSection(slot, "environment", slot?.environments).concat(fallbackVisualLookExample(capsule, slot, "environment")).slice(0, 2);
+  }
+  if (part === "palette") {
+    const colors = [
+      ...capsule.palette.map((p) => p.hex),
+      ...(slot?.palette.dominantColors ?? []),
+    ]
+      .filter(Boolean)
+      .filter((hex, index, arr) => arr.findIndex((x) => x.toLowerCase() === hex.toLowerCase()) === index)
+      .slice(0, 7);
+    if (!colors.length) {
+      const mosaicUrl = slot?.mosaic.imageUrl || capsule.mosaicImageUrl;
+      if (mosaicUrl) {
+        return [
+          {
+            id: `${capsule.id}_palette_mosaic_focus`,
+            title: "Paleta del mosaico",
+            description: "Usa la zona PALETA del mosaico ADN como referencia cromática.",
+            prompt:
+              "Usa únicamente la paleta visible en el mosaico ADN como referencia: colores dominantes, temperatura, contraste y atmósfera cromática. No uses paleta de marca ni otros looks.",
+            imageUrl: mosaicUrl,
+          },
+        ];
+      }
+      const description = compactBrainVisualLookText([
+        slot?.palette.colorNotes,
+        capsule.summary,
+        capsule.heroConclusion,
+        capsule.moodTags?.join(", "),
+      ]);
+      if (!description && !capsule.sourceImageUrl && !capsule.mosaicImageUrl) return [];
+      return [
+        {
+          id: `${capsule.id}_palette_atmosphere`,
+          title: "Atmósfera cromática",
+          description: description || "Usa la imagen fuente como guía de temperatura, contraste y atmósfera cromática.",
+          imageUrl: capsule.sourceImageUrl || capsule.mosaicImageUrl,
+        },
+      ];
+    }
+    return [
+      {
+        id: `${capsule.id}_palette_main`,
+        title: "Paleta principal",
+        description: compactBrainVisualLookText([
+          `Colores dominantes: ${colors.join(", ")}.`,
+          slot?.palette.colorNotes,
+          capsule.moodTags?.join(", "),
+        ]),
+      },
+    ];
+  }
+  const description = [capsule.summary, capsule.heroConclusion, slot?.hero.conclusion, slot?.hero.description, capsule.visualTraits?.join(", "), capsule.moodTags?.join(", ")]
+    .filter(Boolean)
+    .join(" · ")
+    .trim();
+  if (!description && !capsule.sourceImageUrl && !capsule.mosaicImageUrl) return [];
+  return [
+    {
+      id: `${capsule.id}_full_look`,
+      title: "Look completo",
+      description: description || "Referencia visual completa de la cápsula.",
+      imageUrl: slot?.mosaic.imageUrl || capsule.mosaicImageUrl || capsule.sourceImageUrl,
+    },
+  ];
+}
+
+function buildBrainVisualCapsuleSelection(
+  capsule: VisualCapsule,
+  part: BrainVisualCapsuleSelectionPart,
+  example: BrainVisualLookExample,
+): BrainVisualCapsuleSelection {
+  return {
+    capsuleId: capsule.id,
+    capsuleTitle: capsule.title,
+    capsuleUpdatedAt: capsule.updatedAt,
+    selectedPart: part,
+    includeBrandContext: false,
+    selectedExampleId: example.id,
+    selectedExampleTitle: example.title,
+    selectedExampleDescription: example.description,
+    ...(example.prompt ? { selectedExamplePrompt: example.prompt } : {}),
+    ...(example.imageUrl ? { selectedExampleImageUrl: example.imageUrl } : {}),
+    ...(hasUsableBrainVisualLookText(capsule.summary) ? { capsuleSummary: capsule.summary } : {}),
+    ...(hasUsableBrainVisualLookText(capsule.heroConclusion) ? { heroConclusion: capsule.heroConclusion } : {}),
+  };
+}
+
+function brainVisualCapsuleSelectionFingerprint(selection: BrainVisualCapsuleSelection | null): string {
+  if (!selection) return "general";
+  return [
+    selection.capsuleId,
+    selection.capsuleUpdatedAt ?? "",
+    selection.selectedPart,
+    selection.includeBrandContext ? "brand" : "no_brand",
+    selection.selectedExampleId ?? "",
+    selection.selectedExampleTitle ?? "",
+    selection.selectedExampleDescription ?? "",
+    selection.selectedExamplePrompt ?? "",
+  ].join("¦");
+}
 import {
   type Artboard,
   artboardToRect,
@@ -294,7 +646,8 @@ import {
 } from "./designer/DesignerCanvasRulers";
 import { TopbarGlyphDesignerStudio, TopbarGlyphPhotoRoom } from "./TopbarPinIcons";
 import { ImageFrameFittingGlyph } from "./freehand/ImageFrameFittingGlyph";
-import { normalizeProjectAssets } from "./project-assets-metadata";
+import { normalizeProjectAssets, type VisualCapsule, type VisualCapsuleSuggestion } from "./project-assets-metadata";
+import { hydrateKnowledgeImageDocumentsWithViewUrlsClient } from "@/lib/brain/brain-knowledge-image-view-urls-client";
 import { useProjectBrainCanvas } from "./project-brain-canvas-context";
 import { useProjectAssetsCanvas } from "./project-assets-canvas-context";
 import { collectProjectMedia, projectMediaDedupeKey, type ProjectMediaItem } from "./project-media-inventory";
@@ -313,6 +666,8 @@ import {
   buildBrainImagePromptDevTrace,
   buildBrainVisualPromptContext,
   composeBrainDesignerImagePrompt,
+  type BrainVisualCapsuleSelection,
+  type BrainVisualCapsuleSelectionPart,
 } from "@/lib/brain/build-brain-visual-prompt-context";
 import type { BrainDesignerVarietyInput, BrainVarietyMode, VariationFingerprint } from "@/lib/brain/brain-visual-variety";
 import { fingerprintFromChoice } from "@/lib/brain/brain-visual-variety";
@@ -680,6 +1035,15 @@ interface FreehandObjectBase {
     generatedByAi?: boolean;
     /** Source hint for generated media tracking. */
     generatedByAiSource?: string;
+    /** Optional one-off Brain visual capsule reference used to generate this frame content. */
+    generatedFromBrainCapsule?: {
+      capsuleId: string;
+      capsuleTitle?: string;
+      selectedPart: BrainVisualCapsuleSelectionPart;
+      includeBrandContext?: boolean;
+      selectedExampleId?: string;
+      selectedExampleTitle?: string;
+    };
   } | null;
   imageFrameAutoFit?: boolean;
   imageFrameContentAlignment?: "top-left" | "top-center" | "top-right" | "middle-left" | "center" | "middle-right" | "bottom-left" | "bottom-center" | "bottom-right";
@@ -8610,6 +8974,17 @@ export function FreehandStudioCanvas({
     () => normalizeProjectAssets(projectBrainCtx?.assetsMetadata),
     [projectBrainCtx?.assetsMetadata],
   );
+  const [designerBrainAssets, setDesignerBrainAssets] = useState(brainAssets);
+  useEffect(() => {
+    let cancelled = false;
+    setDesignerBrainAssets(brainAssets);
+    void hydrateKnowledgeImageDocumentsWithViewUrlsClient(brainAssets).then((hydrated) => {
+      if (!cancelled) setDesignerBrainAssets(normalizeProjectAssets(hydrated));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [brainAssets]);
 
   // ── Core state ─────────────────────────────────────────────────────
   const [objects, setObjects] = useState<FreehandObject[]>(() => {
@@ -9350,6 +9725,10 @@ export function FreehandStudioCanvas({
   const [brainImageVaryScene, setBrainImageVaryScene] = useState(true);
   const [brainImageVaryActivity, setBrainImageVaryActivity] = useState(true);
   const [brainImageVaryProps, setBrainImageVaryProps] = useState(true);
+  const [brainVisualLookPickerOpen, setBrainVisualLookPickerOpen] = useState(false);
+  const [brainVisualLookDraftCapsuleId, setBrainVisualLookDraftCapsuleId] = useState<string | null>(null);
+  const [brainVisualLookDraftPart, setBrainVisualLookDraftPart] = useState<BrainVisualCapsuleSelectionPart | null>(null);
+  const [brainVisualCapsuleSelection, setBrainVisualCapsuleSelection] = useState<BrainVisualCapsuleSelection | null>(null);
   const brainVariationHistoryRef = useRef<VariationFingerprint[]>([]);
   const brainImageGenerateForceRef = useRef(false);
   const brainSuggestionsSigRef = useRef("");
@@ -10280,6 +10659,10 @@ export function FreehandStudioCanvas({
     setBrainManualTextKind((prev) => (prev === "" ? prev : ""));
     setBrainSuggestionsTick((prev) => (prev === 0 ? prev : 0));
     setBrainImageWhyId(null);
+    setBrainVisualLookPickerOpen(false);
+    setBrainVisualLookDraftCapsuleId(null);
+    setBrainVisualLookDraftPart(null);
+    setBrainVisualCapsuleSelection(null);
   }, [singleSelected?.id]);
 
   const supportsBrainTextSuggestions = brainConnected && !!singleSelected && (singleSelected.type === "text" || singleSelected.type === "textOnPath");
@@ -10446,9 +10829,20 @@ export function FreehandStudioCanvas({
         kind: "SUGGESTION_SHOWN",
         suggestionId: `img:${it.id}`,
         designer: { imageFrameUsed: true },
+        custom: brainVisualCapsuleSelection
+          ? {
+              brainVisualSource: "visual_capsule",
+              capsuleId: brainVisualCapsuleSelection.capsuleId,
+              capsuleTitle: brainVisualCapsuleSelection.capsuleTitle,
+              selectedPart: brainVisualCapsuleSelection.selectedPart,
+              includeBrandContext: Boolean(brainVisualCapsuleSelection.includeBrandContext),
+              selectedExampleId: brainVisualCapsuleSelection.selectedExampleId,
+              selectedExampleTitle: brainVisualCapsuleSelection.selectedExampleTitle,
+            }
+          : { brainVisualSource: "general" },
       });
     }
-  }, [designerMode, designerBrainTelemetry, supportsBrainImageSuggestions, brainImageSuggestions]);
+  }, [designerMode, designerBrainTelemetry, supportsBrainImageSuggestions, brainImageSuggestions, brainVisualCapsuleSelection]);
 
   const brainImageAspectRatio = useMemo(
     () => brainAspectRatioForGemini(singleSelected?.width ?? 1, singleSelected?.height ?? 1),
@@ -10541,9 +10935,30 @@ export function FreehandStudioCanvas({
   }, [brainAssets]);
 
   const brainVisualPromptContext = useMemo(
-    () => buildBrainVisualPromptContext(brainAssets),
-    [brainAssets],
+    () => buildBrainVisualPromptContext(designerBrainAssets),
+    [designerBrainAssets],
   );
+
+  const brainUsableVisualCapsules = useMemo(
+    () => (designerBrainAssets.strategy.visualCapsules ?? []).filter((capsule) => visualCapsuleHasUsableDesignerDna(capsule, designerBrainAssets.strategy.visualDnaSlots)),
+    [designerBrainAssets.strategy.visualCapsules, designerBrainAssets.strategy.visualDnaSlots],
+  );
+
+  const brainVisualLookDraftCapsule = useMemo(
+    () => brainUsableVisualCapsules.find((c) => c.id === brainVisualLookDraftCapsuleId) ?? null,
+    [brainUsableVisualCapsules, brainVisualLookDraftCapsuleId],
+  );
+
+  const brainVisualLookDraftExamples = useMemo(
+    () => visualCapsuleExamplesForPart(brainVisualLookDraftCapsule, brainVisualLookDraftPart, designerBrainAssets.strategy.visualDnaSlots),
+    [brainVisualLookDraftCapsule, brainVisualLookDraftPart, designerBrainAssets.strategy.visualDnaSlots],
+  );
+
+  useEffect(() => {
+    if (!brainVisualCapsuleSelection) return;
+    const stillAvailable = brainUsableVisualCapsules.some((c) => c.id === brainVisualCapsuleSelection.capsuleId);
+    if (!stillAvailable) setBrainImageError("Este look visual ya no está disponible. Cambia o quita la selección.");
+  }, [brainUsableVisualCapsules, brainVisualCapsuleSelection]);
 
   /** Contenido estable (no la identidad del array) para deps de planes y huella de caché. */
   const brainNearbyTextContentKey = brainNearbyText.join("\u001f");
@@ -10590,6 +11005,7 @@ export function FreehandStudioCanvas({
       metricsLine: metricsLine || undefined,
       variety: varietyInput,
       varietyPlanSeed: "brain-img-1",
+      visualCapsuleSelection: brainVisualCapsuleSelection ?? undefined,
     });
     const performance = composeBrainDesignerImagePrompt({
       context: brainVisualPromptContext,
@@ -10602,6 +11018,7 @@ export function FreehandStudioCanvas({
       metricsLine: metricsLine || undefined,
       variety: varietyInput,
       varietyPlanSeed: "brain-img-2",
+      visualCapsuleSelection: brainVisualCapsuleSelection ?? undefined,
     });
 
     return [
@@ -10639,6 +11056,7 @@ export function FreehandStudioCanvas({
     brainImageVaryScene,
     brainImageVaryActivity,
     brainImageVaryProps,
+    brainVisualCapsuleSelection,
   ]);
 
   const brainImageSuggestionStableFingerprint = useMemo(() => {
@@ -10683,6 +11101,7 @@ export function FreehandStudioCanvas({
       [brainImageVarySubjects, brainImageVaryFraming, brainImageVaryScene, brainImageVaryActivity, brainImageVaryProps]
         .map(String)
         .join(""),
+      brainVisualCapsuleSelectionFingerprint(brainVisualCapsuleSelection),
     ]);
   }, [
     brainVisualPromptContext,
@@ -10706,6 +11125,7 @@ export function FreehandStudioCanvas({
     brainImageVaryScene,
     brainImageVaryActivity,
     brainImageVaryProps,
+    brainVisualCapsuleSelection,
   ]);
 
   const prepareBrainLogoRefsForGemini = useCallback(
@@ -10894,9 +11314,24 @@ export function FreehandStudioCanvas({
 
   const confirmBrainImageGenerationFromModal = useCallback(async () => {
     if (!brainSuggestionFieldKey) return;
+    if (!brainVisualCapsuleSelectionIsUsable(brainVisualCapsuleSelection)) {
+      setBrainImageError("Este look visual todavía no tiene ADN suficiente. Espera a que termine el análisis o elige otro look.");
+      setBrainImagePromptModalOpen(false);
+      return;
+    }
     const force = brainImageGenerateForceRef.current;
     setBrainImagePromptModalOpen(false);
-    const logoRefsForGemini = await prepareBrainLogoRefsForGemini(brainLogoReferences);
+    const visualCapsuleRefs = brainVisualCapsuleSelection?.selectedExampleImageUrl
+      ? [brainVisualCapsuleSelection.selectedExampleImageUrl]
+      : [];
+    const logoRefsForGemini = brainVisualCapsuleSelection
+      ? [
+          ...visualCapsuleRefs,
+          ...(brainVisualCapsuleSelection.includeBrandContext
+            ? await prepareBrainLogoRefsForGemini(brainLogoReferences)
+            : []),
+        ].slice(0, 3)
+      : await prepareBrainLogoRefsForGemini(brainLogoReferences);
     await ensureBrainImageSuggestions({
       key: brainSuggestionFieldKey,
       plans: brainImagePromptPlansRef.current,
@@ -10908,6 +11343,7 @@ export function FreehandStudioCanvas({
     brainSuggestionFieldKey,
     prepareBrainLogoRefsForGemini,
     brainLogoReferences,
+    brainVisualCapsuleSelection,
     brainImageAspectRatio,
   ]);
 
@@ -11035,6 +11471,17 @@ export function FreehandStudioCanvas({
           kind: "SUGGESTION_ACCEPTED",
           suggestionId: imageSuggestionId,
           designer: { imageFrameUsed: true },
+          custom: brainVisualCapsuleSelection
+            ? {
+                brainVisualSource: "visual_capsule",
+                capsuleId: brainVisualCapsuleSelection.capsuleId,
+                capsuleTitle: brainVisualCapsuleSelection.capsuleTitle,
+                selectedPart: brainVisualCapsuleSelection.selectedPart,
+                includeBrandContext: Boolean(brainVisualCapsuleSelection.includeBrandContext),
+                selectedExampleId: brainVisualCapsuleSelection.selectedExampleId,
+                selectedExampleTitle: brainVisualCapsuleSelection.selectedExampleTitle,
+              }
+            : { brainVisualSource: "general" },
         });
         const api = designerBrainTelemetryRef.current;
         if (api) {
@@ -11094,6 +11541,18 @@ export function FreehandStudioCanvas({
                 fittingMode: "fill-proportional",
                 generatedByAi: true,
                 generatedByAiSource: "brain-suggestions:nano-banana",
+                ...(brainVisualCapsuleSelection
+                  ? {
+                      generatedFromBrainCapsule: {
+                        capsuleId: brainVisualCapsuleSelection.capsuleId,
+                        capsuleTitle: brainVisualCapsuleSelection.capsuleTitle,
+                        selectedPart: brainVisualCapsuleSelection.selectedPart,
+                        includeBrandContext: Boolean(brainVisualCapsuleSelection.includeBrandContext),
+                        selectedExampleId: brainVisualCapsuleSelection.selectedExampleId,
+                        selectedExampleTitle: brainVisualCapsuleSelection.selectedExampleTitle,
+                      },
+                    }
+                  : {}),
               },
               imageFrameAutoFit: true,
             } as RectObject;
@@ -11105,7 +11564,7 @@ export function FreehandStudioCanvas({
       });
       setSelectedIds(new Set([targetId]));
     },
-    [singleSelected, pushHistory, loadImageNaturalSize, designerActivePageId],
+    [singleSelected, pushHistory, loadImageNaturalSize, designerActivePageId, brainVisualCapsuleSelection],
   );
 
   /** Capa a la que aplican fusión/opacidad del panel (primaria si existe; si no, la primera seleccionada). */
@@ -23511,6 +23970,228 @@ export function FreehandStudioCanvas({
                           </label>
                         </div>
                       </div>
+                      <div className="space-y-2 rounded-[6px] border border-white/[0.06] bg-black/20 p-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <div className="text-[9px] font-semibold uppercase tracking-wide text-zinc-500">
+                              Dirección visual
+                            </div>
+                            <div className="mt-0.5 flex items-center gap-1 text-[10px] text-emerald-200/90">
+                              <Check size={11} /> Estilo general de Brain
+                            </div>
+                          </div>
+                          {brainVisualCapsuleSelection ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setBrainVisualCapsuleSelection(null);
+                                setBrainVisualLookPickerOpen(false);
+                                setBrainVisualLookDraftCapsuleId(null);
+                                setBrainVisualLookDraftPart(null);
+                              }}
+                              className="rounded border border-white/[0.1] px-1.5 py-1 text-[9px] font-semibold text-zinc-300 hover:bg-white/[0.06]"
+                            >
+                              Quitar
+                            </button>
+                          ) : null}
+                        </div>
+                        <div className="rounded-[6px] border border-white/[0.08] bg-[#11141b] p-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="text-[9px] font-semibold uppercase tracking-wide text-zinc-500">
+                                Look visual
+                              </div>
+                              {brainVisualCapsuleSelection ? (
+                                <div className="mt-1 space-y-0.5">
+                                  <p className="truncate text-[11px] font-semibold text-zinc-100">
+                                    {brainVisualCapsuleSelection.capsuleTitle || "Look visual"}
+                                  </p>
+                                  <p className="truncate text-[10px] text-violet-200/90">
+                                    {brainVisualLookPartLabel(brainVisualCapsuleSelection.selectedPart)}
+                                    {brainVisualCapsuleSelection.selectedExampleTitle
+                                      ? ` · ${brainVisualCapsuleSelection.selectedExampleTitle}`
+                                      : ""}
+                                  </p>
+                                  <label className="mt-1.5 flex items-start gap-1.5 text-[9px] leading-snug text-zinc-300">
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(brainVisualCapsuleSelection.includeBrandContext)}
+                                      onChange={(e) => {
+                                        const checked = e.target.checked;
+                                        setBrainVisualCapsuleSelection((prev) =>
+                                          prev ? { ...prev, includeBrandContext: checked } : prev,
+                                        );
+                                      }}
+                                      className="mt-0.5 h-3 w-3 rounded border-white/20 bg-white/5 accent-violet-500"
+                                    />
+                                    <span>
+                                      Incluir contexto de marca
+                                      <span className="block text-[8px] text-zinc-500">
+                                        Combina el ADN de imagen con marca/paleta/logo si existen.
+                                      </span>
+                                    </span>
+                                  </label>
+                                </div>
+                              ) : (
+                                <p className="mt-1 text-[10px] leading-snug text-zinc-500">
+                                  Usa un look visual cuando quieras guiar la imagen con una referencia concreta de Brain.
+                                </p>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setBrainVisualLookPickerOpen((open) => !open);
+                                if (!brainVisualLookDraftCapsuleId && brainUsableVisualCapsules[0]) {
+                                  setBrainVisualLookDraftCapsuleId(brainUsableVisualCapsules[0].id);
+                                }
+                              }}
+                              className="shrink-0 rounded border border-violet-400/25 bg-violet-500/10 px-1.5 py-1 text-[9px] font-semibold text-violet-100 hover:bg-violet-500/20"
+                            >
+                              {brainVisualCapsuleSelection ? "Cambiar" : "+ Añadir"}
+                            </button>
+                          </div>
+                          {brainVisualLookPickerOpen ? (
+                            <div className="mt-2 space-y-2 border-t border-white/[0.06] pt-2">
+                              {brainUsableVisualCapsules.length === 0 ? (
+                                <div className="rounded-[5px] border border-white/[0.08] bg-black/20 px-2 py-2 text-[10px] leading-snug text-zinc-500">
+                                  <p>No hay looks visuales listos.</p>
+                                  <p className="mt-1">Crea looks visuales en Brain subiendo imágenes a Looks visuales.</p>
+                                </div>
+                              ) : (
+                                <>
+                                  <div className="grid max-h-44 gap-1.5 overflow-y-auto pr-1">
+                                    {brainUsableVisualCapsules.map((capsule) => {
+                                      const selected = capsule.id === brainVisualLookDraftCapsuleId;
+                                      const preview = capsule.sourceImageUrl || capsule.mosaicImageUrl;
+                                      const summary =
+                                        capsule.summary ||
+                                        capsule.heroConclusion ||
+                                        [capsule.moodTags?.slice(0, 3).join(", "), capsule.visualTraits?.slice(0, 3).join(", ")]
+                                          .filter(Boolean)
+                                          .join(" · ");
+                                      return (
+                                        <button
+                                          key={capsule.id}
+                                          type="button"
+                                          onClick={() => {
+                                            setBrainVisualLookDraftCapsuleId(capsule.id);
+                                            setBrainVisualLookDraftPart(null);
+                                          }}
+                                          className={`flex w-full items-center gap-2 rounded-[6px] border px-2 py-1.5 text-left transition-colors ${
+                                            selected
+                                              ? "border-violet-400/45 bg-violet-500/15"
+                                              : "border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.06]"
+                                          }`}
+                                        >
+                                          {preview ? (
+                                            <img
+                                              src={preview}
+                                              alt={capsule.title || "Look visual"}
+                                              className="h-9 w-9 shrink-0 rounded object-cover"
+                                            />
+                                          ) : (
+                                            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded bg-white/[0.06] text-zinc-500">
+                                              <ImageIconLucide size={15} />
+                                            </span>
+                                          )}
+                                          <span className="min-w-0">
+                                            <span className="block truncate text-[10px] font-semibold text-zinc-100">
+                                              {capsule.title || "Look visual"}
+                                            </span>
+                                            <span className="line-clamp-2 text-[9px] leading-snug text-zinc-500">
+                                              {summary || "Cápsula visual lista para guiar esta generación."}
+                                            </span>
+                                          </span>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                  {brainVisualLookDraftCapsule ? (
+                                    <div className="space-y-2">
+                                      <div>
+                                        <div className="mb-1 text-[9px] font-semibold uppercase tracking-wide text-zinc-500">
+                                          ¿Qué quieres tomar de este look?
+                                        </div>
+                                        <div className="flex flex-wrap gap-1">
+                                          {BRAIN_VISUAL_LOOK_PARTS.map((part) => {
+                                            const active = brainVisualLookDraftPart === part.id;
+                                            return (
+                                              <button
+                                                key={part.id}
+                                                type="button"
+                                                title={part.description}
+                                                onClick={() => setBrainVisualLookDraftPart(part.id)}
+                                                className={`rounded-full border px-2 py-1 text-[9px] font-semibold ${
+                                                  active
+                                                    ? "border-violet-300/60 bg-violet-500/25 text-violet-50"
+                                                    : "border-white/[0.1] bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08]"
+                                                }`}
+                                              >
+                                                {part.label}
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                      {brainVisualLookDraftPart ? (
+                                        <div className="space-y-1.5">
+                                          {brainVisualLookDraftExamples.length === 0 ? (
+                                            <div className="rounded-[5px] border border-amber-300/20 bg-amber-500/10 px-2 py-2 text-[10px] leading-snug text-amber-100/90">
+                                              Este look no tiene ejemplos suficientes de esta categoría.
+                                            </div>
+                                          ) : (
+                                            brainVisualLookDraftExamples.map((example) => (
+                                              <button
+                                                key={example.id}
+                                                type="button"
+                                                onClick={() => {
+                                                  setBrainVisualCapsuleSelection(
+                                                    buildBrainVisualCapsuleSelection(
+                                                      brainVisualLookDraftCapsule,
+                                                      brainVisualLookDraftPart,
+                                                      example,
+                                                    ),
+                                                  );
+                                                  setBrainVisualLookPickerOpen(false);
+                                                }}
+                                                className="flex w-full items-center gap-2 rounded-[6px] border border-white/[0.08] bg-black/20 px-2 py-1.5 text-left hover:border-violet-400/35 hover:bg-violet-500/10"
+                                              >
+                                                {example.imageUrl ? (
+                                                  <img
+                                                    src={example.imageUrl}
+                                                    alt={example.title}
+                                                    className="h-9 w-9 shrink-0 rounded object-cover"
+                                                  />
+                                                ) : (
+                                                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded bg-white/[0.06] text-[9px] font-bold text-violet-200">
+                                                    {brainVisualLookPartLabel(brainVisualLookDraftPart).slice(0, 2).toUpperCase()}
+                                                  </span>
+                                                )}
+                                                <span className="min-w-0 flex-1">
+                                                  <span className="block truncate text-[10px] font-semibold text-zinc-100">
+                                                    {example.title}
+                                                  </span>
+                                                  <span className="line-clamp-2 text-[9px] leading-snug text-zinc-500">
+                                                    {example.description}
+                                                  </span>
+                                                </span>
+                                                <span className="shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 text-[8px] font-semibold text-violet-100">
+                                                  Usar
+                                                </span>
+                                              </button>
+                                            ))
+                                          )}
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  ) : null}
+                                </>
+                              )}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
                       {brainImageLoading ? (
                         <div className="rounded-[6px] border border-white/[0.08] bg-[#171a21] px-2.5 py-2 text-[10px] text-zinc-400">
                           Generando sugerencias visuales con Nano Banana…
@@ -26482,6 +27163,22 @@ export function FreehandStudioCanvas({
                     {brainVisualPromptContext.fallbackDefaultUsed ? "sí" : "no"}
                   </p>
                 </div>
+                {brainVisualCapsuleSelection ? (
+                  <div className="rounded-lg border border-violet-400/25 bg-violet-500/[0.08] px-3 py-2 text-[10px] leading-snug text-violet-50/95 select-text">
+                    <p className="font-semibold text-violet-100">Dirección visual añadida</p>
+                    <ul className="mt-1.5 list-disc space-y-1 pl-4 text-violet-50/85">
+                      <li>
+                        Contexto de marca:{" "}
+                        {brainVisualCapsuleSelection.includeBrandContext
+                          ? "incluido"
+                          : "no incluido; solo ADN de imagen"}
+                      </li>
+                      <li>Look visual: {brainVisualCapsuleSelection.capsuleTitle || "Look visual"}</li>
+                      <li>Intención: {brainVisualLookPartLabel(brainVisualCapsuleSelection.selectedPart)}</li>
+                      <li>Ejemplo: {brainVisualCapsuleSelection.selectedExampleTitle || "Referencia seleccionada"}</li>
+                    </ul>
+                  </div>
+                ) : null}
                 {brainImagePromptPlans.map((plan) => (
                   <div key={plan.id} className="space-y-1 select-text">
                     <div className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">{plan.label}</div>

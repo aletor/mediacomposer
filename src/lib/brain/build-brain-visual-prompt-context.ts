@@ -174,6 +174,31 @@ export type BrainImageSuggestionDiagnostics = {
   /** Traza unificada (ligera) para explicar esta composición visual. */
   decisionTraceId?: string;
   decisionTrace?: BrainDecisionTrace;
+  visualCapsuleSelection?: BrainVisualCapsuleSelection;
+};
+
+export type BrainVisualCapsuleSelectionPart =
+  | "person"
+  | "texture"
+  | "object"
+  | "environment"
+  | "palette"
+  | "full_look";
+
+export type BrainVisualCapsuleSelection = {
+  capsuleId: string;
+  capsuleTitle?: string;
+  capsuleUpdatedAt?: string;
+  selectedPart: BrainVisualCapsuleSelectionPart;
+  /** Si true, el ADN de imagen se combina con contexto general de Marca/Brain para esta generación. */
+  includeBrandContext?: boolean;
+  selectedExampleId?: string;
+  selectedExampleTitle?: string;
+  selectedExampleDescription?: string;
+  selectedExamplePrompt?: string;
+  selectedExampleImageUrl?: string;
+  capsuleSummary?: string;
+  heroConclusion?: string;
 };
 
 /** Metadatos para «Ver por qué» en Image Generator (Nano Banana) cuando hay Brain conectado. */
@@ -966,6 +991,135 @@ export function composeBrainVisualStyleSlotPrompt(params: {
   ].join("\n");
 }
 
+function buildVisualCapsuleSelectionDirective(selection?: BrainVisualCapsuleSelection): string {
+  if (!selection?.capsuleId) return "";
+  const isPendingText = (value?: string) => {
+    const text = (value ?? "").trim().toLowerCase();
+    return (
+      text.includes("preparando análisis visual") ||
+      text.includes("capsula visual pendiente") ||
+      text.includes("cápsula visual pendiente") ||
+      text.includes("pendiente de análisis")
+    );
+  };
+  const clean = (value?: string) => {
+    const text = value?.trim();
+    return text && !isPendingText(text) ? text : "";
+  };
+  const title = selection.capsuleTitle?.trim() || "Look visual seleccionado";
+  const exampleTitle = clean(selection.selectedExampleTitle);
+  const exampleDescription = clean(selection.selectedExampleDescription);
+  const examplePrompt = clean(selection.selectedExamplePrompt);
+  const capsuleSummary = clean(selection.capsuleSummary);
+  const heroConclusion = clean(selection.heroConclusion);
+  const usefulText = [
+    exampleTitle ? `Ejemplo: ${exampleTitle}.` : "",
+    exampleDescription ? `Descripción: ${exampleDescription.slice(0, 700)}` : "",
+    examplePrompt ? `Prompt del ejemplo: ${examplePrompt.slice(0, 700)}` : "",
+    capsuleSummary ? `Resumen cápsula: ${capsuleSummary.slice(0, 420)}` : "",
+    heroConclusion ? `Conclusión visual: ${heroConclusion.slice(0, 420)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const partLine: Record<BrainVisualCapsuleSelectionPart, string> = {
+    person:
+      "Usa el look visual seleccionado principalmente para presencia humana, actitud, gesto, styling o interacción. No copies una identidad real ni un rostro exacto.",
+    texture:
+      "La salida debe ser una imagen de textura/materialidad: superficie, grano, tejido, tactilidad, close-up o plano material. No generes una escena completa si la intención elegida es Textura.",
+    object:
+      "Usa el look visual seleccionado principalmente para objetos, props, producto, detalles físicos o elementos característicos.",
+    environment:
+      "Usa el look visual seleccionado principalmente para entorno, atmósfera, contexto espacial, escena y luz.",
+    palette:
+      "Usa el look visual seleccionado principalmente para temperatura de color, paleta dominante, contraste y atmósfera cromática.",
+    full_look:
+      "Usa el look visual completo seleccionado como referencia visual dominante para esta imagen.",
+  };
+
+  return [
+    "Dirección visual de ADN por imagen para esta generación concreta:",
+    `Look visual: ${title}.`,
+    selection.selectedExampleImageUrl ? "Hay una imagen de referencia adjunta para este ADN: úsala como referencia visual principal, no como imagen a copiar literalmente." : "",
+    partLine[selection.selectedPart],
+    usefulText ? `Señales del ejemplo seleccionado: ${usefulText}` : "",
+    selection.selectedPart === "texture"
+      ? "Resultado esperado: una textura visual usable como relleno o fondo de diseño, inspirada exclusivamente en la banda TEXTURES/TEXTURAS del mosaico adjunto."
+      : "",
+    selection.includeBrandContext
+      ? "Combina estas señales visuales con el contexto de Marca/Brain enviado en el resto del prompt. La cápsula define la dirección focal; la Marca aporta coherencia, tono, paleta, logo o restricciones cuando aparezcan."
+      : "Usa solo estas señales visuales de la cápsula para guiar estilo, materialidad, color, luz, escena y composición. No añadas contexto de Marca, claims, logo, paleta de marca ni estrategia de Proyecto.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function composeCapsuleOnlyDesignerImagePrompt(selection: BrainVisualCapsuleSelection): string {
+  const directive = buildVisualCapsuleSelectionDirective(selection);
+  const outputLineByPart: Record<BrainVisualCapsuleSelectionPart, string> = {
+    person: "OUTPUT: imagen centrada en presencia/interacción humana genérica inspirada en el ADN seleccionado.",
+    texture: "OUTPUT: textura/material de superficie. Debe poder funcionar como fondo o relleno visual del marco.",
+    object: "OUTPUT: imagen centrada en objetos, props o detalles físicos inspirados en el ADN seleccionado.",
+    environment: "OUTPUT: entorno/atmósfera/espacio inspirado en el ADN seleccionado.",
+    palette: "OUTPUT: composición visual guiada por la paleta del ADN seleccionado.",
+    full_look: "OUTPUT: imagen que traduzca el look completo del ADN seleccionado.",
+  };
+  return [
+    "Genera una imagen para rellenar un marco de Designer usando únicamente el ADN de imagen seleccionado.",
+    outputLineByPart[selection.selectedPart],
+    "",
+    "ADN DE IMAGEN SELECCIONADO",
+    directive,
+    "",
+    "REGLAS",
+    "- No uses contexto de marca ni contexto de proyecto.",
+    "- No incluyas claims, métricas, mensajes comerciales, logos ni colores de marca salvo que formen parte explícita de la descripción del ADN seleccionado.",
+    "- No mezcles otros looks visuales de Brain.",
+    "- Mantén una imagen limpia, usable como visual editorial o composición creativa dentro del marco.",
+    "- No añadas texto largo, marcas de agua ni UI.",
+  ].join("\n");
+}
+
+function composeCapsuleWithBrandDesignerImagePrompt(params: {
+  selection: BrainVisualCapsuleSelection;
+  context: BrainVisualPromptContextResult;
+  brandColorLine: string;
+  logoBlock: string;
+}): string {
+  const directive = buildVisualCapsuleSelectionDirective(params.selection);
+  const brandContext = twoSentencesMax(
+    [
+      params.context.brandMessageContext?.trim(),
+      params.brandColorLine?.trim(),
+      params.logoBlock?.trim(),
+    ]
+      .filter(Boolean)
+      .join(" · "),
+    520,
+  );
+  const avoid = getVisualAvoidSliceUsed(params.context.visualTerritory, params.context.visualAvoid);
+  return [
+    "Genera una imagen para rellenar un marco de Designer usando el ADN de imagen seleccionado y el contexto de Marca.",
+    "",
+    "ADN DE IMAGEN SELECCIONADO",
+    directive,
+    "",
+    "CONTEXTO DE MARCA",
+    brandContext || "Marca sin contexto textual/paleta/logo suficiente; prioriza el ADN de imagen seleccionado.",
+    avoid.length ? `Evitar por seguridad visual de marca: ${avoid.slice(0, 8).join(" · ")}` : "",
+    "",
+    "REGLAS",
+    "- El ADN de imagen seleccionado manda sobre textura, persona, objeto, entorno, paleta o look elegido.",
+    "- La Marca solo aporta coherencia visual, tono, paleta, logo o restricciones si aparecen en el contexto.",
+    "- No uses contexto de proyecto, claims de campaña, métricas ni textos comerciales salvo que estén explícitamente en CONTEXTO DE MARCA.",
+    "- No mezcles otros looks visuales de Brain.",
+    "- No copies literalmente la imagen de referencia; úsala como dirección visual.",
+    "- No añadas texto largo, marcas de agua ni UI.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function composeBrainDesignerImagePrompt(params: {
   context: BrainVisualPromptContextResult;
   pieceMessage: string;
@@ -980,8 +1134,68 @@ export function composeBrainDesignerImagePrompt(params: {
   varietyPlanSeed?: string;
   /** Si true, permite un prompt más largo (sigue sin volcar todo el ADN). */
   advancedLongPrompt?: boolean;
+  visualCapsuleSelection?: BrainVisualCapsuleSelection;
 }): { prompt: string; diagnostics: BrainImageSuggestionDiagnostics } {
   const ctx = params.context;
+  if (params.visualCapsuleSelection) {
+    const includeBrandContext = Boolean(params.visualCapsuleSelection.includeBrandContext);
+    const prompt = includeBrandContext
+      ? composeCapsuleWithBrandDesignerImagePrompt({
+          selection: params.visualCapsuleSelection,
+          context: ctx,
+          brandColorLine: params.brandColorLine,
+          logoBlock: params.logoBlock,
+        })
+      : composeCapsuleOnlyDesignerImagePrompt(params.visualCapsuleSelection);
+    const diagnostics: BrainImageSuggestionDiagnostics = {
+      finalPromptUsed: prompt,
+      visualSourcesUsed: {
+        confirmedUserVisualDna: false,
+        coreVisualReferenceAnalysis: includeBrandContext,
+        projectVisualReferenceAnalysis: false,
+        aggregatedPatternsTrusted: includeBrandContext && ctx.sources.aggregatedPatternsTrusted,
+        visionDerivedVisualStyleSlots: false,
+        secondaryBrandStrategyText: includeBrandContext && Boolean(ctx.brandMessageContext?.trim()),
+      },
+      visualReferenceAnalysisRealCount: 0,
+      confirmedVisualDnaUsed: false,
+      patternSummaryUsed: false,
+      fallbackDefaultUsed: false,
+      textOnlyGeneration: false,
+      secondaryBrandProductCopy: includeBrandContext,
+      visualTerritory: ctx.visualTerritory,
+      axisPoolUsed: includeBrandContext ? "visual_capsule_with_brand" : "visual_capsule_only",
+      corporateContextTruncatedForVisual: undefined,
+      dangerousWordsRemoved: [],
+      promptLength: prompt.length,
+      dangerousWordsRemovedInPrompt: [],
+      corporateContextUsed: includeBrandContext,
+      corporateContextLength: includeBrandContext ? (ctx.brandMessageContext?.length ?? 0) : 0,
+      numberOfRequiredObjects: 1,
+      variationFocus: `ADN de imagen · ${params.visualCapsuleSelection.selectedPart}${
+        includeBrandContext ? " · marca" : ""
+      }`,
+      visualAvoidUsed: includeBrandContext ? getVisualAvoidSliceUsed(ctx.visualTerritory, ctx.visualAvoid) : [],
+      visualCapsuleSelection: params.visualCapsuleSelection,
+    };
+    const decisionTrace = summarizeVisualPromptTrace({
+      targetNodeType: "designer",
+      visualDiagnosticsId: `designer_diag_${Date.now().toString(36)}`,
+      visualSourcesUsed: diagnostics.visualSourcesUsed,
+      selectedVisualDnaLayer: includeBrandContext ? "visual_capsule_with_brand" : "visual_capsule_only",
+      finalPrompt: prompt,
+      warnings: [
+        includeBrandContext
+          ? "visual_capsule_with_brand_mode:no_project_context"
+          : "visual_capsule_only_mode:no_brand_or_project_context",
+      ],
+      confidence: includeBrandContext ? 0.88 : 0.86,
+    });
+    diagnostics.decisionTraceId = decisionTrace.id;
+    diagnostics.decisionTrace = decisionTrace;
+    return { prompt, diagnostics };
+  }
+
   const warnTextOnly = ctx.textOnlyGeneration
     ? "AVISO: generación principalmente desde texto de marca; no hay ADN visual analizado fiable suficiente."
     : "";
@@ -1015,6 +1229,7 @@ export function composeBrainDesignerImagePrompt(params: {
   const intention = [
     params.pieceMessage.trim(),
     params.pageContext.trim() ? `Página / layout: ${params.pageContext.trim().slice(0, 360)}` : "",
+    buildVisualCapsuleSelectionDirective(params.visualCapsuleSelection),
   ]
     .filter(Boolean)
     .join("\n");
@@ -1094,6 +1309,7 @@ export function composeBrainDesignerImagePrompt(params: {
     finalPromptWasRewritten: finalized.finalPromptWasRewritten || undefined,
     promptBeforeSanitize: finalized.promptBeforeSanitize,
     visualAvoidUsed,
+    ...(params.visualCapsuleSelection ? { visualCapsuleSelection: params.visualCapsuleSelection } : {}),
   };
   const decisionTrace = summarizeVisualPromptTrace({
     targetNodeType: "designer",

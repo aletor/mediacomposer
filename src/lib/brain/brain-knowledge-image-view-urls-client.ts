@@ -63,12 +63,13 @@ export async function hydrateKnowledgeImageDocumentsWithViewUrlsClient(
   const documents = await Promise.all(
     assets.knowledge.documents.map(async (d) => {
       if (!isKnowledgeImageDoc(d)) return d;
-      if (hasVisionReadyUrl(d)) return d;
       const key = d.s3Path?.trim();
-      if (!key) return d;
-      const url = await fetchSignedViewUrl(key);
-      if (!url) return d;
-      return { ...d, originalSourceUrl: url };
+      if (key) {
+        const url = await fetchSignedViewUrl(key);
+        if (url) return { ...d, originalSourceUrl: url };
+      }
+      if (hasVisionReadyUrl(d)) return d;
+      return d;
     }),
   );
 
@@ -77,13 +78,13 @@ export async function hydrateKnowledgeImageDocumentsWithViewUrlsClient(
       let next = slot;
 
       const sourceKey = slot.sourceS3Path?.trim();
-      if (sourceKey && !hasHttpsUrl(slot.sourceImageUrl)) {
+      if (sourceKey) {
         const sourceUrl = await fetchSignedViewUrl(sourceKey);
         if (sourceUrl) next = { ...next, sourceImageUrl: sourceUrl };
       }
 
       const mosaicKey = slot.mosaic?.s3Path?.trim();
-      if (mosaicKey && !hasHttpsUrl(slot.mosaic?.imageUrl)) {
+      if (mosaicKey) {
         const mosaicUrl = await fetchSignedViewUrl(mosaicKey);
         if (mosaicUrl) {
           next = {
@@ -99,10 +100,26 @@ export async function hydrateKnowledgeImageDocumentsWithViewUrlsClient(
       return next;
     }),
   );
+  const slotByDocId = new Map(visualDnaSlots.map((slot) => [slot.sourceDocumentId, slot] as const));
+  const slotById = new Map(visualDnaSlots.map((slot) => [slot.id, slot] as const));
+  const visualCapsules = (assets.strategy.visualCapsules ?? []).map((capsule) => {
+    const slot =
+      (capsule.sourceVisualDnaSlotId ? slotById.get(capsule.sourceVisualDnaSlotId) : undefined) ??
+      slotByDocId.get(capsule.sourceImageId);
+    if (!slot) return capsule;
+    const sourceImageUrl = slot.sourceImageUrl || capsule.sourceImageUrl;
+    const mosaicImageUrl = slot.mosaic.imageUrl || capsule.mosaicImageUrl;
+    if (sourceImageUrl === capsule.sourceImageUrl && mosaicImageUrl === capsule.mosaicImageUrl) return capsule;
+    return {
+      ...capsule,
+      ...(sourceImageUrl ? { sourceImageUrl } : {}),
+      ...(mosaicImageUrl ? { mosaicImageUrl } : {}),
+    };
+  });
 
   return {
     ...assets,
     knowledge: { ...assets.knowledge, documents },
-    strategy: { ...assets.strategy, visualDnaSlots },
+    strategy: { ...assets.strategy, visualDnaSlots, ...(visualCapsules.length ? { visualCapsules } : {}) },
   };
 }
