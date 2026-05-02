@@ -252,6 +252,26 @@ function hasUsableBrainVisualLookText(value?: string | null): boolean {
   return text.length > 0 && !isPendingBrainVisualLookText(text);
 }
 
+const BRAIN_VISUAL_LOOK_PERSON_OR_CLOTHING_RE =
+  /\b(hombre|mujer|persona|personas|rostro|cara|barba|sonrisa|modelo|m[uú]sico|cantante|traje|chaqueta|camisa|corbata|vestuario|vestimenta|ropa|cuello|manos?|people|person|man|woman|face|beard|musician|singer|jacket|shirt|suit|clothing|wardrobe|outfit)\b/i;
+const BRAIN_VISUAL_LOOK_OBJECT_RE =
+  /\b(smartphone|tel[eé]fono|m[oó]vil|dispositivo|producto|objeto|pantalla|tarjeta|qr|cadena|anillo|formas? geom[eé]tricas?|guitarra|instrumento|sombrero|botas?|serape|manta|textil|botella|vaso|taza|bolso|bolsa|zapato|zapatilla|bal[oó]n|pelota|device|phone|object|product|screen|chain|ring|guitar|instrument|hat|boots?|blanket|textile|bottle|cup|bag|shoe|ball)\b/i;
+const BRAIN_VISUAL_LOOK_ENVIRONMENT_RE =
+  /\b(entorno|fondo|espacio|interior|exterior|edificio|arquitectura|oficina|sala|pasillo|terminal|aeropuerto|servidor|data\s*center|datacenter|luz|ambiente|paisaje|desierto|cactus|saguaro|calle|fachada|patio|pueblo|muro|pared|suelo|horizonte|environment|background|building|office|server|landscape|desert|street|facade|courtyard|wall)\b/i;
+const BRAIN_VISUAL_LOOK_TEXTURE_RE =
+  /\b(textura|material|superficie|metal|vidrio|tela|tejido|fibra|grano|gradiente|degradado|malla|red|cactus|saguaro|espinas?|estr[ií]as?|serape|manta|rayas?|lana|estuco|terroso|granulada|texture|material|surface|metal|glass|fabric|grain|gradient|spines?|stripes?|woven|stucco)\b/i;
+
+function brainVisualLookTextMatchesPart(text: string, part: BrainVisualCapsuleSelectionPart): boolean {
+  const clean = text.trim();
+  if (!clean) return false;
+  if (part === "full_look" || part === "palette" || part === "person") return true;
+  if (BRAIN_VISUAL_LOOK_PERSON_OR_CLOTHING_RE.test(clean)) return false;
+  if (part === "object") return BRAIN_VISUAL_LOOK_OBJECT_RE.test(clean);
+  if (part === "environment") return BRAIN_VISUAL_LOOK_ENVIRONMENT_RE.test(clean);
+  if (part === "texture") return BRAIN_VISUAL_LOOK_TEXTURE_RE.test(clean);
+  return true;
+}
+
 function visualCapsuleSuggestionToLookExample(item: VisualCapsuleSuggestion, index: number): BrainVisualLookExample {
   const rawDescription = item.description?.trim() || item.prompt?.trim() || "";
   return {
@@ -337,15 +357,19 @@ function fallbackVisualLookExample(
       environment:
         "Usa únicamente las celdas ENVIRONMENTS/ENTORNOS del mosaico ADN como referencia: espacio, luz, escala, atmósfera y contexto visual.",
     };
-    return [
-      {
-        id: `${capsule.id}_${part}_mosaic_focus`,
-        title: `${partLabel} del mosaico`,
-        description: `Referencia desde la sección ${labelByPart[part]} del mosaico ADN.`,
-        prompt: promptByPart[part],
-        imageUrl: mosaicUrl,
-      },
-    ];
+    const titlesByPart: Record<typeof part, [string, string]> = {
+      person: ["Persona / interacción A", "Persona / interacción B"],
+      texture: ["Textura izquierda del mosaico", "Textura derecha del mosaico"],
+      object: ["Objeto izquierdo del mosaico", "Objeto derecho del mosaico"],
+      environment: ["Entorno izquierdo del mosaico", "Entorno derecho del mosaico"],
+    };
+    return titlesByPart[part].map((title, index) => ({
+      id: `${capsule.id}_${part}_mosaic_focus_${index + 1}`,
+      title,
+      description: `Referencia desde la sección ${labelByPart[part]} del mosaico ADN.`,
+      prompt: `${promptByPart[part]} Prioriza la ${index === 0 ? "primera" : "segunda"} celda visible de esa sección si el mosaico muestra dos ejemplos.`,
+      imageUrl: mosaicUrl,
+    }));
   }
   const section =
     part === "person"
@@ -419,16 +443,28 @@ function visualCapsuleExamplesForPart(
     return direct.length ? direct : brainVisualLookExamplesFromSlotSection(slot, "person", slot?.people).concat(fallbackVisualLookExample(capsule, slot, "person")).slice(0, 2);
   }
   if (part === "texture") {
-    const direct = capsule.textures.slice(0, 2).map(visualCapsuleSuggestionToLookExample);
-    return direct.length ? direct : brainVisualLookExamplesFromSlotSection(slot, "texture", slot?.textures).concat(fallbackVisualLookExample(capsule, slot, "texture")).slice(0, 2);
+    const direct = capsule.textures
+      .slice(0, 2)
+      .map(visualCapsuleSuggestionToLookExample)
+      .filter((example) => brainVisualLookTextMatchesPart(`${example.description} ${example.prompt ?? ""}`, "texture"));
+    const mosaicFallback = fallbackVisualLookExample(capsule, slot, "texture");
+    return direct.length ? direct : brainVisualLookExamplesFromSlotSection(slot, "texture", slot?.textures).concat(mosaicFallback).slice(0, 2);
   }
   if (part === "object") {
-    const direct = capsule.objects.slice(0, 2).map(visualCapsuleSuggestionToLookExample);
-    return direct.length ? direct : brainVisualLookExamplesFromSlotSection(slot, "object", slot?.objects).concat(fallbackVisualLookExample(capsule, slot, "object")).slice(0, 2);
+    const direct = capsule.objects
+      .slice(0, 2)
+      .map(visualCapsuleSuggestionToLookExample)
+      .filter((example) => brainVisualLookTextMatchesPart(`${example.description} ${example.prompt ?? ""}`, "object"));
+    const mosaicFallback = fallbackVisualLookExample(capsule, slot, "object");
+    return direct.length ? direct : brainVisualLookExamplesFromSlotSection(slot, "object", slot?.objects).concat(mosaicFallback).slice(0, 2);
   }
   if (part === "environment") {
-    const direct = capsule.environments.slice(0, 2).map(visualCapsuleSuggestionToLookExample);
-    return direct.length ? direct : brainVisualLookExamplesFromSlotSection(slot, "environment", slot?.environments).concat(fallbackVisualLookExample(capsule, slot, "environment")).slice(0, 2);
+    const direct = capsule.environments
+      .slice(0, 2)
+      .map(visualCapsuleSuggestionToLookExample)
+      .filter((example) => brainVisualLookTextMatchesPart(`${example.description} ${example.prompt ?? ""}`, "environment"));
+    const mosaicFallback = fallbackVisualLookExample(capsule, slot, "environment");
+    return direct.length ? direct : brainVisualLookExamplesFromSlotSection(slot, "environment", slot?.environments).concat(mosaicFallback).slice(0, 2);
   }
   if (part === "palette") {
     const colors = [
@@ -480,6 +516,8 @@ function visualCapsuleExamplesForPart(
       },
     ];
   }
+  const generalLooks = capsule.generalLooks?.slice(0, 2).map(visualCapsuleSuggestionToLookExample) ?? [];
+  if (generalLooks.length) return generalLooks;
   const description = [capsule.summary, capsule.heroConclusion, slot?.hero.conclusion, slot?.hero.description, capsule.visualTraits?.join(", "), capsule.moodTags?.join(", ")]
     .filter(Boolean)
     .join(" · ")
@@ -658,6 +696,7 @@ import {
   fingerprintBrainImageSuggestionStablePayload,
   getBrainImageSuggestionEntry,
   getBrainImageSuggestionForceCooldownMs,
+  getLatestBrainImageSuggestionEntryForField,
   listAllBrainGeneratedSuggestionUrls,
   type BrainImageSuggestion,
   type BrainImageSuggestionEntry,
@@ -10743,32 +10782,30 @@ export function FreehandStudioCanvas({
     const claimB = brainClaims[(brainSuggestionsTick + 1) % Math.max(1, brainClaims.length)] ?? "Escala contenido sin perder coherencia de marca";
     const metric = brainMetrics[(brainSuggestionsTick + 0) % Math.max(1, brainMetrics.length)] ?? "80 usuarios simultáneos";
     const proof = brainSupport[(brainSuggestionsTick + 0) % Math.max(1, brainSupport.length)] ?? "Respaldado por documentación y pruebas internas";
-    const tonePrefix =
-      brainTonePreset === "directo" ? "Directo: " : brainTonePreset === "editorial" ? "Editorial: " : "";
 
-    const byKind: Record<BrainTextBlockKind, string[]> = {
+    const autoByKind: Record<BrainTextBlockKind, string[]> = {
       Titular: [
-        `${tonePrefix}${claim}`,
-        `${tonePrefix}${claimB}`,
-        `${tonePrefix}${claim} · ${metric}`,
-        `${tonePrefix}De documento a campaña con contexto real`,
+        claim,
+        claimB,
+        `${claim} · ${metric}`,
+        "De documento a campaña con contexto real",
       ],
       "Subtítulo": [
-        `${tonePrefix}${claim}. ${proof}.`,
-        `${tonePrefix}${claimB}. ${metric}.`,
-        `${tonePrefix}Mensajes consistentes por canal, etapa y audiencia.`,
-        `${tonePrefix}Contenido útil, accionable y conectado a evidencia.`,
+        `${claim}. ${proof}.`,
+        `${claimB}. ${metric}.`,
+        "Mensajes consistentes por canal, etapa y audiencia.",
+        "Contenido útil, accionable y conectado a evidencia.",
       ],
       Párrafo: [
-        `${tonePrefix}${claim}. ${proof}. Además, se detectan métricas clave como ${metric} para construir mensajes con base real en cada pieza.`,
-        `${tonePrefix}${claimB}. El sistema separa conocimiento de marca y contexto de mercado para que cada output mantenga foco y credibilidad.`,
-        `${tonePrefix}El contenido nace de hechos verificables y señales de audiencia, no de texto genérico. ${proof}.`,
+        `${claim}. ${proof}. Además, se detectan métricas clave como ${metric} para construir mensajes con base real en cada pieza.`,
+        `${claimB}. El sistema separa conocimiento de marca y contexto de mercado para que cada output mantenga foco y credibilidad.`,
+        `El contenido nace de hechos verificables y señales de audiencia, no de texto genérico. ${proof}.`,
       ],
       CTA: [
-        `${tonePrefix}Solicita una demo guiada`,
-        `${tonePrefix}Empieza con tu primer flujo en minutos`,
-        `${tonePrefix}Ver ejemplos listos para publicar`,
-        `${tonePrefix}Generar pieza con contexto`,
+        "Solicita una demo guiada",
+        "Empieza con tu primer flujo en minutos",
+        "Ver ejemplos listos para publicar",
+        "Generar pieza con contexto",
       ],
       Quote: [
         `“${claim}.”`,
@@ -10777,11 +10814,145 @@ export function FreehandStudioCanvas({
       ],
     };
 
-    const all = byKind[effectiveTextKind];
-    if (brainLengthPreset === "corto") return all.map((x) => x.split(".")[0]!.trim()).slice(0, 4);
-    if (brainLengthPreset === "largo") return byKind.Párrafo.slice(0, 4);
-    if (brainLengthPreset === "medio") return byKind["Subtítulo"].slice(0, 4);
-    return all.slice(0, 4);
+    const directByKind: Record<BrainTextBlockKind, string[]> = {
+      Titular: [
+        claim,
+        claimB,
+        `${metric}. ${claim}`,
+        "Contexto real. Piezas listas.",
+      ],
+      "Subtítulo": [
+        `${claim}. Sin ruido, sin vueltas.`,
+        `${claimB}. Con datos y criterio.`,
+        `${metric}. Mensajes claros para actuar.`,
+        "Usa Brain para decidir mejor y publicar antes.",
+      ],
+      Párrafo: [
+        `${claim}. ${proof}. Usa las señales clave y convierte cada pieza en una decisión clara.`,
+        `${claimB}. Separa marca, proyecto y evidencia para producir contenido útil sin perder foco.`,
+        `Nada de texto genérico: señales verificables, contexto y acción. ${metric}.`,
+      ],
+      CTA: [
+        "Pide una demo",
+        "Empieza ahora",
+        "Ver ejemplos",
+        "Generar con Brain",
+      ],
+      Quote: [
+        `“${claim}.”`,
+        `“${claimB}.”`,
+        `“${metric}. Y ahora, acción.”`,
+      ],
+    };
+
+    const editorialByKind: Record<BrainTextBlockKind, string[]> = {
+      Titular: [
+        `Cuando el contexto se convierte en campaña`,
+        `Una memoria creativa para sostener cada pieza`,
+        `${claim}: la señal detrás de la idea`,
+        `Del conocimiento a una narrativa lista para publicar`,
+      ],
+      "Subtítulo": [
+        `${claim}. Una forma más consistente de transformar evidencia en comunicación.`,
+        `${claimB}. Cada mensaje nace del mismo territorio creativo, con matices para cada canal.`,
+        `La marca, el proyecto y la evidencia se ordenan para construir contenido con intención.`,
+        `${proof}. Una capa de criterio para que cada pieza respire el mismo relato.`,
+      ],
+      Párrafo: [
+        `${claim}. ${proof}. Brain convierte señales dispersas en una memoria creativa capaz de guiar tono, argumento y composición sin perder contexto.`,
+        `${claimB}. La marca conserva su hilo conductor mientras cada proyecto encuentra su propio matiz narrativo.`,
+        `Cada pieza parte de una base reconocible: hechos, audiencia y dirección creativa. Así el contenido deja de sonar genérico y empieza a tener intención.`,
+      ],
+      CTA: [
+        "Explora la demo",
+        "Descubre el flujo creativo",
+        "Ver piezas con contexto",
+        "Crear desde la memoria de marca",
+      ],
+      Quote: [
+        `“${claim}: ahí empieza una pieza con intención.”`,
+        `“${claimB}, sin perder el pulso de la marca.”`,
+        `“${proof}: la creatividad también necesita memoria.”`,
+      ],
+    };
+
+    const byKind =
+      brainTonePreset === "directo"
+        ? directByKind
+        : brainTonePreset === "editorial"
+          ? editorialByKind
+          : autoByKind;
+
+    const shortSentence = (text: string) => text.split(".")[0]!.trim();
+    const variantsByLength: Record<BrainTextBlockKind, Record<typeof brainLengthPreset, string[]>> = {
+      Titular: {
+        auto: byKind.Titular,
+        corto: byKind.Titular.map(shortSentence),
+        medio: [
+          byKind.Titular[0] ?? claim,
+          byKind.Titular[1] ?? claimB,
+          `${shortSentence(claim)} con contexto real`,
+          `${shortSentence(claimB)} sin perder coherencia`,
+        ],
+        largo: [
+          `${shortSentence(claim)} para crear con contexto real`,
+          `${shortSentence(claimB)} en cada pieza de campaña`,
+          `Convierte conocimiento, evidencia y tono en contenido listo`,
+          `Una memoria creativa para producir mejor, más rápido y con foco`,
+        ],
+      },
+      "Subtítulo": {
+        auto: byKind["Subtítulo"],
+        corto: byKind["Subtítulo"].map(shortSentence),
+        medio: byKind["Subtítulo"],
+        largo: [
+          `${claim}. ${proof}.`,
+          `${claimB}. ${metric}. Mantén coherencia entre marca, proyecto y canal.`,
+          `El sistema convierte señales dispersas en mensajes claros, útiles y conectados a evidencia.`,
+          `Brain ayuda a transformar contexto real en contenido accionable, sin perder tono ni dirección creativa.`,
+        ],
+      },
+      Párrafo: {
+        auto: byKind.Párrafo,
+        corto: [
+          `${claim}. ${proof}.`,
+          `${claimB}. ${metric}.`,
+          `Contenido basado en señales reales, no en texto genérico.`,
+          `Marca, proyecto y evidencia trabajan juntos para mantener foco.`,
+        ],
+        medio: byKind.Párrafo,
+        largo: [
+          `${claim}. ${proof}. Además, Brain ordena señales de marca, proyecto, audiencia y evidencia para que cada pieza tenga una dirección clara desde el primer borrador. Así el contenido mantiene coherencia, pero puede adaptarse a distintos canales sin sonar repetido.`,
+          `${claimB}. El sistema separa lo que pertenece a la marca de lo que pertenece al proyecto, y usa esa memoria para construir mensajes más consistentes. Con métricas como ${metric}, cada texto puede apoyarse en contexto real y no solo en intuición creativa.`,
+          `El contenido nace de hechos verificables, aprendizajes y señales de audiencia. ${proof}. Esa base permite escribir piezas más útiles, más específicas y más conectadas con la intención de la campaña, manteniendo un tono reconocible en todo el recorrido.`,
+          `Brain funciona como una memoria creativa activa: recoge lo que la marca sabe, lo que el proyecto necesita y lo que cada pieza debe comunicar. El resultado es un texto con más contexto, mejor foco y menos ruido operativo.`,
+        ],
+      },
+      CTA: {
+        auto: byKind.CTA,
+        corto: byKind.CTA.map(shortSentence),
+        medio: byKind.CTA,
+        largo: [
+          `${byKind.CTA[0] ?? "Solicita una demo"} y descubre el flujo completo`,
+          `${byKind.CTA[1] ?? "Empieza ahora"} con contexto de marca conectado`,
+          `${byKind.CTA[2] ?? "Ver ejemplos"} creados con memoria de proyecto`,
+          `${byKind.CTA[3] ?? "Generar con Brain"} y revisa la primera propuesta`,
+        ],
+      },
+      Quote: {
+        auto: byKind.Quote,
+        corto: byKind.Quote.map(shortSentence).map((text) => `“${text.replace(/^“|”$/g, "")}.”`),
+        medio: byKind.Quote,
+        largo: [
+          `“${claim}. Lo importante no es generar más, sino crear con memoria y criterio.”`,
+          `“${claimB}. La coherencia aparece cuando cada pieza entiende de dónde viene.”`,
+          `“${proof}. La creatividad funciona mejor cuando tiene evidencia, tono y contexto.”`,
+          `“${metric}. Una buena señal puede convertirse en una campaña completa si Brain conserva el hilo.”`,
+        ],
+      },
+    };
+
+    return variantsByLength[effectiveTextKind][brainLengthPreset].slice(0, 4);
   }, [
     supportsBrainTextSuggestions,
     effectiveTextKind,
@@ -11248,7 +11419,10 @@ export function FreehandStudioCanvas({
       }
     };
 
-    applyEntry(getBrainImageSuggestionEntry(brainSuggestionFieldKey));
+    applyEntry(
+      getBrainImageSuggestionEntry(brainSuggestionFieldKey) ??
+        (nodeId ? getLatestBrainImageSuggestionEntryForField(projectScopeId, nodeId, targetId) : undefined),
+    );
 
     const onUpdate = (ev: Event) => {
       const detail = (ev as CustomEvent<{ key?: string; entry?: BrainImageSuggestionEntry }>).detail;
@@ -11268,6 +11442,8 @@ export function FreehandStudioCanvas({
     brainLogoReferences,
     prepareBrainLogoRefsForGemini,
     registerAiGeneratedRefsOnObject,
+    nodeId,
+    projectScopeId,
   ]);
 
   useEffect(() => {
@@ -11418,24 +11594,52 @@ export function FreehandStudioCanvas({
     (nextText: string, suggestionId?: string) => {
       if (!singleSelected) return;
       if (singleSelected.type !== "text" && singleSelected.type !== "textOnPath") return;
+      const selectedText = singleSelected.type === "text" ? (singleSelected as TextObject) : null;
+      const textFrameStoryId = selectedText?.isTextFrame ? selectedText.storyId : undefined;
       if (suggestionId) {
-        designerBrainTelemetryRef.current?.track({
+        const api = designerBrainTelemetryRef.current;
+        api?.track({
           kind: "SUGGESTION_ACCEPTED",
           suggestionId,
+          textPreview: nextText.slice(0, 500),
+          textLength: nextText.length,
+          lengthChars: nextText.length,
           designer: { brainPanelFieldRef: "text_suggestions" },
+          custom: {
+            textBlockKind: effectiveTextKind,
+            tonePreset: brainTonePreset,
+            lengthPreset: brainLengthPreset,
+            targetObjectId: singleSelected.id,
+            targetIsThreadedTextFrame: Boolean(selectedText?.isTextFrame),
+          },
         });
+        void api?.flushTelemetry("manual");
       }
       const targetId = singleSelected.id;
       setObjects((prev) => {
         const next = prev.map((o) =>
-          o.id === targetId ? ({ ...o, text: nextText } as FreehandObject) : o,
+          o.id === targetId
+            ? ({
+                ...o,
+                text: nextText,
+                ...(o.type === "text" && (o as TextObject).isTextFrame
+                  ? { _designerRichSpans: undefined, _designerOverflow: false }
+                  : {}),
+              } as FreehandObject)
+            : o,
         );
         pushHistory(next, new Set([targetId]));
         return next;
       });
+      if (designerMode && textFrameStoryId && onDesignerTextFrameEdit) {
+        onDesignerTextFrameEdit(targetId, textFrameStoryId, nextText);
+        if (inlineFrameEditorObjectIdRef.current === targetId && inlineFrameEditorRef.current) {
+          inlineFrameEditorRef.current.innerHTML = richSpansToInlineHtml(undefined, nextText);
+        }
+      }
       setSelectedIds(new Set([targetId]));
     },
-    [singleSelected, pushHistory],
+    [brainLengthPreset, brainTonePreset, designerMode, effectiveTextKind, onDesignerTextFrameEdit, singleSelected, pushHistory],
   );
 
   const applyBrainImageSuggestion = useCallback(
@@ -11444,9 +11648,14 @@ export function FreehandStudioCanvas({
       const targetId = singleSelected.id;
       const natural = await loadImageNaturalSize(src);
       if (imageSuggestionId) {
-        designerBrainTelemetryRef.current?.track({
+        const api = designerBrainTelemetryRef.current;
+        api?.track({
           kind: "SUGGESTION_ACCEPTED",
           suggestionId: imageSuggestionId,
+          assetRef: src,
+          frameId: targetId,
+          imageWidth: natural.w,
+          imageHeight: natural.h,
           designer: { imageFrameUsed: true },
           custom: brainVisualCapsuleSelection
             ? {
@@ -11457,10 +11666,10 @@ export function FreehandStudioCanvas({
                 includeBrandContext: Boolean(brainVisualCapsuleSelection.includeBrandContext),
                 selectedExampleId: brainVisualCapsuleSelection.selectedExampleId,
                 selectedExampleTitle: brainVisualCapsuleSelection.selectedExampleTitle,
+                targetObjectId: targetId,
               }
-            : { brainVisualSource: "general" },
+            : { brainVisualSource: "general", targetObjectId: targetId },
         });
-        const api = designerBrainTelemetryRef.current;
         if (api) {
           if (photoRoomStudioEmbedRef.current && api.nodeType === "PHOTOROOM") {
             trackPhotoroomImageUsed(api.track, {
@@ -11480,6 +11689,7 @@ export function FreehandStudioCanvas({
               imageHeight: natural.h,
             });
           }
+          void api.flushTelemetry("manual");
         }
       }
       setObjects((prev) => {

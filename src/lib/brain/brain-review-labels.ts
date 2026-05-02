@@ -50,9 +50,56 @@ export function stripLearningValueUiPrefixes(value: string): string {
   return t;
 }
 
+function normalizeLookupText(value: string): string {
+  return stripLearningValueUiPrefixes(value)
+    .toLowerCase()
+    .replace(/[“”"]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function formatLearningReviewText(value: string): string {
+  const body = stripLearningValueUiPrefixes(value);
+  const key = normalizeLookupText(body);
+  if (key === "repeated manual changes to brain length and tone presets in designer.") {
+    return "sueles ajustar el tono y la longitud de las sugerencias de texto en Designer.";
+  }
+  if (key === "telemetry tied to this node/session suggests project-scoped copy tuning, not global brand.") {
+    return "esta señal parece útil para este proyecto, pero todavía no debería cambiar la marca global.";
+  }
+  if (key === "mixed accept/ignore on same text slots—contextual only, not a preference.") {
+    return "hay señales mezcladas en las sugerencias de texto; por ahora conviene tratarlo como contexto puntual, no como una preferencia estable.";
+  }
+  return body;
+}
+
+export function formatLearningReviewReasoning(reasoning: string): string {
+  const key = normalizeLookupText(reasoning);
+  if (key === "stronger signal from manualoverridecounts than from ignored suggestions alone.") {
+    return "Brain lo propone porque has ajustado manualmente opciones de tono o longitud. Es una señal débil: sirve como pista, no como regla definitiva.";
+  }
+  if (key === "export/manual signals present; keep scoped until user confirms.") {
+    return "Hay acciones recientes en este proyecto, pero no suficientes para tocar la marca. Por eso Brain sugiere guardarlo solo a nivel de proyecto si te encaja.";
+  }
+  if (key === "weak pattern from ignores; down-ranked per policy.") {
+    return "La señal es poco clara porque has aceptado y descartado sugerencias parecidas. Lo más prudente es guardarlo como contexto puntual o descartarlo.";
+  }
+  return reasoning.trim();
+}
+
+export function formatLearningReviewExample(example: string): string {
+  const clean = example.trim();
+  const key = normalizeLookupText(clean);
+  if (key === "manual:brain:lengthpreset") return "Cambiaste la longitud de una sugerencia de Brain.";
+  if (key === "manual:brain:tonepreset") return "Cambiaste el tono de una sugerencia de Brain.";
+  if (key.startsWith("manual:brain:lengthpreset=")) return "Cambios manuales en la longitud de sugerencias de Brain.";
+  if (key.startsWith("manual:brain:tonepreset=")) return "Cambios manuales en el tono de sugerencias de Brain.";
+  return clean;
+}
+
 /** Titular visible en «Por revisar»: prefijo de producto + aprendizaje almacenado (limpio). */
 export function formatLearningReviewCardHeadline(value: string): string {
-  const body = stripLearningValueUiPrefixes(value);
+  const body = formatLearningReviewText(value);
   if (!body.length) return "Brain ha detectado que…";
   return `Brain ha detectado que ${body}`;
 }
@@ -148,7 +195,7 @@ export function humanEvidenceBullets(row: StoredLearningCandidate): string[] {
   }
   const originNode = resolveLearningPendingAnchorNodeId(row);
   if (ev.evidenceSource !== "visual_reference" && originNode) {
-    out.push(`Origen en el lienzo: «${originNode}».`);
+    out.push("Origen: una acción reciente en un nodo conectado a Brain.");
   } else if (ev.evidenceSource === "visual_reference") {
     out.push(
       "Origen: cola generada desde Brain Studio · referencias visuales (revisa la procedencia en la tarjeta; inventario ≠ visión remota).",
@@ -161,19 +208,34 @@ export function humanEvidenceBullets(row: StoredLearningCandidate): string[] {
     out.push(`Tipo de pieza o exportación: ${ev.relatedArtifactKinds.join(", ")}.`);
   }
   if (ev.evidenceSource !== "visual_reference" && ev.examples?.[0]) {
-    const t = ev.examples[0];
+    const t = formatLearningReviewExample(ev.examples[0]);
     if (!t.startsWith("Basado en:")) {
       out.push(`Ejemplo: «${t.length > 180 ? `${t.slice(0, 177)}…` : t}».`);
     }
   }
-  let nSignals = 0;
-  if (ev.eventCounts) {
-    for (const b of Object.values(ev.eventCounts)) {
-      if (typeof b === "number" && Number.isFinite(b)) nSignals += b;
+  const uniqueAccepted = ev.eventCounts?.uniqueAccepted;
+  const uniqueIgnored = ev.eventCounts?.uniqueIgnored;
+  const uniqueShown = ev.eventCounts?.uniqueShown;
+  if (
+    typeof uniqueAccepted === "number" ||
+    typeof uniqueIgnored === "number" ||
+    typeof uniqueShown === "number"
+  ) {
+    const parts: string[] = [];
+    if (typeof uniqueAccepted === "number") parts.push(`${uniqueAccepted} aceptada${uniqueAccepted === 1 ? "" : "s"}`);
+    if (typeof uniqueIgnored === "number") parts.push(`${uniqueIgnored} descartada${uniqueIgnored === 1 ? "" : "s"}`);
+    if (typeof uniqueShown === "number") parts.push(`${uniqueShown} mostrada${uniqueShown === 1 ? "" : "s"}`);
+    out.push(`Señales observadas: ${parts.join(", ")}.`);
+  } else {
+    let nSignals = 0;
+    if (ev.eventCounts) {
+      for (const b of Object.values(ev.eventCounts)) {
+        if (typeof b === "number" && Number.isFinite(b)) nSignals += b;
+      }
     }
-  }
-  if (nSignals > 0) {
-    out.push(`Se apoya en ${nSignals} señales agrupadas del uso reciente.`);
+    if (nSignals > 0) {
+      out.push(`Se apoya en ${nSignals} señales agrupadas del uso reciente.`);
+    }
   }
   if (row.candidate.conflictWithDNA || row.candidate.type === "CONTRADICTION") {
     out.push("Puede chocar con reglas o mensajes que ya definiste para la marca.");

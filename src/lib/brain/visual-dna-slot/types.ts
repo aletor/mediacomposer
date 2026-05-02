@@ -24,6 +24,37 @@ export type VisualDnaSlotAsset = {
   confidence?: number;
 };
 
+export type VisualDnaMosaicAdvice = {
+  id: string;
+  title: string;
+  observed: string;
+  creativeUse: string;
+  promptHint: string;
+  avoid?: string;
+  visualKeywords: string[];
+  confidence?: number;
+};
+
+export type VisualDnaMosaicIntelligence = {
+  schemaVersion: "visual_dna_mosaic_intelligence_v1";
+  source: "mosaic_image";
+  analyzedAt?: string;
+  provider?: "gemini" | "openai" | "mock" | "unknown";
+  people: VisualDnaMosaicAdvice[];
+  environments: VisualDnaMosaicAdvice[];
+  textures: VisualDnaMosaicAdvice[];
+  objects: VisualDnaMosaicAdvice[];
+  generalLooks: VisualDnaMosaicAdvice[];
+  globalCreativeDirection?: {
+    summary?: string;
+    bestFor?: string[];
+    avoid?: string[];
+    visualKeywords?: string[];
+  };
+  confidence?: number;
+  lastError?: string;
+};
+
 export type VisualDnaSlot = {
   id: string;
   label: string;
@@ -91,6 +122,8 @@ export type VisualDnaSlot = {
     prompt?: string;
     diagnostics?: unknown;
   };
+
+  mosaicIntelligence?: VisualDnaMosaicIntelligence;
 
   /** Prompts internos (p. ej. tablero Nano) y reglas inyectadas en la última generación. */
   lastGenerationPrompts?: {

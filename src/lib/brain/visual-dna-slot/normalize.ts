@@ -9,6 +9,7 @@ import type {
   VisualDnaSlotMosaicProvider,
   VisualDnaSlotStatus,
 } from "./types";
+import { normalizeVisualDnaMosaicIntelligence } from "./mosaic-intelligence";
 
 function newId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -89,6 +90,7 @@ export function normalizeVisualDnaSlot(raw: unknown): VisualDnaSlot | null {
       ? (o.lastGenerationPrompts as Record<string, unknown>)
       : {};
   const generalIn = o.generalStyle && typeof o.generalStyle === "object" ? (o.generalStyle as Record<string, unknown>) : {};
+  const mosaicIntelligence = normalizeVisualDnaMosaicIntelligence(o.mosaicIntelligence);
 
   const mosaic: VisualDnaSlot["mosaic"] = {};
   const miu = pickStr(mosaicIn.imageUrl, 120000);
@@ -154,6 +156,7 @@ export function normalizeVisualDnaSlot(raw: unknown): VisualDnaSlot | null {
         : {}),
     },
     mosaic,
+    ...(mosaicIntelligence ? { mosaicIntelligence } : {}),
     ...(Array.isArray(o.evidence) ? { evidence: o.evidence as VisualDnaSlot["evidence"] } : {}),
     ...(typeof o.confidence === "number" && Number.isFinite(o.confidence) ? { confidence: o.confidence } : {}),
     ...(ORIGIN.includes(o.analysisOrigin as VisualDnaSlotAnalysisOrigin)
@@ -219,6 +222,118 @@ function compactUniqueTextParts(parts: Array<string | undefined>, maxChars = 200
   return out.join(" · ").slice(0, maxChars);
 }
 
+function splitVisualNoteTokens(parts: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of parts) {
+    const text = (raw ?? "").trim();
+    if (!text) continue;
+    for (const bit of text.split(/[·,;|/]+/u)) {
+      const clean = bit.trim().replace(/\s+/g, " ");
+      if (!clean) continue;
+      const key = clean.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(clean);
+    }
+  }
+  return out;
+}
+
+const PERSON_OR_CLOTHING_RE =
+  /\b(hombre|mujer|persona|personas|gente|rostro|cara|barba|sonrisa|sonriendo|edad|cauc[aá]s|modelo|m[uú]sico|cantante|traje|chaqueta|camisa|corbata|vestuario|vestimenta|ropa|cuello|manos?|portrait|people|person|man|woman|face|beard|smiling|musician|singer|jacket|shirt|suit|clothing|wardrobe|outfit)\b/i;
+const TEXT_OR_BRAND_RE =
+  /\b(texto|tipograf[ií]a|logo|logotipo|marca|slogan|copy|oaro|caption|typography|brand|watermark)\b/i;
+const ENVIRONMENT_RE =
+  /\b(entorno|fondo|espacio|escena|interior|exterior|edificio|arquitectura|oficina|sala|pasillo|terminal|aeropuerto|servidor|servidores|data\s*center|datacenter|ciudad|urbano|luz|ambiente|contexto|environment|background|space|interior|exterior|building|architecture|office|server|hall|terminal)\b/i;
+const OBJECT_RE =
+  /\b(objeto|producto|dispositivo|smartphone|tel[eé]fono|m[oó]vil|tablet|pantalla|tarjeta|qr|cadena|anillo|formas? geom[eé]tricas?|icono|prop|guitarra|instrumento|sombrero|botas?|serape|manta|textil|botella|vaso|taza|bolso|bolsa|zapato|zapatilla|bal[oó]n|pelota|object|product|device|phone|screen|card|chain|ring|shape|guitar|instrument|hat|boots?|blanket|textile|bottle|cup|bag|shoe|ball)\b/i;
+const TEXTURE_RE =
+  /\b(textura|material|superficie|metal|met[aá]lico|vidrio|cristal|papel|tela|tejido|fibra|grano|brillo|mate|gradiente|degradado|mesh|red|malla|texture|material|surface|metal|glass|fabric|grain|gradient)\b/i;
+
+function withoutCategoryContamination(tokens: string[], kind: "object" | "environment" | "texture"): string[] {
+  return tokens.filter((token) => {
+    if (PERSON_OR_CLOTHING_RE.test(token)) return false;
+    if (kind !== "object" && TEXT_OR_BRAND_RE.test(token)) return false;
+    if (kind === "object") {
+      if (/\b(designer|campañas?|branding|presentaciones?|generaci[oó]n|moodboard)\b/i.test(token)) return false;
+      return OBJECT_RE.test(token) || (!ENVIRONMENT_RE.test(token) && !TEXTURE_RE.test(token) && !TEXT_OR_BRAND_RE.test(token));
+    }
+    if (kind === "environment") return ENVIRONMENT_RE.test(token) && !OBJECT_RE.test(token);
+    return TEXTURE_RE.test(token) && !ENVIRONMENT_RE.test(token);
+  });
+}
+
+function notesFromTokens(tokens: string[], fallback?: string): string | undefined {
+  const clean = tokens.slice(0, 8);
+  if (clean.length) return compactUniqueTextParts(clean);
+  return fallback;
+}
+
+function visualAnalysisTextBlob(analysis: BrainVisualImageAnalysis): string {
+  return [
+    analysis.subject,
+    ...(analysis.subjectTags ?? []),
+    ...(analysis.composition ?? []),
+    ...(analysis.visualStyle ?? []),
+    ...(analysis.mood ?? []),
+    analysis.people,
+    analysis.clothingStyle,
+    analysis.graphicStyle,
+  ]
+    .filter(Boolean)
+    .join(" · ")
+    .toLowerCase();
+}
+
+function enrichPeopleNotes(analysis: BrainVisualImageAnalysis): string | undefined {
+  const blob = visualAnalysisTextBlob(analysis);
+  const parts = [analysis.people?.trim()].filter(Boolean) as string[];
+  if (/\b(guitarra|guitar|instrumento|instrument)\b/i.test(blob)) {
+    parts.push("interacción musical con guitarra como gesto principal");
+  }
+  if (/\b(sombrero|hat|charro|serape|manta|poncho)\b/i.test(blob)) {
+    parts.push("vestuario cultural con sombrero amplio, serape o textiles de rayas");
+  }
+  if (/\b(m[eé]xico|mexican|charro|mariachi|folcl[oó]ric|tradicional|cultura)\b/i.test(blob)) {
+    parts.push("referencias de estilo de vida y celebración cultural mexicana, músicos o grupo festivo");
+  }
+  return compactUniqueTextParts(parts, 700) || undefined;
+}
+
+function enrichEnvironmentNotes(analysis: BrainVisualImageAnalysis, baseNotes?: string): string | undefined {
+  const blob = visualAnalysisTextBlob(analysis);
+  const parts = [baseNotes?.trim()].filter(Boolean) as string[];
+  if (/\b(cactus|saguaro|desierto|desert|arena|duna|horizonte)\b/i.test(blob)) {
+    parts.push("paisaje desértico cálido con cactus/saguaros, horizonte amplio, luz dorada y suelo terroso");
+  }
+  if (/\b(calle|street|fachada|fachadas|arquitectura|patio|pueblo|ciudad|muro|pared|casa|casas)\b/i.test(blob)) {
+    parts.push("calle, patio o fachada de arquitectura colorida con muros vibrantes y sombras limpias");
+  }
+  if (/\b(fondo amarillo|pared amarilla|amarillo|suelo roj|rojo terroso|coral)\b/i.test(blob)) {
+    parts.push("fondo amarillo texturizado combinado con suelo rojizo/coral y contraste fuerte figura-fondo");
+  }
+  if (/\b(m[eé]xico|mexican|charro|serape|sombrero)\b/i.test(blob)) {
+    parts.push("ambiente editorial de inspiración mexicana: color intenso, exterior soleado, escala gráfica y cultural");
+  }
+  return compactUniqueTextParts(parts, 850) || undefined;
+}
+
+function enrichTextureNotes(analysis: BrainVisualImageAnalysis, baseNotes?: string): string | undefined {
+  const blob = visualAnalysisTextBlob(analysis);
+  const parts = [baseNotes?.trim()].filter(Boolean) as string[];
+  if (/\b(cactus|saguaro)\b/i.test(blob)) {
+    parts.push("estrías verticales, espinas finas y piel verde de cactus como textura orgánica");
+  }
+  if (/\b(serape|manta|poncho|rayas|raya|tejido|tela|textil|lana|fabric|woven|stripe)\b/i.test(blob)) {
+    parts.push("tejido grueso multicolor tipo serape, rayas saturadas y trama visible");
+  }
+  if (/\b(grano|grain|pared|muro|fondo amarillo|estuco|texturiz|suelo|terroso|coral)\b/i.test(blob)) {
+    parts.push("pared amarilla granulada, estuco mate y suelo terroso con grano fino");
+  }
+  return compactUniqueTextParts(parts, 850) || undefined;
+}
+
 /**
  * Crea un slot nuevo para una imagen de conocimiento ya analizada (no persiste solo; usar patch).
  */
@@ -233,21 +348,33 @@ export function createVisualDnaSlotFromImage(input: {
   const secondary = [...(input.analysis.colorPalette?.secondary ?? [])].filter(Boolean).slice(0, 3);
   const paletteColors = [...new Set([...dom, ...secondary])].slice(0, 6);
   const srcUrl = input.ref.imageUrlForVision?.trim();
-  const objectsNotes = compactUniqueTextParts([
-    ...(input.analysis.subjectTags ?? []).slice(0, 8),
-    ...(input.analysis.possibleUse ?? []).slice(0, 6),
-  ]);
-  const environmentsNotes = compactUniqueTextParts([
-    ...input.analysis.composition
-      .filter((x) => /entorno|fondo|escena|calle|mercado|interior|exterior|paisaje|ambient|environment/i.test(x))
-      .slice(0, 8),
-    input.analysis.subject,
-  ]);
-  const texturesNotes = compactUniqueTextParts([
+  const subjectTokens = splitVisualNoteTokens([input.analysis.subject, ...(input.analysis.subjectTags ?? [])]);
+  const compositionTokens = splitVisualNoteTokens(input.analysis.composition ?? []);
+  const styleTokens = splitVisualNoteTokens([
     input.analysis.graphicStyle,
-    input.analysis.clothingStyle,
-    ...input.analysis.visualStyle.slice(0, 6),
+    ...(input.analysis.visualStyle ?? []),
+    ...(input.analysis.mood ?? []),
   ]);
+  const graphicTextureTokens = splitVisualNoteTokens(input.analysis.graphicDetail?.texture ?? []);
+  const materialTokens = splitVisualNoteTokens([
+    ...(input.analysis.clothingDetail?.textures ?? []),
+    ...(input.analysis.colorPalette?.dominant ?? []),
+  ]);
+  const objectsNotes = notesFromTokens(
+    withoutCategoryContamination(subjectTokens, "object"),
+    "Objetos, producto o props visibles en la sección OBJETOS del mosaico.",
+  );
+  const environmentsNotes = notesFromTokens(
+    withoutCategoryContamination([...compositionTokens, ...subjectTokens], "environment"),
+    "Espacios, escala, luz y contexto visual de la sección ENTORNOS del mosaico.",
+  );
+  const texturesNotes = notesFromTokens(
+    withoutCategoryContamination([...graphicTextureTokens, ...materialTokens, ...styleTokens], "texture"),
+    "Superficies, materiales, grano y atmósfera táctil de la sección TEXTURAS del mosaico.",
+  );
+  const peopleNotes = enrichPeopleNotes(input.analysis);
+  const richEnvironmentsNotes = enrichEnvironmentNotes(input.analysis, environmentsNotes);
+  const richTexturesNotes = enrichTextureNotes(input.analysis, texturesNotes);
 
   return normalizeVisualDnaSlot({
     id: newId(),
@@ -279,10 +406,10 @@ export function createVisualDnaSlotFromImage(input: {
       summary: [input.analysis.graphicStyle, input.analysis.people].filter(Boolean).join(" · ").slice(0, 2000),
       avoid: input.analysis.brandSignals?.slice(0, 12),
     },
-    people: { notes: input.analysis.peopleDetail?.present ? input.analysis.people : undefined },
+    people: { notes: input.analysis.peopleDetail?.present ? peopleNotes : undefined },
     objects: { notes: objectsNotes },
-    environments: { notes: environmentsNotes },
-    textures: { notes: texturesNotes },
+    environments: { notes: richEnvironmentsNotes },
+    textures: { notes: richTexturesNotes },
     confidence: confidenceFromAnalysis(input.analysis),
     analysisOrigin: analysisOriginFromVision(input.analysis),
   })!;

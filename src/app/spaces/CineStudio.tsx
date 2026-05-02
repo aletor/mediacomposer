@@ -162,6 +162,8 @@ function cx(...parts: Array<string | false | null | undefined>): string {
 }
 
 const CINE_S3_URL_TTL_MS = 50 * 60 * 1000;
+const CINE_GEMINI_VIDEO_MAX_REFERENCE_IMAGES = 3;
+const CINE_GEMINI_VIDEO_EXTRA_REFERENCE_IMAGES = 0;
 const cinePresignedUrlCache = new globalThis.Map<string, { url: string; expiresAt: number }>();
 const cinePresignInFlight = new globalThis.Map<string, Promise<string | null>>();
 
@@ -518,12 +520,8 @@ function cineVideoApiAspectRatio(aspectRatio: CineAspectRatio): "16:9" | "9:16" 
   return "16:9";
 }
 
-function cineVideoProviderForAspectRatio(aspectRatio: CineAspectRatio): "gemini" | "seedance" {
-  return cineVideoApiAspectRatio(aspectRatio) === "1:1" ? "seedance" : "gemini";
-}
-
 function cineVideoProviderLabel(provider?: CineVideoPlan["videoProvider"]): string {
-  return provider === "seedance" ? "Seedance" : "Gemini Veo";
+  return provider === "seedance" ? "Seedance (legacy)" : "Gemini Veo";
 }
 
 function CineVideoPreview({
@@ -1268,7 +1266,7 @@ export function CineStudio({ nodeId, data, onChange, onClose, brainConnected = f
     }
     if (preparedPlan.status === "generated" && !window.confirm("Esta escena ya tiene un vídeo generado. Se creará una nueva versión sin borrar el plan anterior del JSON exportable. ¿Continuar?")) return;
 
-    const provider = cineVideoProviderForAspectRatio(preparedPlan.aspectRatio);
+    const provider = "gemini" as const;
     const apiAspectRatio = cineVideoApiAspectRatio(preparedPlan.aspectRatio);
     const targetKey = `video:${scene.id}`;
     const generatingPlan: CineVideoPlan = {
@@ -1295,19 +1293,26 @@ export function CineStudio({ nodeId, data, onChange, onClose, brainConnected = f
       if (preparedPlan.mode === "start_end_frames" && !lastFrame) throw new Error("Falta resolver el frame final para generar vídeo start/end.");
 
       const frameAssetIds = new Set([preparedPlan.singleFrameAssetId, preparedPlan.startFrameAssetId, preparedPlan.endFrameAssetId].filter(Boolean));
-      const frameS3Keys = new Set([preparedPlan.singleFrameS3Key, preparedPlan.startFrameS3Key, preparedPlan.endFrameS3Key].filter(Boolean));
-      const referenceKeys = Array.from(new Set([
-        ...(preparedPlan.referenceAssetS3Keys ?? []),
-        ...(preparedPlan.referenceAssetIds ?? []).map((item) => resolveCineS3Key(item)),
-      ].filter((item): item is string => Boolean(item) && !frameS3Keys.has(item))));
-      const signedReferenceUrls = (await Promise.all(referenceKeys.map((key) => presignCineS3Key(key))))
-        .filter((item): item is string => Boolean(item));
-      const directReferenceUrls = (preparedPlan.referenceAssetIds ?? [])
-        .filter((item) => !frameAssetIds.has(item) && isDirectGeminiReference(item));
-      const extraReferences = Array.from(new Set([...signedReferenceUrls, ...directReferenceUrls])).slice(0, 7);
+      const baseReferenceCount = [firstFrame, lastFrame].filter(Boolean).length;
+      const extraReferenceLimit = Math.min(
+        CINE_GEMINI_VIDEO_EXTRA_REFERENCE_IMAGES,
+        Math.max(0, CINE_GEMINI_VIDEO_MAX_REFERENCE_IMAGES - baseReferenceCount),
+      );
+      const referenceKeys = extraReferenceLimit > 0
+        ? Array.from(new Set([
+            ...(preparedPlan.referenceAssetS3Keys ?? []),
+            ...(preparedPlan.referenceAssetIds ?? []).map((item) => resolveCineS3Key(item)),
+          ].filter((item): item is string => Boolean(item))))
+        : [];
+      const signedReferenceUrls = extraReferenceLimit > 0
+        ? (await Promise.all(referenceKeys.map((key) => presignCineS3Key(key)))).filter((item): item is string => Boolean(item))
+        : [];
+      const directReferenceUrls = extraReferenceLimit > 0
+        ? (preparedPlan.referenceAssetIds ?? []).filter((item) => !frameAssetIds.has(item) && isDirectGeminiReference(item))
+        : [];
+      const extraReferences = Array.from(new Set([...signedReferenceUrls, ...directReferenceUrls])).slice(0, extraReferenceLimit);
       const videoRefSlots = Object.fromEntries(extraReferences.map((url, index) => [`Image${index + 1}`, url]));
-      const apiPath = provider === "seedance" ? "/api/seedance/video" : "/api/gemini/video";
-      const res = await fetch(apiPath, {
+      const res = await fetch("/api/gemini/video", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1315,7 +1320,7 @@ export function CineStudio({ nodeId, data, onChange, onClose, brainConnected = f
           firstFrame,
           lastFrame,
           videoRefSlots,
-          resolution: provider === "seedance" ? apiAspectRatio : "1080p",
+          resolution: "1080p",
           aspectRatio: apiAspectRatio,
           durationSeconds: preparedPlan.durationSeconds,
           audio: false,
@@ -1324,7 +1329,22 @@ export function CineStudio({ nodeId, data, onChange, onClose, brainConnected = f
         }),
       });
       const json = (await res.json().catch(() => ({}))) as { output?: string; key?: string; error?: string };
-      if (!res.ok || !json.output) throw new Error(json.error || "No se pudo generar el vídeo.");
+      if (!res.ok || !json.output) {
+        const message = json.error || "No se pudo generar el vídeo.";
+        workingData = commitVideoPlan(workingData, scene.id, {
+          ...generatingPlan,
+          status: "error",
+          errorMessage: message,
+          metadata: {
+            ...generatingPlan.metadata,
+            generatedFrom: "cine-node",
+            cineNodeId: nodeId,
+            updatedAt: new Date().toISOString(),
+          },
+        });
+        setVideoPrepareSummary(message);
+        return;
+      }
       const generatedPlan: CineVideoPlan = {
         ...generatingPlan,
         status: "generated",
@@ -1347,7 +1367,7 @@ export function CineStudio({ nodeId, data, onChange, onClose, brainConnected = f
       setVideoPrepareSummary(`Vídeo generado · ${scene.title}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo generar el vídeo.";
-      console.error("Cine video generation failed:", error);
+      console.warn("Cine video generation failed:", message);
       commitVideoPlan(workingData, scene.id, {
         ...generatingPlan,
         status: "error",
@@ -2100,7 +2120,9 @@ export function CineStudio({ nodeId, data, onChange, onClose, brainConnected = f
                       <div className="p-3">
                         <div className="flex flex-wrap items-center justify-between gap-2">
 	                          <span className={cx("rounded-full border px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.12em]", plan.status === "generated" ? "border-cyan-200/20 bg-cyan-300/12 text-cyan-50" : plan.status === "generating" ? "border-cyan-200/20 bg-cyan-300/10 text-cyan-50/80" : plan.status === "prepared" ? "border-emerald-200/20 bg-emerald-300/12 text-emerald-50" : plan.status === "missing_frames" ? "border-amber-200/20 bg-amber-300/12 text-amber-50" : plan.status === "error" ? "border-rose-200/20 bg-rose-300/12 text-rose-50" : "border-white/10 bg-white/[0.04] text-white/48")}>{isVideoGenerating ? "Generando vídeo" : cineVideoStatusLabel(plan.status)}</span>
-	                          <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/42">{(plan.referenceAssetIds ?? []).length} referencias</span>
+		                          <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/42">
+		                            {plan.mode === "start_end_frames" ? "2 frames a Veo" : "1 frame a Veo"}
+		                          </span>
 	                          {plan.videoProvider ? <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/42">{cineVideoProviderLabel(plan.videoProvider)}</span> : null}
 	                        </div>
 	                        {missing ? <p className="mt-3 rounded-2xl border border-amber-200/15 bg-amber-300/10 px-3 py-2 text-xs text-amber-50/72">Falta: {missing}</p> : null}
@@ -2125,7 +2147,7 @@ export function CineStudio({ nodeId, data, onChange, onClose, brainConnected = f
 	                              ["Overlay", plan.overlayTextPlan?.texts?.length ? `${(plan.overlayTextPlan?.texts ?? []).join(" / ")} · no renderizar en vídeo` : "-"],
 	                              ["Frames", [plan.singleFrameAssetId, plan.startFrameAssetId, plan.endFrameAssetId].filter(Boolean).join(", ") || "-"],
 	                              ["Referencias", (plan.referenceAssetIds ?? []).join(", ") || "-"],
-	                              ["Proveedor", plan.videoProvider ? cineVideoProviderLabel(plan.videoProvider) : cineVideoProviderLabel(cineVideoProviderForAspectRatio(plan.aspectRatio))],
+	                              ["Proveedor", plan.videoProvider ? cineVideoProviderLabel(plan.videoProvider) : cineVideoProviderLabel("gemini")],
 	                              ["Vídeo", plan.videoAssetId || plan.videoUrl || "-"],
 	                            ],
 	                          })}>Ver plan</PillButton>

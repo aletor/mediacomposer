@@ -4,8 +4,11 @@ import {
   analyzeCineScript,
   approveCineFrame,
   applyCineImageStudioResult,
+  buildCineCharacterSheetNegativePrompt,
   buildCineCharacterSheetPrompt,
   buildCineFramePrompt,
+  buildCineLocationSheetNegativePrompt,
+  buildCineLocationSheetPrompt,
   buildCineMediaListOutput,
   buildCineVisualDirectionPrompt,
   buildVideoPromptForScene,
@@ -275,6 +278,36 @@ describe("Cine analyzer V1.7", () => {
       "asset://mateo-edit",
       "asset://forest",
     ]);
+  });
+
+  it("builds strict grid prompts for continuity sheets", () => {
+    const data = createEmptyCineNodeData();
+    data.characters = [
+      { id: "puffy", name: "Puffy", role: "protagonist", description: "Golden dog", visualPrompt: "friendly golden dog", lockedTraits: [] },
+      { id: "mateo", name: "Mateo", role: "secondary", description: "Young explorer", visualPrompt: "young explorer", lockedTraits: [] },
+    ];
+    data.backgrounds = [
+      { id: "house", name: "Casa soleada", type: "exterior", description: "Village house", visualPrompt: "sunny village house" },
+      { id: "forest", name: "Sendero del bosque", type: "natural", description: "Forest path", visualPrompt: "forest path" },
+      { id: "pyramid", name: "Interior de la pirámide", type: "interior", description: "Ancient pyramid interior", visualPrompt: "dark ancient pyramid interior" },
+    ];
+
+    const characterPrompt = buildCineCharacterSheetPrompt(data);
+    const locationPrompt = buildCineLocationSheetPrompt(data);
+    const characterNegative = buildCineCharacterSheetNegativePrompt();
+    const locationNegative = buildCineLocationSheetNegativePrompt();
+
+    expect(characterPrompt).toContain("strict technical contact-sheet grid");
+    expect(characterPrompt).toContain("visible neutral gutters");
+    expect(characterPrompt).toContain("slightly wider vertical gutters between different characters");
+    expect(characterPrompt).toContain("Do not place a large hero image");
+    expect(locationPrompt).toContain("The canvas must be divided into equal clean rectangular cells");
+    expect(locationPrompt).toContain("one location per cell");
+    expect(locationPrompt).toContain("Do not blend, overlay, double expose, fade, stack or merge locations together");
+    expect(characterNegative).toContain("images crossing cell boundaries");
+    expect(characterNegative).toContain("large hero background");
+    expect(locationNegative).toContain("overlapping panels");
+    expect(locationNegative).toContain("overflowing architecture");
   });
 
   it("approves a Cine frame without deleting generated or edited assets", () => {

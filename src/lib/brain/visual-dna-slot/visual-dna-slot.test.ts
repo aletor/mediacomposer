@@ -22,6 +22,10 @@ import {
   generateVisualDnaSlotMosaic,
 } from "@/lib/brain/visual-dna-slot/generate-mosaic";
 import { buildVisualDnaSlotMosaicPayload } from "@/lib/brain/visual-dna-slot/mosaic-payload";
+import {
+  applyMosaicIntelligenceToSlot,
+  normalizeVisualDnaMosaicIntelligence,
+} from "@/lib/brain/visual-dna-slot/mosaic-intelligence";
 
 function baseKnowledgeImageAssets(): ProjectAssetsMetadata {
   const docId = "doc-img-1";
@@ -209,6 +213,79 @@ describe("VisualDnaSlot library", () => {
     expect(pack.safeRulesDigest.length).toBeGreaterThan(0);
   });
 
+  it("separa notas de objeto, entorno y textura sin contaminar con personas", () => {
+    const base = baseKnowledgeImageAssets().strategy.visualReferenceAnalysis!.analyses[0];
+    const slot = createVisualDnaSlotFromImage({
+      ref: {
+        id: "corp-tech",
+        name: "corp.png",
+        mime: "image/png",
+        sourceKind: "knowledge_document",
+        imageUrlForVision: "data:image/png;base64,AAAA",
+      },
+      analysis: {
+        ...base,
+        id: "corp-tech-analysis",
+        subject:
+          "hombre, smartphone, chaqueta de traje, camisa blanca, edificio de fondo, texto digital, logo OARO, formas geométricas digitales",
+        subjectTags: [
+          "hombre",
+          "smartphone",
+          "chaqueta de traje",
+          "camisa blanca",
+          "edificio de fondo",
+          "texto digital",
+          "formas geométricas digitales",
+        ],
+        composition: ["espacio corporativo", "edificio de fondo", "luz fría", "interior tecnológico"],
+        graphicStyle: "gradientes suaves · malla digital · textura metálica",
+        visualStyle: ["tecnológica profesional", "dinámica digital"],
+        people: "Un hombre con smartphone",
+        peopleDetail: { present: true, description: "Un hombre con smartphone" },
+      },
+    });
+
+    expect(slot.people.notes).toContain("hombre");
+    expect(slot.objects.notes).toMatch(/smartphone|formas geométricas/i);
+    expect(slot.objects.notes).not.toMatch(/hombre|chaqueta|camisa/i);
+    expect(slot.environments.notes).toMatch(/edificio|interior|espacio|luz/i);
+    expect(slot.environments.notes).not.toMatch(/hombre|smartphone|chaqueta|camisa/i);
+    expect(slot.textures.notes).toMatch(/gradiente|malla|metálica/i);
+    expect(slot.textures.notes).not.toMatch(/hombre|chaqueta|camisa/i);
+  });
+
+  it("reconoce objetos culturales como guitarra y sombrero en la cápsula visual", () => {
+    const base = baseKnowledgeImageAssets().strategy.visualReferenceAnalysis!.analyses[0];
+    const slot = createVisualDnaSlotFromImage({
+      ref: {
+        id: "mexican-look",
+        name: "mexico.png",
+        mime: "image/png",
+        sourceKind: "knowledge_document",
+        imageUrlForVision: "data:image/png;base64,MEX",
+      },
+      analysis: {
+        ...base,
+        id: "mexican-look-analysis",
+        sourceAssetId: "mexican-look",
+        subject:
+          "músico con vestimenta tradicional, tocando una guitarra, sombrero de charro, serape de rayas, cactus de fondo",
+        subjectTags: ["guitarra acústica", "sombrero de charro", "serape de rayas", "cactus"],
+        composition: ["paisaje desértico", "pared amarilla", "suelo rojo terroso"],
+        graphicStyle: "grano · tela tejida",
+        visualStyle: ["mexicano editorial"],
+        people: "músico con vestimenta tradicional",
+        peopleDetail: { present: true, description: "músico con vestimenta tradicional" },
+      },
+    });
+
+    expect(slot.objects.notes).toMatch(/guitarra|sombrero/i);
+    expect(slot.objects.notes).not.toMatch(/músico|vestimenta tradicional/i);
+    expect(slot.people.notes).toMatch(/interacción musical|celebración cultural/i);
+    expect(slot.environments.notes).toMatch(/desértico|cactus|exterior soleado|fondo amarillo/i);
+    expect(slot.textures.notes).toMatch(/cactus|serape|tejido|estuco|grano/i);
+  });
+
   it("si falla generación, el slot queda failed y los anteriores siguen ready", async () => {
     const assets = baseKnowledgeImageAssets();
     const s1 = createVisualDnaSlotFromImage({
@@ -241,6 +318,124 @@ describe("VisualDnaSlot library", () => {
       generateImage: async () => ({ output: "" }),
     });
     expect(gen.ok).toBe(false);
+  });
+
+  it("genera mosaico de cápsula aislado sin mezclar análisis ni contexto de otros slots", async () => {
+    const assets = baseKnowledgeImageAssets();
+    const targetAnalysis: BrainVisualImageAnalysis = {
+      ...assets.strategy.visualReferenceAnalysis!.analyses[0],
+      id: "an-target",
+      sourceAssetId: "target-img",
+      subject: "servidores azules, pasillo tecnológico",
+      subjectTags: ["servidores azules", "pasillo tecnológico"],
+      colorPalette: { dominant: ["#001144"], secondary: ["#4466ff"] },
+      visualStyle: ["corporativo frío"],
+      mood: ["preciso"],
+    };
+    const contaminantAnalysis: BrainVisualImageAnalysis = {
+      ...assets.strategy.visualReferenceAnalysis!.analyses[0],
+      id: "an-contaminant",
+      sourceAssetId: "contaminant-img",
+      subject: "silla roja barroca, flores rosas, terciopelo dorado",
+      subjectTags: ["silla roja barroca", "flores rosas", "terciopelo dorado"],
+      colorPalette: { dominant: ["#ff0033", "#ff99cc"], secondary: ["#d4af37"] },
+      visualStyle: ["barroco cálido"],
+      mood: ["romántico"],
+    };
+    const withManyAnalyses = normalizeProjectAssets({
+      ...assets,
+      knowledge: {
+        ...assets.knowledge,
+        corporateContext: "Contexto global contaminante: usar siempre flores rosas y silla roja barroca.",
+      },
+      strategy: {
+        ...assets.strategy,
+        visualReferenceAnalysis: {
+          ...assets.strategy.visualReferenceAnalysis!,
+          analyses: [contaminantAnalysis, targetAnalysis],
+        },
+      },
+    });
+    const slot = createVisualDnaSlotFromImage({
+      ref: {
+        id: "target-img",
+        name: "target.png",
+        mime: "image/png",
+        sourceKind: "knowledge_document",
+        imageUrlForVision: "data:image/png;base64,TARGET",
+      },
+      analysis: targetAnalysis,
+    });
+    let sentBody: Record<string, unknown> | undefined;
+
+    const result = await generateVisualDnaSlotMosaic({
+      slot,
+      row: {
+        ref: {
+          id: "target-img",
+          name: "target.png",
+          mime: "image/png",
+          sourceKind: "knowledge_document",
+          imageUrlForVision: "data:image/png;base64,TARGET",
+        },
+        analysis: targetAnalysis,
+      },
+      assets: withManyAnalyses,
+      generateImage: async (body) => {
+        sentBody = body;
+        return { output: "data:image/png;base64,OUT" };
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    const prompt = String(sentBody?.prompt ?? "");
+    expect(prompt).toContain("servidores azules");
+    expect(prompt).not.toMatch(/silla roja|flores rosas|terciopelo dorado|Contexto global contaminante/i);
+    expect(sentBody?.images).toEqual(["data:image/png;base64,TARGET"]);
+  });
+
+  it("permite generar mosaico source-only cuando el análisis de la cápsula no está listo", async () => {
+    const assets = baseKnowledgeImageAssets();
+    const slot = createVisualDnaSlotFromImage({
+      ref: {
+        id: "source-only",
+        name: "source-only.png",
+        mime: "image/png",
+        sourceKind: "knowledge_document",
+        imageUrlForVision: "data:image/png;base64,SOURCEONLY",
+      },
+      analysis: {
+        ...assets.strategy.visualReferenceAnalysis!.analyses[0],
+        id: "source-only-pending",
+        sourceAssetId: "source-only",
+        analysisStatus: "pending",
+      },
+    });
+    let sentBody: Record<string, unknown> | undefined;
+
+    const result = await generateVisualDnaSlotMosaic({
+      slot,
+      row: {
+        ref: {
+          id: "source-only",
+          name: "source-only.png",
+          mime: "image/png",
+          sourceKind: "knowledge_document",
+          imageUrlForVision: "data:image/png;base64,SOURCEONLY",
+        },
+        analysis: null,
+      },
+      assets,
+      generateImage: async (body) => {
+        sentBody = body;
+        return { output: "data:image/png;base64,OUT" };
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(sentBody?.images).toEqual(["data:image/png;base64,SOURCEONLY"]);
+    expect(String(sentBody?.prompt ?? "")).toContain("Referencia de imagen adjunta REF1");
+    expect(String(sentBody?.prompt ?? "")).not.toContain("No hay referencias binarias adjuntas");
   });
 
   it("appendKnowledgeImageVisualDnaSlots no crea slots con filas pending", () => {
@@ -446,5 +641,86 @@ describe("VisualDnaSlot library", () => {
     const out = markVisualDnaSlotStale([a, b], a.id, ["voice_changed"]);
     expect(out.find((s) => s.id === a.id)?.status).toBe("stale");
     expect(out.find((s) => s.id === b.id)?.status).toBe("pending");
+  });
+
+  it("aplica inteligencia del mosaico al ADN textual y limita a dos ejemplos por categoría", () => {
+    const base = createVisualDnaSlotFromImage({
+      ref: { id: "1", name: "A", mime: "image/png", sourceKind: "knowledge_document" },
+      analysis: baseKnowledgeImageAssets().strategy.visualReferenceAnalysis!.analyses[0],
+    });
+    const withMosaic = applyMosaicSuccessToSlot(base, {
+      imageUrl: "data:image/png;base64,MOSAIC",
+      s3Path: "mosaic.png",
+      mosaicPrompt: "prompt",
+      safeRulesDigest: [],
+    });
+    const intelligence = normalizeVisualDnaMosaicIntelligence({
+      people: [
+        {
+          title: "Chef concentrado",
+          observed: "Persona cocinando en wok con gesto concentrado.",
+          creativeUse: "Dirección de oficio manual y energía de cocina callejera.",
+          promptHint: "Presencia humana genérica cocinando con concentración, sin identidad exacta.",
+          visualKeywords: ["cocina", "gesto"],
+        },
+        {
+          title: "Servicio de calle",
+          observed: "Interacción de vendedor con clientes en puesto nocturno.",
+          creativeUse: "Escena de atención y vida cotidiana.",
+          promptHint: "Interacción humana genérica en puesto de comida.",
+          visualKeywords: ["servicio"],
+        },
+        {
+          title: "No debe entrar",
+          observed: "extra",
+          creativeUse: "extra",
+          promptHint: "extra",
+        },
+      ],
+      environments: [
+        {
+          title: "Mercado nocturno",
+          observed: "Puesto de comida callejera con luces cálidas, humo y público difuso.",
+          creativeUse: "Fondo urbano vivo y gastronómico.",
+          promptHint: "Mercado nocturno de comida callejera con luces cálidas y vapor.",
+        },
+      ],
+      textures: [
+        {
+          title: "Wok usado",
+          observed: "Metal ennegrecido, grasa, marcas de uso y reflejos duros.",
+          creativeUse: "Materialidad cruda de cocina.",
+          promptHint: "Textura de metal usado con hollín y reflejos.",
+        },
+      ],
+      objects: [
+        {
+          title: "Utensilios de cocina",
+          observed: "Wok metálico, cucharón, fideos y especieros.",
+          creativeUse: "Props gastronómicos claros.",
+          promptHint: "Wok metálico con cucharón, fideos y especieros visibles.",
+        },
+      ],
+      generalLooks: [
+        {
+          title: "Cocina callejera intensa",
+          observed: "Fuego, chispas, humo y contraste oscuro.",
+          creativeUse: "Look editorial gastronómico con energía.",
+          promptHint: "Look de cocina callejera intensa con fuego, chispas y humo.",
+        },
+      ],
+      globalCreativeDirection: {
+        summary: "Cocina callejera nocturna con fuego, chispas, metal usado y energía documental.",
+        visualKeywords: ["fuego", "chispas", "metal"],
+      },
+      confidence: 0.82,
+    });
+    expect(intelligence?.people).toHaveLength(2);
+    const out = applyMosaicIntelligenceToSlot(withMosaic, intelligence!);
+    expect(out.mosaicIntelligence?.objects[0].observed).toContain("Wok metálico");
+    expect(out.objects.notes).toContain("Wok metálico");
+    expect(out.environments.notes).toContain("Mercado nocturno");
+    expect(out.textures.same?.prompt).toContain("metal usado");
+    expect(out.generalStyle.summary).toContain("Cocina callejera nocturna");
   });
 });

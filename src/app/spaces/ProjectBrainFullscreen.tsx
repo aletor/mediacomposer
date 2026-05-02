@@ -74,6 +74,9 @@ import { readResponseJson } from "@/lib/read-response-json";
 import { hasVisualLearningReviewBundle } from "@/lib/brain/brain-visual-review-constants";
 import {
   formatLearningReviewCardHeadline,
+  formatLearningReviewExample,
+  formatLearningReviewReasoning,
+  formatLearningReviewText,
   labelForBrainNodeSource,
   labelForLearningCard,
   learningReviewDiagnosticBullets,
@@ -104,6 +107,10 @@ import {
   resolveLearningPendingAnchorNodeId,
 } from "@/lib/brain/brain-connected-signals-ui";
 import type { VisualReanalyzeDiagnosticRow } from "@/lib/brain/brain-visual-reanalyze-diagnostics";
+import {
+  BRAIN_TELEMETRY_SYNCED_EVENT,
+  type BrainTelemetrySyncedEventDetail,
+} from "@/lib/brain/brain-telemetry-client";
 import { fetchBrainTelemetrySummaryByNodeId } from "@/lib/brain/fetch-brain-telemetry-summary";
 import { applyLearningCandidateToProjectAssets } from "@/lib/brain/brain-apply-learning-candidate";
 import { BrandSummarySourcesPanel, type BrandSummaryNavTab } from "./brand-summary-sources-panel";
@@ -128,7 +135,12 @@ import {
   applyMosaicSuccessToSlot,
   generateVisualDnaSlotMosaic,
 } from "@/lib/brain/visual-dna-slot/generate-mosaic";
-import type { VisualDnaSlot } from "@/lib/brain/visual-dna-slot/types";
+import type { VisualDnaMosaicIntelligence, VisualDnaSlot } from "@/lib/brain/visual-dna-slot/types";
+import {
+  applyMosaicIntelligenceToSlot,
+  normalizeVisualDnaMosaicIntelligence,
+  visualDnaMosaicAdviceToSuggestion,
+} from "@/lib/brain/visual-dna-slot/mosaic-intelligence";
 import { normalizeVisualDnaSlots, removeVisualDnaSlot, updateVisualDnaSlot } from "@/lib/brain/visual-dna-slot/normalize";
 import { VisualDnaSlotsLibrary } from "./VisualDnaSlotsLibrary";
 import { hydrateKnowledgeImageDocumentsWithViewUrlsClient } from "@/lib/brain/brain-knowledge-image-view-urls-client";
@@ -321,6 +333,20 @@ function visualCapsuleSuggestionsFromSlotSection(
   return fromSlot.length ? fromSlot : prev ?? [];
 }
 
+function visualCapsuleGeneralLookSuggestionsFromSlot(
+  slot: VisualDnaSlot | undefined,
+  prev: VisualCapsuleSuggestion[] | undefined,
+): VisualCapsuleSuggestion[] | undefined {
+  const intelligence = slot?.mosaicIntelligence;
+  if (!intelligence?.generalLooks?.length) return prev;
+  const slotId = slot?.id ?? "slot";
+  const imageUrl = slot?.mosaic?.imageUrl || slot?.sourceImageUrl;
+  const fromMosaic = intelligence.generalLooks
+    .slice(0, 2)
+    .map((item, index) => visualDnaMosaicAdviceToSuggestion(slotId, "hero", item, index, imageUrl));
+  return fromMosaic.length ? fromMosaic : prev;
+}
+
 function ignorePendingVisualCapsuleText(raw: string | undefined): string | undefined {
   const text = raw?.trim();
   if (!text) return undefined;
@@ -336,6 +362,23 @@ function ignorePendingVisualCapsuleText(raw: string | undefined): string | undef
     return undefined;
   }
   return text;
+}
+
+async function analyzeVisualDnaMosaicIntelligenceClient(params: {
+  slotId: string;
+  imageUrl: string;
+}): Promise<VisualDnaMosaicIntelligence | null> {
+  const res = await fetch("/api/spaces/brain/visual/mosaic-intelligence", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      slotId: params.slotId,
+      imageUrl: params.imageUrl,
+    }),
+  });
+  if (!res.ok) return null;
+  const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  return normalizeVisualDnaMosaicIntelligence(json.intelligence);
 }
 
 function visualCapsuleFromDocAndSlot(params: {
@@ -390,6 +433,7 @@ function visualCapsuleFromDocAndSlot(params: {
     environments: visualCapsuleSuggestionsFromSlotSection(slot, "environment", slot?.environments, prev?.environments),
     textures: visualCapsuleSuggestionsFromSlotSection(slot, "texture", slot?.textures, prev?.textures),
     objects: visualCapsuleSuggestionsFromSlotSection(slot, "object", slot?.objects, prev?.objects),
+    generalLooks: visualCapsuleGeneralLookSuggestionsFromSlot(slot, prev?.generalLooks),
     moodTags: slot?.generalStyle?.mood?.length ? slot.generalStyle.mood : prev?.moodTags,
     visualTraits: slot?.generalStyle?.composition?.length ? slot.generalStyle.composition : prev?.visualTraits,
     fidelityScore: typeof slot?.confidence === "number" ? slot.confidence : prev?.fidelityScore,
@@ -662,7 +706,7 @@ function traceKindLabel(kind: BrainDecisionTrace["kind"]): string {
     case "runtime_context":
       return "Runtime context";
     case "learning_candidate":
-      return "Learning candidate";
+      return "Propuesta de aprendizaje";
     case "visual_prompt":
       return "Visual prompt";
     case "merge_resolution":
@@ -672,6 +716,23 @@ function traceKindLabel(kind: BrainDecisionTrace["kind"]): string {
     default:
       return kind;
   }
+}
+
+function formatDecisionTraceSummary(summary: string): string {
+  return formatLearningReviewReasoning(formatLearningReviewText(summary));
+}
+
+function formatDecisionTraceInputLabel(label: string): string {
+  const clean = label.trim();
+  if (!clean) return "";
+  if (/manualoverridecounts/i.test(clean)) return "Cambios manuales en tono o longitud.";
+  if (/uniqueaccepted/i.test(clean)) return "Sugerencias aceptadas.";
+  if (/uniqueignored/i.test(clean)) return "Sugerencias descartadas.";
+  if (/uniqueshown/i.test(clean)) return "Sugerencias mostradas.";
+  if (/creative_preference/i.test(clean)) return formatLearningReviewText(clean.replace(/^.*?·\s*/u, ""));
+  if (/project_memory/i.test(clean)) return formatLearningReviewText(clean.replace(/^.*?·\s*/u, ""));
+  if (/contextual_memory/i.test(clean)) return formatLearningReviewText(clean.replace(/^.*?·\s*/u, ""));
+  return formatLearningReviewExample(clean);
 }
 
 function tracePersistenceIntentLabel(intent: BrainDecisionTrace["persistenceIntent"]): string {
@@ -1193,6 +1254,20 @@ export function ProjectBrainFullscreen({
     }
     void refreshTelemetrySummary();
   }, [open, refreshTelemetrySummary]);
+
+  useEffect(() => {
+    if (!open || !projectId?.trim() || brainClients.length === 0) return;
+    const knownClientIds = new Set(brainClients.map((client) => client.id).filter(Boolean));
+    const handleTelemetrySynced = (event: Event) => {
+      const detail = (event as CustomEvent<BrainTelemetrySyncedEventDetail>).detail;
+      if (!detail || detail.projectId !== projectId.trim() || !knownClientIds.has(detail.nodeId)) return;
+      void refreshTelemetrySummary();
+    };
+    window.addEventListener(BRAIN_TELEMETRY_SYNCED_EVENT, handleTelemetrySynced);
+    return () => {
+      window.removeEventListener(BRAIN_TELEMETRY_SYNCED_EVENT, handleTelemetrySynced);
+    };
+  }, [open, projectId, brainClients, refreshTelemetrySummary]);
 
   const refreshConnectedSignals = useCallback(async () => {
     await Promise.all([loadPendingLearningsStable(), refreshTelemetrySummary()]);
@@ -1822,25 +1897,33 @@ export function ProjectBrainFullscreen({
         const docId = slot.sourceDocumentId;
         if (!docId) return;
         let row = rows.find((r) => r.ref.id === docId && r.ref.sourceKind === "knowledge_document");
-        if (!row?.analysis) return;
-        if (row.analysis.analysisStatus === "failed") return;
-        if (row.analysis.analysisStatus && row.analysis.analysisStatus !== "analyzed") {
-          patch((a) => ({
-            ...a,
-            strategy: {
-              ...a.strategy,
-              visualDnaSlots: updateVisualDnaSlot(a.strategy.visualDnaSlots ?? [], slotId, {
-                status: "pending",
-                lastError: undefined,
-                updatedAt: new Date().toISOString(),
-              }),
-            },
-          }));
-          return;
-        }
+        if (!row) return;
+        const rowDoc = assetsLoop.knowledge.documents.find((doc) => doc.id === docId);
+        const isCapsuleSlot = Boolean(rowDoc && resolveBrainSourceScope(rowDoc) === "capsule");
         const slotSrc = slot.sourceImageUrl?.trim();
         if (!row.ref.imageUrlForVision?.trim() && slotSrc) {
           row = { ...row, ref: { ...row.ref, imageUrlForVision: slotSrc } };
+        }
+        const rowAnalysisStatus = row.analysis?.analysisStatus;
+        const sourceOnlyMosaicAllowed = isCapsuleSlot && Boolean(row.ref.imageUrlForVision?.trim());
+        if (rowAnalysisStatus === "failed" && !sourceOnlyMosaicAllowed) return;
+        if (rowAnalysisStatus && rowAnalysisStatus !== "analyzed") {
+          if (sourceOnlyMosaicAllowed) {
+            row = { ...row, analysis: null };
+          } else {
+            patch((a) => ({
+              ...a,
+              strategy: {
+                ...a.strategy,
+                visualDnaSlots: updateVisualDnaSlot(a.strategy.visualDnaSlots ?? [], slotId, {
+                  status: "pending",
+                  lastError: undefined,
+                  updatedAt: new Date().toISOString(),
+                }),
+              },
+            }));
+            return;
+          }
         }
         if (!row.ref.imageUrlForVision?.trim()) {
           patch((a) => ({
@@ -1877,18 +1960,28 @@ export function ProjectBrainFullscreen({
           assets: assetsLoop,
           generateImage: (body) => geminiGenerateWithServerProgress(body, () => {}),
         });
+        const mosaicIntelligence =
+          result.ok && result.imageUrl
+            ? await analyzeVisualDnaMosaicIntelligenceClient({
+                slotId,
+                imageUrl: result.imageUrl,
+              }).catch(() => null)
+            : null;
 
         patch((a) => {
           const cur =
             normalizeVisualDnaSlots(a.strategy.visualDnaSlots).find((s) => s.id === slotId) ?? slotNow;
           const nextSlot = result.ok
-            ? applyMosaicSuccessToSlot(cur, {
-                imageUrl: result.imageUrl,
-                s3Path: result.s3Path,
-                mosaicPrompt: result.mosaicPrompt,
-                diagnostics: result.diagnostics,
-                safeRulesDigest: result.safeRulesDigest,
-              })
+            ? (() => {
+                const withMosaic = applyMosaicSuccessToSlot(cur, {
+                  imageUrl: result.imageUrl,
+                  s3Path: result.s3Path,
+                  mosaicPrompt: result.mosaicPrompt,
+                  diagnostics: result.diagnostics,
+                  safeRulesDigest: result.safeRulesDigest,
+                });
+                return mosaicIntelligence ? applyMosaicIntelligenceToSlot(withMosaic, mosaicIntelligence) : withMosaic;
+              })()
             : applyMosaicFailureToSlot(cur, result.error);
           return {
             ...a,
@@ -2109,8 +2202,14 @@ export function ProjectBrainFullscreen({
           const analysis = s.sourceDocumentId ? analysisBySourceDocumentId.get(s.sourceDocumentId) : undefined;
           const analysisStatus = analysis?.analysisStatus ?? (analysis ? "analyzed" : undefined);
           const analysisReady = analysisStatus === "analyzed";
+          const sourceDoc = s.sourceDocumentId
+            ? latestAssets.knowledge.documents.find((doc) => doc.id === s.sourceDocumentId)
+            : undefined;
+          const canUseSourceOnlyMosaic =
+            Boolean(sourceDoc && resolveBrainSourceScope(sourceDoc) === "capsule") &&
+            Boolean(s.sourceImageUrl?.trim() || sourceDoc?.dataUrl?.trim() || sourceDoc?.originalSourceUrl?.trim() || sourceDoc?.s3Path?.trim());
           if (s.status === "generating" && !slotMosaicBusyRef.current.has(s.id)) {
-            if (!analysisReady) {
+            if (!analysisReady && !canUseSourceOnlyMosaic) {
               patch((a) => ({
                 ...a,
                 strategy: {
@@ -2140,10 +2239,15 @@ export function ProjectBrainFullscreen({
             }
           }
           if (s.status !== "pending") continue;
-          if (!analysisReady) continue;
+          const canAutoGenerateSourceOnly = canUseSourceOnlyMosaic && !analysisReady;
           const canAutoGenerate =
             autoSourceIds.has(VISUAL_DNA_SYNC_AUTO_ALL) ||
-            Boolean(s.sourceDocumentId && autoSourceIds.has(s.sourceDocumentId));
+            Boolean(s.sourceDocumentId && autoSourceIds.has(s.sourceDocumentId)) ||
+            canAutoGenerateSourceOnly;
+          if (canAutoGenerate && !analysisReady && !canUseSourceOnlyMosaic) {
+            if (s.sourceDocumentId) syncVisualDnaSlotsAutoSourceIdsRef.current.add(s.sourceDocumentId);
+            continue;
+          }
           if (!canAutoGenerate) continue;
           await runSingleVisualDnaSlotMosaic(s.id);
         }
@@ -2214,11 +2318,15 @@ export function ProjectBrainFullscreen({
     return `${capsuleDocs}::${slots}`;
   }, [assets.knowledge.documents, assets.strategy.visualDnaSlots]);
 
+  const visualCapsuleLastAppliedRef = useRef<string>("");
   useEffect(() => {
     const nextCapsules = reconcileVisualCapsulesFromAssets(assets);
     const current = JSON.stringify(assets.strategy.visualCapsules ?? []);
     const next = JSON.stringify(nextCapsules);
     if (current === next) return;
+    const applyKey = `${visualCapsuleSyncKey}::${next}`;
+    if (visualCapsuleLastAppliedRef.current === applyKey) return;
+    visualCapsuleLastAppliedRef.current = applyKey;
     patch((a) => ({
       ...a,
       strategy: {
@@ -3645,7 +3753,7 @@ export function ProjectBrainFullscreen({
     const whyOpen = reviewEvidenceOpenId === row.id;
     const reasoningOpen = reviewReasoningOpenId === row.id;
     const strength = c.confidence >= 0.75 ? "Fuerte" : c.confidence >= 0.45 ? "Media" : "Débil";
-    const example = c.evidence.examples?.[0];
+    const example = c.evidence.examples?.[0] ? formatLearningReviewExample(c.evidence.examples[0]) : undefined;
     const suggestedScope = resolveLearningCandidateBrainScope(row);
     const suggestedScopeLabel =
       suggestedScope === "brand" ? "Marca" : suggestedScope === "capsule" ? "Cápsula" : "Proyecto";
@@ -3711,7 +3819,7 @@ export function ProjectBrainFullscreen({
         </button>
         {reasoningOpen && (
           <p className="rounded-[5px] border border-zinc-100 bg-zinc-50 px-3 py-2 text-[11px] leading-relaxed text-zinc-700">
-            {c.reasoning}
+            {formatLearningReviewReasoning(c.reasoning)}
           </p>
         )}
         <button
@@ -3747,13 +3855,13 @@ export function ProjectBrainFullscreen({
                   Persistencia: {tracePersistenceIntentLabel(pendingTrace.persistenceIntent)}
                 </p>
               ) : null}
-              <p>{pendingTrace.outputSummary.summary}</p>
+              <p>{formatDecisionTraceSummary(pendingTrace.outputSummary.summary)}</p>
               {pendingTrace.inputs.length > 0 ? (
                 <p>
                   <span className="font-semibold text-zinc-900">Inputs principales:</span>{" "}
                   {pendingTrace.inputs
                     .slice(0, 6)
-                    .map((x) => x.label)
+                    .map((x) => formatDecisionTraceInputLabel(x.label))
                     .filter(Boolean)
                     .join(" · ")}
                 </p>
@@ -4261,7 +4369,9 @@ export function ProjectBrainFullscreen({
                       ? "brain-tab-review"
                       : id === "overview"
                         ? "brain-tab-overview"
-                        : undefined
+                        : id === "sources"
+                          ? "brain-tab-sources"
+                          : undefined
                   }
                   onClick={() => setActiveTab(id)}
                   className={`inline-flex items-center gap-1 rounded-[5px] border px-2 py-1 text-[9px] font-semibold uppercase tracking-wide ${
@@ -4286,6 +4396,7 @@ export function ProjectBrainFullscreen({
                   <button
                     key={id}
                     type="button"
+                    data-testid={id === "knowledge" ? "brain-subtab-knowledge" : undefined}
                     onClick={() => setActiveTab(id)}
                     className={`rounded-[5px] border px-2 py-1 text-[9px] font-semibold uppercase tracking-wide ${
                       activeTab === id

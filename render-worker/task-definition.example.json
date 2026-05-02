@@ -1,0 +1,24 @@
+{
+  "family": "foldder-video-render-worker",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "4096",
+  "executionRoleArn": "arn:aws:iam::<account-id>:role/foldder-render-worker-execution-role",
+  "taskRoleArn": "arn:aws:iam::<account-id>:role/foldder-render-worker-task-role",
+  "containerDefinitions": [
+    {
+      "name": "render-worker",
+      "image": "<account-id>.dkr.ecr.<region>.amazonaws.com/foldder-render-worker:latest",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/foldder/video-render-worker",
+          "awslogs-region": "<region>",
+          "awslogs-stream-prefix": "render"
+        }
+      }
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ChevronLeft, ChevronRight, ImageIcon, Loader2, RefreshCw, Trash2, AlertTriangle } from "lucide-react";
 import type { VisualDnaSlot } from "@/lib/brain/visual-dna-slot/types";
 import type { BrainVisualImageAnalysis, VisualCapsuleStatus } from "@/app/spaces/project-assets-metadata";
@@ -31,6 +31,31 @@ function thumb(src?: string) {
   return u;
 }
 
+const VISUAL_DNA_S3_URL_TTL_MS = 4 * 60 * 1000;
+const visualDnaPresignedUrlCache = new Map<string, { url: string; expiresAt: number }>();
+
+async function presignVisualDnaS3Key(key: string): Promise<string | null> {
+  const clean = key.trim();
+  if (!clean) return null;
+  const cached = visualDnaPresignedUrlCache.get(clean);
+  if (cached && cached.expiresAt > Date.now()) return cached.url;
+  try {
+    const res = await fetch("/api/spaces/s3-presign", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keys: [clean] }),
+    });
+    if (!res.ok) return null;
+    const json = (await res.json().catch(() => ({}))) as { urls?: Record<string, string> };
+    const url = json.urls?.[clean]?.trim();
+    if (!url) return null;
+    visualDnaPresignedUrlCache.set(clean, { url, expiresAt: Date.now() + VISUAL_DNA_S3_URL_TTL_MS });
+    return url;
+  } catch {
+    return null;
+  }
+}
+
 function resolvePaletteSwatchStyle(colorLabel: string): CSSProperties {
   const t = (colorLabel || "").trim();
   const hexMatch = t.match(/#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b/);
@@ -42,6 +67,90 @@ function resolvePaletteSwatchStyle(colorLabel: string): CSSProperties {
     background:
       "linear-gradient(135deg, rgba(244,244,245,1) 0%, rgba(228,228,231,1) 45%, rgba(212,212,216,1) 100%)",
   };
+}
+
+const MISPLACED_PERSON_OR_CLOTHING_RE =
+  /\b(hombre|mujer|persona|personas|rostro|cara|barba|sonrisa|sonriendo|cauc[aá]s|modelo|m[uú]sico|cantante|traje|chaqueta|camisa|corbata|vestuario|vestimenta|ropa|cuello|manos?|people|person|man|woman|face|beard|musician|singer|jacket|shirt|suit|clothing|wardrobe|outfit)\b/i;
+const OBJECT_SIGNAL_RE =
+  /\b(smartphone|tel[eé]fono|m[oó]vil|dispositivo|producto|objeto|pantalla|tarjeta|qr|cadena|anillo|formas? geom[eé]tricas?|guitarra|instrumento|sombrero|botas?|serape|manta|textil|botella|vaso|taza|bolso|bolsa|zapato|zapatilla|bal[oó]n|pelota|device|phone|object|product|screen|chain|ring|guitar|instrument|hat|boots?|blanket|textile|bottle|cup|bag|shoe|ball)\b/i;
+const ENV_SIGNAL_RE =
+  /\b(entorno|fondo|espacio|interior|exterior|edificio|arquitectura|oficina|sala|pasillo|terminal|aeropuerto|servidor|data\s*center|datacenter|luz|ambiente|paisaje|desierto|cactus|saguaro|calle|fachada|patio|pueblo|muro|pared|suelo|horizonte|environment|background|building|office|server|landscape|desert|street|facade|courtyard|wall)\b/i;
+const TEXTURE_SIGNAL_RE =
+  /\b(textura|material|superficie|metal|vidrio|tela|tejido|fibra|grano|gradiente|degradado|malla|red|cactus|saguaro|espinas?|estr[ií]as?|serape|manta|rayas?|lana|estuco|terroso|granulada|texture|material|surface|metal|glass|fabric|grain|gradient|spines?|stripes?|woven|stucco)\b/i;
+
+function isGenericVisualSectionFallback(text: string): boolean {
+  const key = text.trim().toLowerCase();
+  return (
+    key.includes("visibles en la sección objetos del mosaico") ||
+    key.includes("visibles en la seccion objetos del mosaico") ||
+    key.includes("visibles en la sección entornos del mosaico") ||
+    key.includes("visibles en la seccion entornos del mosaico") ||
+    key.includes("visibles en la sección texturas del mosaico") ||
+    key.includes("visibles en la seccion texturas del mosaico")
+  );
+}
+
+function formatMosaicAdviceForDisplay(slot: VisualDnaSlot, kind: "people" | "objects" | "environments" | "textures"): string | undefined {
+  const items =
+    kind === "people"
+      ? slot.mosaicIntelligence?.people
+      : kind === "objects"
+        ? slot.mosaicIntelligence?.objects
+        : kind === "environments"
+          ? slot.mosaicIntelligence?.environments
+          : slot.mosaicIntelligence?.textures;
+  if (!items?.length) return undefined;
+  return items
+    .slice(0, 2)
+    .map((item, index) => {
+      const title = item.title?.trim() ? `${index + 1}. ${item.title.trim()}` : `${index + 1}. Ejemplo`;
+      const observed = item.observed?.trim();
+      const use = item.creativeUse?.trim();
+      return [title, observed, use ? `Uso: ${use}` : ""].filter(Boolean).join(": ");
+    })
+    .join("\n\n");
+}
+
+function slotAssetNotes(section: VisualDnaSlot["people"] | undefined): string | undefined {
+  const rows = [section?.same, section?.similar]
+    .map((asset, index) => {
+      const text = [asset?.description, asset?.prompt].filter(Boolean).join(" · ").trim();
+      return text ? `${index + 1}. ${text}` : "";
+    })
+    .filter(Boolean);
+  return rows.length ? rows.join("\n\n") : undefined;
+}
+
+function cleanVisualSectionNotes(
+  raw: string | undefined,
+  kind: "people" | "objects" | "environments" | "textures",
+  hasMosaic: boolean,
+  backupRaw?: string,
+): string | undefined {
+  const text = raw?.trim();
+  if (!text) return undefined;
+  if (kind === "people") return text;
+  if (!isGenericVisualSectionFallback(text) && (text.includes("Uso:") || /\b1\.\s/.test(text))) return text;
+  const tokensFrom = (value?: string) =>
+    (value ?? "")
+    .split(/[·,;|/]+/u)
+    .map((x) => x.trim().replace(/\s+/g, " "))
+    .filter(Boolean)
+    .filter((x) => !MISPLACED_PERSON_OR_CLOTHING_RE.test(x));
+  const filterTokens = (tokens: string[]) => tokens.filter((x) => {
+    if (kind === "objects") return OBJECT_SIGNAL_RE.test(x);
+    if (kind === "environments") return ENV_SIGNAL_RE.test(x);
+    return TEXTURE_SIGNAL_RE.test(x);
+  });
+  let filtered = filterTokens(tokensFrom(text));
+  if (!filtered.length && backupRaw) {
+    filtered = filterTokens(tokensFrom(backupRaw));
+  }
+  if (filtered.length) return Array.from(new Set(filtered)).slice(0, 8).join(" · ");
+  if (!hasMosaic) return text;
+  if (kind === "objects") return "Objetos, producto y detalles físicos visibles en la sección OBJETOS del mosaico.";
+  if (kind === "environments") return "Espacios, luz, escala y contexto visual visibles en la sección ENTORNOS del mosaico.";
+  return "Superficies, materiales, grano y tactilidad visual visibles en la sección TEXTURAS del mosaico.";
 }
 
 export function VisualDnaSlotsLibrary({
@@ -56,7 +165,42 @@ export function VisualDnaSlotsLibrary({
   belowIngest = false,
 }: VisualDnaSlotsLibraryProps) {
   const [openId, setOpenId] = useState<string | null>(null);
+  const [signedMosaicUrls, setSignedMosaicUrls] = useState<Record<string, string>>({});
   const scrollerRef = useRef<HTMLUListElement>(null);
+
+  const mosaicS3Signature = useMemo(
+    () =>
+      slots
+        .map((slot) => `${slot.id}:${slot.mosaic.s3Path ?? ""}:${slot.mosaic.imageUrl ? "url" : ""}`)
+        .join("|"),
+    [slots],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const missing = slots
+      .map((slot) => ({ id: slot.id, key: slot.mosaic.s3Path?.trim(), hasUrl: Boolean(slot.mosaic.imageUrl?.trim()) }))
+      .filter((row): row is { id: string; key: string; hasUrl: boolean } => Boolean(row.key) && !row.hasUrl && !signedMosaicUrls[row.id]);
+    if (!missing.length) return;
+    void Promise.all(
+      missing.map(async (row) => {
+        const url = await presignVisualDnaS3Key(row.key);
+        return url ? { id: row.id, url } : null;
+      }),
+    ).then((rows) => {
+      if (cancelled) return;
+      const valid = rows.filter((row): row is { id: string; url: string } => Boolean(row));
+      if (!valid.length) return;
+      setSignedMosaicUrls((prev) => {
+        const next = { ...prev };
+        for (const row of valid) next[row.id] = row.url;
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [mosaicS3Signature, signedMosaicUrls, slots]);
 
   const scrollSlots = useCallback((dir: -1 | 1) => {
     const el = scrollerRef.current;
@@ -71,6 +215,7 @@ export function VisualDnaSlotsLibrary({
     ? analysisStatusBySourceDocumentId?.[open.sourceDocumentId]
     : undefined;
   const openAnalysisReady = !openAnalysisStatus || openAnalysisStatus === "analyzed";
+  const openHasMosaic = Boolean(open?.mosaic.imageUrl?.trim() || open?.mosaic.s3Path?.trim());
 
   return (
     <div
@@ -112,13 +257,14 @@ export function VisualDnaSlotsLibrary({
           >
           {slots.map((slot) => {
             const src = thumb(slot.sourceImageUrl);
-            const mos = thumb(slot.mosaic.imageUrl);
+            const mos = thumb(slot.mosaic.imageUrl) || thumb(signedMosaicUrls[slot.id]);
             const busy = Boolean(busySlotIds[slot.id]);
             const analysisStatus = slot.sourceDocumentId
               ? analysisStatusBySourceDocumentId?.[slot.sourceDocumentId]
               : undefined;
             const capsuleMeta = slot.sourceDocumentId ? capsuleMetaBySourceDocumentId?.[slot.sourceDocumentId] : undefined;
-            const analysisReady = !analysisStatus || analysisStatus === "analyzed";
+            const canGenerateFromSourceOnly = Boolean(capsuleMeta && (slot.sourceImageUrl?.trim() || src));
+            const analysisReady = !analysisStatus || analysisStatus === "analyzed" || canGenerateFromSourceOnly;
             const statusDetail =
               busy
                 ? "Generando tablero ADN…"
@@ -128,6 +274,8 @@ export function VisualDnaSlotsLibrary({
                     ? "Preparando análisis visual…"
                     : analysisStatus === "analyzing"
                       ? "Analizando imagen con visión remota…"
+                      : analysisStatus === "failed" && canGenerateFromSourceOnly
+                        ? "Se generará desde la imagen fuente."
                       : slot.status === "generating"
                         ? "Generando tablero ADN…"
                         : null;
@@ -336,9 +484,9 @@ export function VisualDnaSlotsLibrary({
                 <div className="lg:col-span-8">
                   <p className="mb-1 text-[9px] font-black uppercase text-zinc-500">Mosaico de sugerencias</p>
                   <div className="overflow-hidden rounded-[5px] border border-zinc-200 bg-zinc-50">
-                    {thumb(open.mosaic.imageUrl) ? (
+                    {thumb(open.mosaic.imageUrl) || thumb(signedMosaicUrls[open.id]) ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={open.mosaic.imageUrl} alt="Mosaico" className="w-full object-contain" />
+                      <img src={thumb(open.mosaic.imageUrl) || thumb(signedMosaicUrls[open.id]) || ""} alt="Mosaico" className="w-full object-contain" />
                     ) : (
                       <p className="p-4 text-[11px] text-zinc-500">Sin mosaico generado.</p>
                     )}
@@ -369,19 +517,39 @@ export function VisualDnaSlotsLibrary({
                 </section>
                 <section className="rounded-[5px] border border-zinc-100 bg-zinc-50/80 p-2">
                   <p className="text-[9px] font-black uppercase text-zinc-600">Personas</p>
-                  <p className="text-[10px] text-zinc-700">{open.people.notes ?? "—"}</p>
+                  <p className="whitespace-pre-line text-[10px] text-zinc-700">
+                    {formatMosaicAdviceForDisplay(open, "people") ||
+                      slotAssetNotes(open.people) ||
+                      cleanVisualSectionNotes(open.people.notes, "people", openHasMosaic) ||
+                      "—"}
+                  </p>
                 </section>
                 <section className="rounded-[5px] border border-zinc-100 bg-zinc-50/80 p-2">
                   <p className="text-[9px] font-black uppercase text-zinc-600">Objetos / producto</p>
-                  <p className="text-[10px] text-zinc-700">{open.objects.notes ?? "—"}</p>
+                  <p className="whitespace-pre-line text-[10px] text-zinc-700">
+                    {formatMosaicAdviceForDisplay(open, "objects") ||
+                      slotAssetNotes(open.objects) ||
+                      cleanVisualSectionNotes(open.objects.notes, "objects", openHasMosaic, open.hero.description) ||
+                      "—"}
+                  </p>
                 </section>
                 <section className="rounded-[5px] border border-zinc-100 bg-zinc-50/80 p-2">
                   <p className="text-[9px] font-black uppercase text-zinc-600">Entornos</p>
-                  <p className="text-[10px] text-zinc-700">{open.environments.notes ?? "—"}</p>
+                  <p className="whitespace-pre-line text-[10px] text-zinc-700">
+                    {formatMosaicAdviceForDisplay(open, "environments") ||
+                      slotAssetNotes(open.environments) ||
+                      cleanVisualSectionNotes(open.environments.notes, "environments", openHasMosaic) ||
+                      "—"}
+                  </p>
                 </section>
                 <section className="rounded-[5px] border border-zinc-100 bg-zinc-50/80 p-2">
                   <p className="text-[9px] font-black uppercase text-zinc-600">Texturas</p>
-                  <p className="text-[10px] text-zinc-700">{open.textures.notes ?? "—"}</p>
+                  <p className="whitespace-pre-line text-[10px] text-zinc-700">
+                    {formatMosaicAdviceForDisplay(open, "textures") ||
+                      slotAssetNotes(open.textures) ||
+                      cleanVisualSectionNotes(open.textures.notes, "textures", openHasMosaic) ||
+                      "—"}
+                  </p>
                 </section>
                 <section className="rounded-[5px] border border-zinc-100 bg-zinc-50/80 p-2 sm:col-span-2">
                   <p className="text-[9px] font-black uppercase text-zinc-600">Estilo general</p>

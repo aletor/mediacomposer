@@ -18,6 +18,10 @@ import {
   learningRowMatchesCanvasNode,
 } from "@/lib/brain/brain-connected-signals-ui";
 import { countVisualImageAnalysisDisposition } from "@/lib/brain/brain-learning-provenance";
+import {
+  BRAIN_TELEMETRY_SYNCED_EVENT,
+  type BrainTelemetrySyncedEventDetail,
+} from "@/lib/brain/brain-telemetry-client";
 import { fetchBrainTelemetrySummaryByNodeId } from "@/lib/brain/fetch-brain-telemetry-summary";
 import { labelForBrainNodeSource, stripLearningValueUiPrefixes } from "@/lib/brain/brain-review-labels";
 import { readResponseJson } from "@/lib/read-response-json";
@@ -259,6 +263,22 @@ export const ProjectBrainNode = memo(({ id, data, selected }: NodeProps<any>) =>
 
   const projectId = ctx?.projectScopeId && ctx.projectScopeId !== "__local__" ? ctx.projectScopeId : null;
 
+  const refreshTelemetrySummary = useCallback(async () => {
+    if (!projectId?.trim()) {
+      setTelemetryByNodeId({});
+      return;
+    }
+    const clientIds = brainClientIdsKey ? brainClientIdsKey.split("|").filter(Boolean) : [];
+    try {
+      const map = clientIds.length
+        ? await fetchBrainTelemetrySummaryByNodeId(projectId.trim(), clientIds)
+        : {};
+      setTelemetryByNodeId(map);
+    } catch {
+      setTelemetryByNodeId({});
+    }
+  }, [projectId, brainClientIdsKey]);
+
   useEffect(() => {
     if (!projectId?.trim()) {
       const t = window.setTimeout(() => {
@@ -296,6 +316,20 @@ export const ProjectBrainNode = memo(({ id, data, selected }: NodeProps<any>) =>
       cancelled = true;
     };
   }, [projectId, brainClientIdsKey]);
+
+  useEffect(() => {
+    if (!projectId?.trim() || !brainClientIds.length) return;
+    const knownClientIds = new Set(brainClientIds);
+    const handleTelemetrySynced = (event: Event) => {
+      const detail = (event as CustomEvent<BrainTelemetrySyncedEventDetail>).detail;
+      if (!detail || detail.projectId !== projectId.trim() || !knownClientIds.has(detail.nodeId)) return;
+      void refreshTelemetrySummary();
+    };
+    window.addEventListener(BRAIN_TELEMETRY_SYNCED_EVENT, handleTelemetrySynced);
+    return () => {
+      window.removeEventListener(BRAIN_TELEMETRY_SYNCED_EVENT, handleTelemetrySynced);
+    };
+  }, [projectId, brainClientIds, refreshTelemetrySummary]);
 
   const pendingByNodeId = useMemo(() => buildPendingCountByNodeId(pendingRows), [pendingRows]);
 

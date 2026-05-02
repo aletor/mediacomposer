@@ -69,6 +69,17 @@ export const GEMINI_VEO_USD_PER_SECOND = 0.05;
 /** Seedance (Ark): orientativo por segundo de salida (la API no devuelve coste detallado). */
 export const SEEDANCE_USD_PER_SECOND = 0.04;
 
+/** AWS Fargate Linux/x86 us-east-1, precio orientativo por segundo. */
+export const AWS_FARGATE_US_EAST_1_VCPU_SECOND = 0.000011244;
+export const AWS_FARGATE_US_EAST_1_GB_SECOND = 0.000001235;
+
+/** AWS storage/logs orientativo para panel admin. */
+export const AWS_S3_STANDARD_USD_PER_GB_MONTH = 0.023;
+export const AWS_ECR_PRIVATE_STORAGE_USD_PER_GB_MONTH = 0.10;
+export const AWS_CLOUDWATCH_LOGS_INGEST_USD_PER_GB = 0.50;
+export const AWS_CLOUDWATCH_LOGS_STORAGE_USD_PER_GB_MONTH = 0.03;
+export const AWS_CODEBUILD_GENERAL1_SMALL_USD_PER_MINUTE = 0.005;
+
 /** Multiplicador por resolución Veo (720p < 1080p < 4K) para la estimación en UI. */
 export function veoResolutionMultiplier(resolution: string | undefined): number {
   const r = (resolution || "1080p").toLowerCase();
@@ -93,6 +104,19 @@ export function estimateGeminiVeoVideoUsd(durationSeconds: number): number {
 export function estimateSeedanceVideoUsd(durationSeconds: number): number {
   const d = Math.max(0, durationSeconds);
   return Math.round(d * SEEDANCE_USD_PER_SECOND * 1_000_000) / 1_000_000;
+}
+
+export function estimateAwsFargateUsd(args: {
+  runtimeSeconds: number;
+  vcpu: number;
+  memoryGb: number;
+}): number {
+  const billedSeconds = Math.max(60, Math.ceil(args.runtimeSeconds));
+  const cost =
+    billedSeconds *
+    (args.vcpu * AWS_FARGATE_US_EAST_1_VCPU_SECOND +
+      args.memoryGb * AWS_FARGATE_US_EAST_1_GB_SECOND);
+  return Math.round(cost * 1_000_000) / 1_000_000;
 }
 
 /** Estimación previa (UI) según modelo, resolución (Veo), ratio y duración. */

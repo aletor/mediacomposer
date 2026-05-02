@@ -67,7 +67,7 @@ export type MediaListItem = {
     voiceoverPlan?: unknown;
     createdAt?: string;
     updatedAt?: string;
-  };
+  } & Record<string, unknown>;
 };
 
 export type MediaListGroup = {

@@ -34,15 +34,16 @@ export async function POST(req: NextRequest) {
     if ("record" in result) {
       const { record } = result;
       /**
-       * En desarrollo, tras un flush `export`, ejecutar el processor sobre ese lote para que
-       * aparezcan candidatos en Brain Studio sin worker aparte (memoria mock).
+       * En desarrollo, tras un flush `export` o una sugerencia aceptada, ejecutar el processor
+       * sobre ese lote para que aparezcan candidatos en Brain Studio sin worker aparte (memoria mock).
        * Desactivar: BRAIN_DEV_SKIP_EXPORT_PROCESSOR=1
        */
-      const runExportProcessor =
+      const hasAcceptedSuggestion = record.batch.events?.some((event) => event.kind === "SUGGESTION_ACCEPTED") ?? false;
+      const runLearningProcessor =
         process.env.NODE_ENV === "development" &&
         process.env.BRAIN_DEV_SKIP_EXPORT_PROCESSOR !== "1" &&
-        record.batch.flushReason === "export";
-      if (runExportProcessor) {
+        (record.batch.flushReason === "export" || hasAcceptedSuggestion);
+      if (runLearningProcessor) {
         void (async () => {
           try {
             const { MockBrainLearningExtractionLlm, TelemetryProcessor } = await import(

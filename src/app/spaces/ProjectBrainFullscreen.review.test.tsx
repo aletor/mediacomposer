@@ -15,6 +15,25 @@ function assetsMetadataForTests(): ProjectAssetsMetadata {
   });
   return {
     ...base,
+    knowledge: {
+      ...base.knowledge,
+      corporateContext: "Resumen recibido en el pozo para la marca de prueba.",
+      documents: [
+        {
+          id: "doc-brain-review-1",
+          name: "Brief de marca.txt",
+          size: 1024,
+          mime: "text/plain",
+          scope: "core",
+          brainSourceScope: "brand",
+          type: "document",
+          format: "txt",
+          status: "Analizado",
+          uploadedAt: "2026-01-01T10:00:00.000Z",
+          extractedContext: "Resumen recibido en el pozo para la marca de prueba.",
+        },
+      ],
+    },
     strategy: {
       ...base.strategy,
       visualStyle: {
@@ -140,7 +159,10 @@ describe("ProjectBrainFullscreen — pestaña Por revisar", () => {
     const dialog = await screen.findByRole("dialog");
     const asideHeading = within(dialog).getAllByText(/^Identidad visual$/i)[0];
     expect(asideHeading).toBeInTheDocument();
-    await user.click(screen.getByTestId("brain-tab-knowledge"));
+    await user.click(screen.getByTestId("brain-tab-sources"));
+    await user.click(screen.getByTestId("brain-subtab-knowledge"));
+    expect(await within(dialog).findByText(/Brief de marca\.txt/i)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: /Ver ADN/i }));
     expect(await within(dialog).findByText(/Resumen recibido en el pozo/i)).toBeInTheDocument();
   });
 
@@ -188,7 +210,7 @@ describe("ProjectBrainFullscreen — pestaña Por revisar", () => {
     expect(screen.getByText(/Detectamos ajustes repetidos/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Ver por qué/i })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Ver por qué/i }));
-    expect(await screen.findByText(/Origen en el lienzo/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Origen: una acción reciente/i)).toBeInTheDocument();
   });
 
   it("muestra “Por qué Brain propone esto” cuando el pending trae decisionTrace", async () => {
@@ -216,7 +238,7 @@ describe("ProjectBrainFullscreen — pestaña Por revisar", () => {
     const toggle = await screen.findByText(/Por qué Brain propone esto/i);
     expect(toggle).toBeInTheDocument();
     await user.click(toggle);
-    expect(await screen.findByText(/Learning candidate/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Propuesta de aprendizaje/i)).toBeInTheDocument();
     expect(screen.getByText(/Origen visual\/restudy/i)).toBeInTheDocument();
     expect(screen.getByText(/Inputs principales:/i)).toBeInTheDocument();
     expect(screen.getByText(/Warnings:/i)).toBeInTheDocument();

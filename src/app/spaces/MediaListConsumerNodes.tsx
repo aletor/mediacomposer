@@ -3,14 +3,14 @@
 import React, { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Position, type NodeProps, useEdges, useNodes } from "@xyflow/react";
-import { Clipboard, Download, File, Film, Layers, Music, Play, Rows3, Search, Video, X } from "lucide-react";
+import { Clipboard, Download, File, Layers, Music, Search, X } from "lucide-react";
 
+import { downloadS3Object, forceDownloadUrl, sanitizeDownloadFilename } from "@/lib/browser-download";
 import { tryExtractKnowledgeFilesKeyFromUrl } from "@/lib/s3-media-hydrate";
 
 import { FoldderDataHandle } from "./FoldderDataHandle";
 import {
   buildMediaListManifest,
-  buildVideoEditorClipsFromMediaList,
   isMediaListItemDownloadable,
   readMediaListFromNode,
 } from "./media-list-consumers";
@@ -98,13 +98,13 @@ async function resolveMediaListItemDownloadUrl(item: MediaListItem): Promise<str
   return direct && !direct.startsWith("asset://") ? direct : null;
 }
 
-function downloadUrl(url: string, filename?: string) {
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename || "";
-  anchor.target = "_blank";
-  anchor.rel = "noreferrer";
-  anchor.click();
+function mediaListDownloadFilename(item: MediaListItem): string {
+  const base = sanitizeDownloadFilename(item.title || item.id || "media");
+  if (/\.[a-z0-9]{2,8}$/i.test(base)) return base;
+  if (item.mediaType === "video") return `${base}.mp4`;
+  if (item.mediaType === "image") return `${base}.jpg`;
+  if (item.mediaType === "audio") return `${base}.mp3`;
+  return base;
 }
 
 function mediaListStats(output: MediaListOutput | null) {
@@ -217,8 +217,14 @@ function ExportMultimediaStudio({
       return;
     }
     for (const item of downloadable) {
+      const filename = mediaListDownloadFilename(item);
+      const key = resolveMediaListS3Key(item);
+      if (key) {
+        downloadS3Object(key, filename);
+        continue;
+      }
       const url = await resolveMediaListItemDownloadUrl(item);
-      if (url) downloadUrl(url, `${item.title || item.id}`);
+      if (url) await forceDownloadUrl(url, filename);
     }
     setNotice(`${label}: ${downloadable.length} descarga(s) iniciada(s).${skipped ? ` ${skipped} pendiente(s) no incluidos.` : ""} ZIP queda preparado para una fase posterior.`);
   }, []);
@@ -410,88 +416,3 @@ export const ExportMultimediaNode = memo(function ExportMultimediaNode({ id, dat
 });
 
 export const ExportMultipleNode = ExportMultimediaNode;
-
-export const VideoEditorNode = memo(function VideoEditorNode({ id, data, selected }: NodeProps) {
-  const output = useConnectedMediaList(id);
-  const clips = useMemo(() => output ? buildVideoEditorClipsFromMediaList(output) : [], [output]);
-  const placeholders = output?.items.filter((item) => item.mediaType === "placeholder") ?? [];
-  const totalDuration = clips.reduce((sum, clip) => sum + clip.durationSeconds, 0);
-
-  return (
-    <div className={cx("relative w-[430px] rounded-[30px] border bg-[#111827]/94 p-4 text-white shadow-[0_18px_60px_rgba(0,0,0,0.32)] backdrop-blur-xl", selected ? "border-cyan-300/55" : "border-white/12")}>
-      <FoldderDataHandle type="target" position={Position.Left} id="media_list" dataType="generic" />
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-100/45">Video Editor</div>
-          <h3 className="mt-1 text-lg font-black tracking-[-0.04em]">{String((data as { label?: unknown }).label || "Timeline")}</h3>
-        </div>
-        <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-cyan-300/15 text-cyan-50">
-          <Film size={18} />
-        </div>
-      </div>
-
-      {!output ? (
-        <div className="mt-4 rounded-3xl border border-dashed border-white/12 bg-white/[0.04] p-5 text-center">
-          <Video className="mx-auto text-white/32" size={24} />
-          <div className="mt-3 text-sm font-black uppercase tracking-[0.12em] text-white/75">Sin media_list</div>
-          <p className="mt-1 text-xs leading-relaxed text-white/42">Conecta Cine para crear una timeline inicial con vídeos o still frames.</p>
-        </div>
-      ) : (
-        <>
-          <div className="mt-4 grid grid-cols-3 gap-2">
-            <div className="rounded-2xl bg-white/[0.06] p-3"><div className="text-[10px] font-bold uppercase text-white/35">Clips</div><div className="mt-1 text-lg font-black">{clips.length}</div></div>
-            <div className="rounded-2xl bg-white/[0.06] p-3"><div className="text-[10px] font-bold uppercase text-white/35">Duración</div><div className="mt-1 text-lg font-black">{totalDuration}s</div></div>
-            <div className="rounded-2xl bg-white/[0.06] p-3"><div className="text-[10px] font-bold uppercase text-white/35">Pendientes</div><div className="mt-1 text-lg font-black">{placeholders.length}</div></div>
-          </div>
-
-          <div className="mt-4 rounded-3xl border border-white/10 bg-black/25 p-3">
-            <div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.14em] text-white/45">
-              <Rows3 size={13} />Timeline inicial
-            </div>
-            <div className="flex min-h-[72px] items-stretch gap-1 overflow-x-auto pb-1">
-              {clips.length ? clips.map((clip) => (
-                <div
-                  key={clip.id}
-                  className={cx("flex min-w-[96px] flex-col justify-between rounded-2xl border px-3 py-2", clip.mediaType === "video" ? "border-cyan-200/20 bg-cyan-300/12" : "border-amber-200/18 bg-amber-300/10")}
-                  style={{ width: Math.max(92, clip.durationSeconds * 18) }}
-                >
-                  <div className="truncate text-xs font-black">{clip.title}</div>
-                  <div className="mt-2 flex items-center justify-between text-[10px] font-bold uppercase text-white/46">
-                    <span>{clip.mediaType}</span>
-                    <span>{clip.durationSeconds}s</span>
-                  </div>
-                </div>
-              )) : (
-                <div className="flex flex-1 items-center justify-center rounded-2xl border border-dashed border-white/12 text-xs text-white/35">
-                  No hay clips insertables todavía.
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="mt-4 max-h-[260px] space-y-2 overflow-auto pr-1">
-            {output.items.slice(0, 10).map((item) => (
-              <div key={item.id} className="grid grid-cols-[64px_1fr] gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-2">
-                <MediaThumb item={item} compact />
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-black">{item.title}</div>
-                  <div className="mt-1 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.08em] text-white/38">
-                    <span>{item.mediaType}</span>
-                    <span>·</span>
-                    <span>{item.status}</span>
-                    {item.sceneOrder ? <><span>·</span><span>Escena {item.sceneOrder}</span></> : null}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-4 rounded-2xl border border-cyan-200/12 bg-cyan-300/8 px-3 py-2 text-xs leading-relaxed text-cyan-50/62">
-            <Play size={13} className="mr-1 inline" />
-            Si una escena tiene vídeo efectivo, el timeline prioriza ese vídeo y no duplica sus frames.
-          </div>
-        </>
-      )}
-    </div>
-  );
-});

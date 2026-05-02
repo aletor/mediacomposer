@@ -392,6 +392,7 @@ export type VisualCapsule = {
   environments: VisualCapsuleSuggestion[];
   textures: VisualCapsuleSuggestion[];
   objects: VisualCapsuleSuggestion[];
+  generalLooks?: VisualCapsuleSuggestion[];
   moodTags?: string[];
   visualTraits?: string[];
   fidelityScore?: number;
@@ -806,6 +807,14 @@ function normalizeVisualCapsules(raw: unknown): VisualCapsule[] {
             .filter((x): x is VisualCapsuleSuggestion => Boolean(x))
             .slice(0, 20)
         : [],
+      ...(Array.isArray(o.generalLooks)
+        ? {
+            generalLooks: o.generalLooks
+              .map((x) => normalizeVisualCapsuleSuggestion(x, "hero"))
+              .filter((x): x is VisualCapsuleSuggestion => Boolean(x))
+              .slice(0, 20),
+          }
+        : {}),
       ...(Array.isArray(o.moodTags)
         ? { moodTags: o.moodTags.filter((x): x is string => typeof x === "string" && x.trim().length > 0).slice(0, 24) }
         : {}),

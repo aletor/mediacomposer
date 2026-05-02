@@ -7,6 +7,15 @@ import { readJsonStore } from "@/lib/json-persistence";
 import { getUsageDeepReportSince } from "@/lib/api-usage";
 import { getApiServiceControls } from "@/lib/api-usage-controls";
 import { USAGE_PERIOD_START_ISO } from "@/lib/usage-constants";
+import {
+  AWS_CLOUDWATCH_LOGS_INGEST_USD_PER_GB,
+  AWS_CLOUDWATCH_LOGS_STORAGE_USD_PER_GB_MONTH,
+  AWS_CODEBUILD_GENERAL1_SMALL_USD_PER_MINUTE,
+  AWS_ECR_PRIVATE_STORAGE_USD_PER_GB_MONTH,
+  AWS_FARGATE_US_EAST_1_GB_SECOND,
+  AWS_FARGATE_US_EAST_1_VCPU_SECOND,
+  AWS_S3_STANDARD_USD_PER_GB_MONTH,
+} from "@/lib/pricing-config";
 import { collectS3KeysFromProjectSpaces } from "@/lib/s3-media-hydrate";
 import {
   readAllDdbProjects as readAllDdbProjectsStore,
@@ -93,6 +102,17 @@ type AdminCalendarDay = {
   activeUsers: number;
   events: number;
   sessions: number;
+};
+
+type AdminCostComponent = {
+  id: string;
+  label: string;
+  category: "measured" | "estimated" | "check";
+  status: "measured" | "estimated" | "configured" | "not_tracked";
+  usage: string;
+  costUsd: number;
+  period: "period" | "monthly" | "per_build" | "variable";
+  note: string;
 };
 
 function normalizeEmail(email: string | null | undefined): string {
@@ -196,6 +216,14 @@ function getTypeFromKey(key: string): string {
 function getSpaceIdFromKey(key: string): string | null {
   const m = key.match(/^knowledge-files\/spaces\/([^/]+)\//);
   return m?.[1] ?? null;
+}
+
+function roundUsd(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000;
+}
+
+function bytesToGb(bytes: number): number {
+  return Math.max(0, bytes) / 1024 / 1024 / 1024;
 }
 
 function estimateSessionsAndMinutes(isoDates: string[]): {
@@ -486,15 +514,134 @@ export async function GET(req: NextRequest) {
       .slice(0, 120);
 
     const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
+    const renderFiles = files.filter((f) => f.key.includes("/renders/video-editor/"));
+    const renderBytes = renderFiles.reduce((acc, f) => acc + f.size, 0);
     const orphanFiles = files.filter((f) => f.orphan);
     const orphanBytes = orphanFiles.reduce((acc, f) => acc + f.size, 0);
     const estimatedMinutes = users.reduce((acc, u) => acc + u.estimatedMinutes, 0);
     const sessions = users.reduce((acc, u) => acc + u.sessionCount, 0);
+    const serviceCost = new Map(apiUsage.byService.map((row) => [row.serviceId, row]));
+    const fargateUsage = serviceCost.get("aws-fargate-render");
+    const infraServiceIds = [
+      "aws-fargate-render",
+      "aws-codebuild-render-worker",
+      "aws-ecr-render-worker",
+      "aws-cloudwatch-logs",
+      "s3-assets",
+      "s3-knowledge",
+      "s3-render-storage",
+    ] as const;
+    const infraRows = infraServiceIds.map((id) => serviceCost.get(id)).filter((row): row is NonNullable<typeof row> => Boolean(row));
+    const knownInfraUsd = roundUsd(infraRows.reduce((acc, row) => acc + row.costUsd, 0));
+    const s3StorageMonthlyUsd = roundUsd(bytesToGb(totalBytes) * AWS_S3_STANDARD_USD_PER_GB_MONTH);
+    const s3RenderStorageMonthlyUsd = roundUsd(bytesToGb(renderBytes) * AWS_S3_STANDARD_USD_PER_GB_MONTH);
+    const operationalCosts = {
+      generatedAt: new Date().toISOString(),
+      pricingRegion: process.env.AWS_REGION?.trim() || "us-east-1",
+      fargate: {
+        configured: Boolean(process.env.AWS_ECS_CLUSTER && process.env.AWS_ECS_TASK_DEFINITION),
+        cluster: process.env.AWS_ECS_CLUSTER || "",
+        taskDefinition: process.env.AWS_ECS_TASK_DEFINITION || "",
+        vcpu: 2,
+        memoryGb: 4,
+        minimumBilledSeconds: 60,
+        vcpuSecondUsd: AWS_FARGATE_US_EAST_1_VCPU_SECOND,
+        gbSecondUsd: AWS_FARGATE_US_EAST_1_GB_SECOND,
+        renders: fargateUsage?.calls ?? 0,
+        costUsd: fargateUsage?.costUsd ?? 0,
+      },
+      storage: {
+        bucket: BUCKET_NAME,
+        totalBytes,
+        renderBytes,
+        s3StandardUsdPerGbMonth: AWS_S3_STANDARD_USD_PER_GB_MONTH,
+        estimatedMonthlyUsd: s3StorageMonthlyUsd,
+        estimatedRenderMonthlyUsd: s3RenderStorageMonthlyUsd,
+      },
+      totals: {
+        knownInfrastructureUsd: knownInfraUsd,
+        estimatedMonthlyStorageUsd: s3StorageMonthlyUsd,
+        estimatedKnownPlusMonthlyStorageUsd: roundUsd(knownInfraUsd + s3StorageMonthlyUsd),
+      },
+      components: [
+        {
+          id: "aws-fargate-render",
+          label: "AWS Fargate · Render Video Editor",
+          category: "measured",
+          status: fargateUsage?.calls ? "measured" : "configured",
+          usage: `${fargateUsage?.calls ?? 0} render(s) registrados`,
+          costUsd: fargateUsage?.costUsd ?? 0,
+          period: "period",
+          note: "Se registra al terminar el job: 2 vCPU + 4 GB, Linux/x86, mínimo 60s.",
+        },
+        {
+          id: "s3-storage",
+          label: "AWS S3 · Storage total",
+          category: "estimated",
+          status: "estimated",
+          usage: `${files.length} objeto(s) · ${Math.round(bytesToGb(totalBytes) * 1000) / 1000} GB`,
+          costUsd: s3StorageMonthlyUsd,
+          period: "monthly",
+          note: "Estimación S3 Standard. No incluye requests ni transferencia.",
+        },
+        {
+          id: "s3-render-storage",
+          label: "AWS S3 · Renders Video Editor",
+          category: "estimated",
+          status: "estimated",
+          usage: `${renderFiles.length} render object(s) · ${Math.round(bytesToGb(renderBytes) * 1000) / 1000} GB`,
+          costUsd: s3RenderStorageMonthlyUsd,
+          period: "monthly",
+          note: "Subconjunto de S3 dedicado a outputs MP4, manifests y status de render.",
+        },
+        {
+          id: "aws-ecr-render-worker",
+          label: "AWS ECR · Imagen Docker render-worker",
+          category: "check",
+          status: "not_tracked",
+          usage: "1 repositorio ECR esperado",
+          costUsd: 0,
+          period: "monthly",
+          note: `No medido por la app todavía. Referencia: storage aprox. $${AWS_ECR_PRIVATE_STORAGE_USD_PER_GB_MONTH}/GB-mes.`,
+        },
+        {
+          id: "aws-codebuild-render-worker",
+          label: "AWS CodeBuild · Builds worker",
+          category: "check",
+          status: "not_tracked",
+          usage: "Solo cuando reconstruyes/provisionas el worker",
+          costUsd: 0,
+          period: "per_build",
+          note: `No medido por la app todavía. Referencia small Linux aprox. $${AWS_CODEBUILD_GENERAL1_SMALL_USD_PER_MINUTE}/min.`,
+        },
+        {
+          id: "aws-cloudwatch-logs",
+          label: "AWS CloudWatch · Logs Fargate/CodeBuild",
+          category: "check",
+          status: "not_tracked",
+          usage: "Logs de worker y builds",
+          costUsd: 0,
+          period: "variable",
+          note: `No medido por la app todavía. Referencia: ingest aprox. $${AWS_CLOUDWATCH_LOGS_INGEST_USD_PER_GB}/GB y storage $${AWS_CLOUDWATCH_LOGS_STORAGE_USD_PER_GB_MONTH}/GB-mes.`,
+        },
+        {
+          id: "aws-data-transfer",
+          label: "AWS Data transfer / descargas",
+          category: "check",
+          status: "not_tracked",
+          usage: "Descargas de MP4 y assets desde S3",
+          costUsd: 0,
+          period: "variable",
+          note: "No medido por la app todavía. Depende de tráfico saliente y región.",
+        },
+      ] satisfies AdminCostComponent[],
+    };
 
     return NextResponse.json({
       generatedAt: new Date().toISOString(),
       apiUsage,
       apiControls: Object.values(apiControls),
+      operationalCosts,
       summary: {
         users: users.length,
         usersOnlineNow: onlineUsers.length,
@@ -509,6 +656,7 @@ export async function GET(req: NextRequest) {
         apiCalls: apiUsage.totals.calls,
         apiCostUsd: apiUsage.totals.costUsd,
         apiTokens: apiUsage.totals.totalTokens,
+        operationalCostUsd: operationalCosts.totals.estimatedKnownPlusMonthlyStorageUsd,
       },
       onlineUsers,
       calendar,

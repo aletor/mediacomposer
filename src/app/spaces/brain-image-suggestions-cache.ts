@@ -492,6 +492,27 @@ export function getBrainImageSuggestionEntry(key: string): BrainImageSuggestionE
   return cache.get(key);
 }
 
+export function getLatestBrainImageSuggestionEntryForField(
+  scopeId: string | null | undefined,
+  nodeId: string,
+  fieldId: string,
+): BrainImageSuggestionEntry | undefined {
+  hydrateFromStorage();
+  const prefix = `${scopePrefix(scopeId)}${nodeId}::${fieldId}`;
+  let latest: BrainImageSuggestionEntry | undefined;
+  let latestKey: string | null = null;
+  for (const [key, entry] of cache.entries()) {
+    if (key !== prefix && !key.startsWith(`${prefix}::p_`)) continue;
+    if (!entry.suggestions.some((s) => isRenderableImageSrc((s.src || "").trim()))) continue;
+    if (!latest || entry.updatedAt > latest.updatedAt) {
+      latest = entry;
+      latestKey = key;
+    }
+  }
+  if (latest && latestKey) void refreshEntryPresignedUrls(latestKey, latest);
+  return latest;
+}
+
 export function listAllBrainGeneratedSuggestionUrls(scopeId?: string | null): string[] {
   hydrateFromStorage();
   const out: string[] = [];

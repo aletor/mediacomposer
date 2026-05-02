@@ -29,15 +29,17 @@ function excerptContext(corporateContext: string, max = 1800): string {
 
 /**
  * Construye prompt + imágenes para el mismo pipeline Nano Banana / Gemini que el tablero global,
- * pero anclado a UNA fila de inventario (imagen fuente) y enriquecido con contexto Brain + reglas seguras.
+ * pero anclado a UNA fila de inventario (imagen fuente). En modo cápsula/slot no se mezcla
+ * contexto visual de otros slots: cada ADN por imagen debe nacer aislado.
  */
 export function buildVisualDnaSlotMosaicPayload(params: {
   slotId: string;
   sourceDocumentId?: string;
   row: BrainVisualCollageInventoryRow;
-  /** Agregado global opcional (refuerza paleta/mood sin mezclar otros slots). */
+  /** Agregado calculado solo desde la imagen del slot. No debe venir de todo Brain. */
   aggregated: AggregatedVisualPatterns | null;
   safeCreativeRules?: SafeCreativeRules | null;
+  /** Solo para compatibilidad legacy. En cápsulas visuales debe llegar vacío. */
   corporateContext?: string;
 }): { prompt: string; images: string[]; safeRulesDigest: string[]; brainContextSnippet: string } {
   const safeRulesDigest = buildSafeCreativeRulesDigestForMosaic(params.safeCreativeRules ?? undefined);
@@ -56,6 +58,13 @@ export function buildVisualDnaSlotMosaicPayload(params: {
   if (!images.length && directRef) {
     images = [directRef];
   }
+  const basePrompt =
+    directRef && base.images.length === 0
+      ? base.prompt.replace(
+          "No hay referencias binarias adjuntas: inventa escenas fotorrealistas coherentes con el texto de marca.",
+          "Referencia de imagen adjunta REF1: úsala como única fuente visual para todo el tablero; no mezcles otras imágenes.",
+        )
+      : base.prompt;
 
   const safetyBlock = [
     "REGLAS OBLIGATORIAS (ADN visual por imagen — modo slot):",
@@ -79,7 +88,7 @@ export function buildVisualDnaSlotMosaicPayload(params: {
   const contextBlock =
     brainSnippet.length > 0
       ? [
-          "CONTEXTO TEXTUAL DEL BRAIN (mezcla coherente; no transcribas texto literal en la imagen):",
+          "CONTEXTO TEXTUAL LOCAL DE ESTA IMAGEN (no mezcles otras cápsulas; no transcribas texto literal en la imagen):",
           brainSnippet,
         ].join("\n")
       : "";
@@ -92,10 +101,11 @@ export function buildVisualDnaSlotMosaicPayload(params: {
     contextBlock,
     contextBlock ? "" : null,
     "TAREA (recordatorio):",
-    "A partir de la imagen fuente (referencias adjuntas) y del contexto del Brain, genera un tablero ADN visual de marca.",
+    "A partir únicamente de la imagen fuente de este slot y de su análisis local, genera un tablero ADN visual independiente.",
     "El tablero debe contener paleta, héroe/conclusión general, personas/interacción, entornos, texturas y objetos.",
+    "No reutilices estilos, sujetos, paletas, personas, productos, entornos ni señales de otras cápsulas visuales o imágenes previas.",
     "",
-    base.prompt,
+    basePrompt,
   ]
     .filter((x) => x !== null && x !== "")
     .join("\n");

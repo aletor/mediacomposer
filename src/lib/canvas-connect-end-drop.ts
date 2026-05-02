@@ -198,6 +198,8 @@ export function defaultDataForCanvasDropNode(nodeType: string): Record<string, u
       return { label: "Export Multimedia" };
     case "exportMultiple":
       return { label: "Export Multiple" };
+    case "video_editor":
+      return { label: "Video Editor" };
     case "videoEditor":
       return { label: "Video Editor" };
     case "projectBrain":

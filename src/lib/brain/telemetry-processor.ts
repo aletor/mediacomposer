@@ -51,6 +51,8 @@ export type AggregatedTelemetryCore = {
     uniqueIgnored: number;
     acceptedTextSlots: number;
     acceptedImageSlots: number;
+    acceptedTextExamples: string[];
+    acceptedImageExamples: string[];
     ignoredTextByWave: Record<string, number>;
     ignoredImageByIdPrefix: Record<string, number>;
     textSlotsShownThenIgnored: number;
@@ -162,6 +164,13 @@ function countMapIncrement(m: Record<string, number>, key: string, delta = 1): v
   m[key] = (m[key] ?? 0) + delta;
 }
 
+function compactTelemetryExample(raw: unknown, max = 180): string {
+  if (typeof raw !== "string") return "";
+  const text = raw.replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 function textSlotKey(id: string): string | null {
   const m = /^txt:([^:]+):(\d+)$/.exec(id.trim());
   return m ? `${m[1]}:${m[2]}` : null;
@@ -185,6 +194,8 @@ export class TelemetryProcessor {
     const nodeTypes = new Set<BrainNodeType>();
     const ignoredTextByWave: Record<string, number> = {};
     const ignoredImageByIdPrefix: Record<string, number> = {};
+    const acceptedTextExamples: string[] = [];
+    const acceptedImageExamples: string[] = [];
 
     let acceptedTextSlots = 0;
     let acceptedImageSlots = 0;
@@ -198,7 +209,22 @@ export class TelemetryProcessor {
         const ev = e as TelemetryEvent;
         eventKindCounts[ev.kind] = (eventKindCounts[ev.kind] ?? 0) + 1;
         if (ev.kind === "SUGGESTION_SHOWN" && ev.suggestionId) shown.add(ev.suggestionId);
-        if (ev.kind === "SUGGESTION_ACCEPTED" && ev.suggestionId) accepted.add(ev.suggestionId);
+        if (ev.kind === "SUGGESTION_ACCEPTED" && ev.suggestionId) {
+          accepted.add(ev.suggestionId);
+          const slot = parseSuggestionSlot(ev.suggestionId);
+          if (slot.kind === "text" && acceptedTextExamples.length < 8) {
+            const example = compactTelemetryExample(ev.textPreview);
+            if (example) acceptedTextExamples.push(example);
+          }
+          if (slot.kind === "image" && acceptedImageExamples.length < 8) {
+            const parts = [
+              compactTelemetryExample(ev.assetRef, 90),
+              typeof ev.frameId === "string" && ev.frameId.trim() ? `frame:${ev.frameId.trim()}` : "",
+              ev.custom?.brainVisualSource ? `source:${String(ev.custom.brainVisualSource)}` : "",
+            ].filter(Boolean);
+            if (parts.length) acceptedImageExamples.push(parts.join(" · "));
+          }
+        }
         if (ev.kind === "SUGGESTION_IGNORED" && ev.suggestionId) ignored.add(ev.suggestionId);
         if (ev.kind === "MANUAL_OVERRIDE" && typeof ev.fieldRef === "string" && ev.fieldRef.trim()) {
           countMapIncrement(manualOverrideCounts, ev.fieldRef.trim(), 1);
@@ -269,6 +295,8 @@ export class TelemetryProcessor {
         uniqueIgnored: ignored.size,
         acceptedTextSlots,
         acceptedImageSlots,
+        acceptedTextExamples,
+        acceptedImageExamples,
         ignoredTextByWave,
         ignoredImageByIdPrefix,
         textSlotsShownThenIgnored,
@@ -545,22 +573,27 @@ export class MockBrainLearningExtractionLlm implements BrainLearningExtractionLl
           type: "CREATIVE_PREFERENCE",
           scope: "USER",
           topic: "creative_preference",
-          value: "Repeated manual changes to Brain length and tone presets in Designer.",
+          value: "sueles ajustar el tono y la longitud de las sugerencias de texto en Designer.",
           confidence: 0.44,
-          reasoning: "Stronger signal from manualOverrideCounts than from ignored suggestions alone.",
+          reasoning:
+            "Se han detectado cambios manuales en tono o longitud. Es una señal débil: conviene revisarla antes de guardarla como preferencia.",
           evidence: {
             sourceNodeIds: srcIds,
             sourceNodeTypes: srcTypes,
-            examples: ["manual:brain:lengthPreset", "manual:brain:tonePreset"],
+            examples: [
+              "Cambiaste la longitud de una sugerencia de Brain.",
+              "Cambiaste el tono de una sugerencia de Brain.",
+            ],
           },
         },
         {
           type: "PROJECT_MEMORY",
           scope: "PROJECT",
           topic: "project_memory",
-          value: "Telemetry tied to this node/session suggests project-scoped copy tuning, not global brand.",
+          value: "esta señal parece útil para este proyecto, pero todavía no debería cambiar la marca global.",
           confidence: 0.33,
-          reasoning: "Export/manual signals present; keep scoped until user confirms.",
+          reasoning:
+            "La evidencia viene de acciones recientes en un nodo conectado. Si te encaja, guárdalo solo para este proyecto.",
           evidence: {
             sourceNodeIds: srcIds,
             sourceNodeTypes: srcTypes,
@@ -570,9 +603,11 @@ export class MockBrainLearningExtractionLlm implements BrainLearningExtractionLl
           type: "OUTLIER",
           scope: "WORKSPACE",
           topic: "contextual_memory",
-          value: "Mixed accept/ignore on same text slots—contextual only, not a preference.",
+          value:
+            "hay señales mezcladas en las sugerencias de texto; por ahora conviene tratarlo como contexto puntual, no como una preferencia estable.",
           confidence: 0.22,
-          reasoning: "Weak pattern from ignores; down-ranked per policy.",
+          reasoning:
+            "Brain ha visto aceptaciones y descartes parecidos, así que no hay una dirección clara. Puedes guardarlo como contexto puntual o descartarlo.",
           evidence: {
             sourceNodeIds: srcIds,
             sourceNodeTypes: srcTypes,

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { GoogleGenAI } from "@google/genai";
 import {
   recordApiUsage,
   resolveUsageUserEmailFromRequest,
@@ -10,7 +11,6 @@ import {
   assertApiServiceEnabled,
 } from "@/lib/api-usage-controls";
 import {
-  collectAllReferenceImageUrlsOrdered,
   parseVideoRefSlots,
 } from "@/lib/video-generator-studio";
 import crypto from "crypto";
@@ -18,17 +18,93 @@ import crypto from "crypto";
 /** Vercel / hosting: permite polling largo (Veo suele tardar minutos). Ajusta según tu plan. */
 export const maxDuration = 300;
 
-/** Extrae el URI del vídeo en respuestas de operación larga (Veo 3.x). */
-function extractVeoVideoUri(pollData: Record<string, unknown>): string {
-  const response = pollData.response as Record<string, unknown> | undefined;
-  const gen = response?.generateVideoResponse as Record<string, unknown> | undefined;
-  if (!gen) return "";
-  const samples = gen.generatedSamples as Array<{ video?: { uri?: string } }> | undefined;
-  const u0 = samples?.[0]?.video?.uri;
-  if (typeof u0 === "string" && u0.length > 0) return u0;
-  const alt = gen.video as { uri?: string } | undefined;
-  if (typeof alt?.uri === "string" && alt.uri.length > 0) return alt.uri;
-  return "";
+type ExtractedVeoVideo = {
+  uri?: string;
+  base64?: string;
+  mimeType?: string;
+};
+
+type GeminiVeoImage = {
+  imageBytes: string;
+  mimeType: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function getByPath(root: unknown, path: Array<string | number>): unknown {
+  return path.reduce<unknown>((current, segment) => {
+    if (typeof segment === "number") return Array.isArray(current) ? current[segment] : undefined;
+    return isRecord(current) ? current[segment] : undefined;
+  }, root);
+}
+
+function looksLikeVideoUri(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  return /^https?:\/\//i.test(trimmed) || trimmed.startsWith("files/");
+}
+
+function findNestedVideo(root: unknown, seen = new Set<unknown>()): ExtractedVeoVideo | null {
+  if (!root || typeof root !== "object") return null;
+  if (seen.has(root)) return null;
+  seen.add(root);
+
+  if (isRecord(root)) {
+    const uri = root.uri || root.fileUri || root.downloadUri || root.url;
+    if (looksLikeVideoUri(uri)) {
+      return {
+        uri: uri.trim(),
+        mimeType: typeof root.mimeType === "string" ? root.mimeType : undefined,
+      };
+    }
+    const directVideoBase64 = root.videoBytes || root.bytesBase64Encoded || root.bytesBase64;
+    const looseDataBase64 = typeof root.data === "string" && root.data.length > 1000 ? root.data : undefined;
+    const base64 = directVideoBase64 || looseDataBase64;
+    if (typeof base64 === "string" && base64.length > 0) {
+      return {
+        base64,
+        mimeType: typeof root.mimeType === "string" ? root.mimeType : "video/mp4",
+      };
+    }
+    for (const value of Object.values(root)) {
+      const found = findNestedVideo(value, seen);
+      if (found) return found;
+    }
+  }
+
+  if (Array.isArray(root)) {
+    for (const value of root) {
+      const found = findNestedVideo(value, seen);
+      if (found) return found;
+    }
+  }
+
+  return null;
+}
+
+/** Extrae el vídeo en respuestas de operación larga (REST camelCase/snake_case y SDK-like). */
+function extractVeoVideo(pollData: Record<string, unknown>): ExtractedVeoVideo | null {
+  const knownPaths: Array<Array<string | number>> = [
+    ["response", "generateVideoResponse", "generatedSamples", 0, "video"],
+    ["response", "generateVideoResponse", "generatedSamples", 0, "video", "uri"],
+    ["response", "generateVideoResponse", "generatedSamples", 0, "video", "videoBytes"],
+    ["response", "generatedVideos", 0, "video"],
+    ["response", "generated_videos", 0, "video"],
+    ["response", "generatedSamples", 0, "video"],
+    ["response", "video"],
+  ];
+
+  for (const path of knownPaths) {
+    const value = getByPath(pollData, path);
+    if (looksLikeVideoUri(value)) return { uri: value.trim() };
+    const found = findNestedVideo(value);
+    if (found) return found;
+  }
+
+  return findNestedVideo(pollData);
 }
 
 export async function POST(req: NextRequest) {
@@ -58,60 +134,67 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "API Key not configured" }, { status: 500 });
     }
 
-    const BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
     const modelId = "veo-3.1-generate-preview";
-    const endpoint = `${BASE_URL}/models/${modelId}:predictLongRunning?key=${apiKey}`;
+    const ai = new GoogleGenAI({ apiKey });
 
-    const referenceImages: Array<Record<string, unknown>> = [];
-
-    const processImage = async (image: string, type: string) => {
-      if (!image) return;
+    const processImage = async (image: string): Promise<GeminiVeoImage | null> => {
+      if (!image) return null;
       let base64Data = "";
       let mimeType = "image/png";
 
-      if (image.startsWith('data:')) {
-        const splitParts = image.split(';base64,');
-        mimeType = splitParts[0].split(':')[1];
+      if (image.startsWith("data:")) {
+        const splitParts = image.split(";base64,");
+        mimeType = splitParts[0]?.split(":")[1] || "image/png";
         base64Data = splitParts[1];
-      } else if (image.startsWith('http')) {
+      } else if (image.startsWith("http")) {
         const imgRes = await fetch(image, {
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
           }
         });
-        if (!imgRes.ok) throw new Error(`Failed to fetch ${type}: ${imgRes.status}`);
+        if (!imgRes.ok) throw new Error(`Failed to fetch reference image: ${imgRes.status}`);
         const buffer = await imgRes.arrayBuffer();
         base64Data = Buffer.from(buffer).toString('base64');
         mimeType = imgRes.headers.get('content-type') || 'image/png';
       }
 
-      if (base64Data) {
-        referenceImages.push({
-          image: {
-            bytesBase64Encoded: base64Data,
-            mimeType: mimeType
-          },
-          referenceType: type
-        });
-      }
+      if (!base64Data) return null;
+      return {
+        imageBytes: base64Data,
+        mimeType,
+      };
     };
 
-    const orderedImages = collectAllReferenceImageUrlsOrdered({
-      firstFrame: typeof firstFrame === "string" ? firstFrame : null,
-      lastFrame: typeof lastFrame === "string" ? lastFrame : null,
-      extraSlots: parseVideoRefSlots(videoRefSlots),
-    });
-    for (let i = 0; i < orderedImages.length; i++) {
-      const tag =
-        i === 0 ? "first_frame" : i === 1 ? "last_frame" : `reference_${i}`;
-      await processImage(orderedImages[i], tag);
+    const firstImage =
+      typeof firstFrame === "string" && firstFrame.trim()
+        ? await processImage(firstFrame.trim())
+        : null;
+    const lastImage =
+      typeof lastFrame === "string" && lastFrame.trim()
+        ? await processImage(lastFrame.trim())
+        : null;
+
+    const slots = parseVideoRefSlots(videoRefSlots);
+    const referenceImages: Array<Record<string, unknown>> = [];
+    for (const slotUrl of Object.values(slots)) {
+      if (typeof slotUrl !== "string" || !slotUrl.trim()) continue;
+      if (referenceImages.length >= 3) break;
+      const image = await processImage(slotUrl.trim());
+      if (!image) continue;
+      referenceImages.push({
+        image,
+        referenceType: "ASSET",
+      });
     }
 
     // Construct Enhanced Prompt
-    let finalPrompt = prompt;
-    if (animationPrompt) finalPrompt += `. Animation: ${animationPrompt}`;
-    if (cameraPreset) finalPrompt += `. Camera motion: ${cameraPreset}`;
-    if (negativePrompt) finalPrompt += `. Negative prompt: avoid ${negativePrompt}`;
+    let finalPrompt = typeof prompt === "string" ? prompt.trim() : "";
+    if (!finalPrompt) {
+      return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
+    }
+    if (typeof animationPrompt === "string" && animationPrompt.trim()) finalPrompt += `. Animation: ${animationPrompt.trim()}`;
+    if (typeof cameraPreset === "string" && cameraPreset.trim()) finalPrompt += `. Camera motion: ${cameraPreset.trim()}`;
+    const negative = typeof negativePrompt === "string" ? negativePrompt.trim() : "";
 
     const rawDur = Number(durationSeconds);
     /** Veo 3.1: duraciones habituales 4 / 6 / 8 s. */
@@ -137,93 +220,86 @@ export async function POST(req: NextRequest) {
       resLower.includes("1080") || resLower.includes("4k");
     const effectiveDur = veoNeedsEight ? 8 : dur;
 
-    const payload = {
-      instances: [{
-        prompt: finalPrompt,
-        referenceImages: referenceImages.length > 0 ? referenceImages : undefined
-      }],
-      parameters: {
-        sampleCount: 1,
-        aspectRatio: ar,
-        resolution: resStr,
-        ...(effectiveDur > 0 ? { durationSeconds: effectiveDur } : {}),
-        ...(audio === true ? { generateAudio: true } : {}),
-        seed: seed !== undefined ? Number(seed) : undefined
-      }
+    const config: Record<string, unknown> = {
+      numberOfVideos: 1,
+      aspectRatio: ar,
+      resolution: resStr,
+      ...(effectiveDur > 0 ? { durationSeconds: effectiveDur } : {}),
+      ...(negative ? { negativePrompt: negative } : {}),
+      personGeneration: "allow_adult",
     };
+    if (lastImage) config.lastFrame = lastImage;
+    // Veo referenceImages are a separate text-to-video mode: do not combine with image/lastFrame.
+    if (!firstImage && !lastImage && referenceImages.length > 0) {
+      config.referenceImages = referenceImages;
+    }
 
-    console.log("[Gemini Video] Payload Structure Verified");
+    if (audio === true) {
+      console.warn("[Gemini Video] generateAudio requested but Gemini API SDK does not support it for this endpoint; continuing without audio flag.");
+    }
+    if (seed !== undefined) {
+      console.warn("[Gemini Video] seed requested but Gemini API SDK does not support it for this endpoint; continuing without seed.");
+    }
+
+    console.log("[Gemini Video] Payload Structure Verified (SDK)");
     console.log(`[Gemini Video] Calling ${modelId}...`);
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+
+    let operation = await ai.models.generateVideos({
+      model: modelId,
+      prompt: finalPrompt,
+      ...(firstImage ? { image: firstImage } : {}),
+      config,
     });
+    console.log(`[Gemini Video] Operation started: ${operation.name || "(unnamed)"}`);
 
-    const data = await response.json();
-    if (!response.ok) {
-      console.error("[Gemini Video] API ERROR:", JSON.stringify(data, null, 2));
-      return NextResponse.json({ error: data.error?.message || "Gemini Video API Error" }, { status: response.status });
-    }
-
-    const operationName = data.name as string;
-    if (!operationName || typeof operationName !== "string") {
-      console.error("[Gemini Video] Missing operation name:", data);
-      return NextResponse.json({ error: "No operation name from Gemini" }, { status: 502 });
-    }
-    console.log(`[Gemini Video] Operation started: ${operationName}`);
-
-    const pollPath = operationName.startsWith("http")
-      ? `${operationName}${operationName.includes("?") ? "&" : "?"}key=${encodeURIComponent(apiKey)}`
-      : `${BASE_URL}/${operationName}?key=${encodeURIComponent(apiKey)}`;
-
-    let videoUri = "";
+    let generatedVideo: ExtractedVeoVideo | null = null;
     const maxAttempts = 36; // 36 × 8s ≈ 288s + trabajo previo < maxDuration 300s
     const pollIntervalMs = 8000;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       console.log(`[Gemini Video] Polling attempt ${attempt}/${maxAttempts}...`);
       await new Promise((r) => setTimeout(r, pollIntervalMs));
+      operation = await ai.operations.getVideosOperation({ operation });
 
-      const pollRes = await fetch(pollPath);
-      const pollData = (await pollRes.json().catch(() => ({}))) as Record<string, unknown>;
-
-      if (!pollRes.ok) {
-        console.warn("[Gemini Video] Poll HTTP error:", pollRes.status, pollData);
-        continue;
-      }
-
-      if (pollData.done === true) {
-        if (pollData.error) {
-          const errObj = pollData.error as { message?: string; code?: number };
-          const msg = errObj?.message || JSON.stringify(pollData.error);
-          console.error("[Gemini Video] Operation error:", pollData.error);
+      if (operation.done === true) {
+        if (operation.error) {
+          const msg = String(operation.error.message || JSON.stringify(operation.error));
+          console.error("[Gemini Video] Operation error:", operation.error);
           throw new Error(`Veo: ${msg}`);
         }
-        videoUri = extractVeoVideoUri(pollData);
-        console.log(`[Gemini Video] Operation complete. Video URI: ${videoUri ? "ok" : "(empty)"}`);
-        if (videoUri) break;
-        console.error("[Gemini Video] done=true but no URI. Snapshot:", JSON.stringify(pollData).slice(0, 1200));
+        generatedVideo = extractVeoVideo(operation as unknown as Record<string, unknown>);
+        console.log(`[Gemini Video] Operation complete. Video: ${generatedVideo?.uri ? "uri" : generatedVideo?.base64 ? "base64" : "(empty)"}`);
+        if (generatedVideo?.uri || generatedVideo?.base64) break;
+        console.error("[Gemini Video] done=true but no URI. Snapshot:", JSON.stringify(operation).slice(0, 1200));
         throw new Error(
-          "Veo terminó pero no devolvió URI de vídeo. Revisa modelo/cuota o la respuesta en logs."
+          "Veo terminó pero no devolvió un vídeo descargable. Revisa modelo/cuota o la respuesta en logs."
         );
       }
     }
 
-    if (!videoUri) {
+    if (!generatedVideo?.uri && !generatedVideo?.base64) {
       throw new Error(
         "Tiempo de espera agotado: el vídeo no estuvo listo antes del límite del servidor. Prueba de nuevo o usa un plan con más tiempo de ejecución."
       );
     }
 
     // Download and upload to S3
-    console.log("[Gemini Video] Downloading generated video...");
-    const videoRes = await fetch(videoUri, {
-      headers: { 'x-goog-api-key': apiKey }
-    });
-    if (!videoRes.ok) throw new Error("Failed to download video from Google");
-    
-    const videoBuffer = Buffer.from(await videoRes.arrayBuffer());
+    let videoBuffer: Buffer;
+    if (generatedVideo.base64) {
+      console.log("[Gemini Video] Using generated base64 video payload...");
+      videoBuffer = Buffer.from(generatedVideo.base64, "base64");
+    } else {
+      const videoUri = generatedVideo.uri || "";
+      const downloadUrl = videoUri.startsWith("files/")
+        ? `https://generativelanguage.googleapis.com/v1beta/${videoUri}:download?key=${encodeURIComponent(apiKey)}`
+        : videoUri;
+      console.log("[Gemini Video] Downloading generated video...");
+      const videoRes = await fetch(downloadUrl, {
+        headers: { "x-goog-api-key": apiKey }
+      });
+      if (!videoRes.ok) throw new Error(`Failed to download video from Google: ${videoRes.status}`);
+      videoBuffer = Buffer.from(await videoRes.arrayBuffer());
+    }
     const filename = `veo_${crypto.randomUUID()}.mp4`;
     const key = await uploadToS3(filename, videoBuffer, "video/mp4");
     const url = await getPresignedUrl(key);

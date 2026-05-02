@@ -48,7 +48,7 @@ describe("TelemetryProcessor.aggregateBatch", () => {
     const ts = new Date().toISOString();
     const ev = [
       { kind: "SUGGESTION_SHOWN" as const, ts, suggestionId: "txt:w:1" },
-      { kind: "SUGGESTION_ACCEPTED" as const, ts, suggestionId: "txt:w:1" },
+      { kind: "SUGGESTION_ACCEPTED" as const, ts, suggestionId: "txt:w:1", textPreview: "Titular aceptado con Brain" },
       { kind: "MANUAL_OVERRIDE" as const, ts, fieldRef: "hero" },
     ];
     const agg = proc.aggregateBatch([batch("DESIGNER", ev, "export", "bx")]);
@@ -57,6 +57,7 @@ describe("TelemetryProcessor.aggregateBatch", () => {
     expect(agg.eventKindCounts.MANUAL_OVERRIDE).toBe(1);
     expect(agg.suggestions.uniqueShown).toBe(1);
     expect(agg.suggestions.uniqueAccepted).toBe(1);
+    expect(agg.suggestions.acceptedTextExamples).toEqual(["Titular aceptado con Brain"]);
     expect(agg.flushReasonCounts.export).toBe(1);
     expect(agg.manualOverrideCounts.hero).toBe(1);
   });

@@ -41,14 +41,15 @@ export type GenerateVisualDnaSlotMosaicResult =
 export async function generateVisualDnaSlotMosaic(
   params: GenerateVisualDnaSlotMosaicParams,
 ): Promise<GenerateVisualDnaSlotMosaicResult> {
-  const aggregated = aggregateVisualPatterns(params.assets.strategy.visualReferenceAnalysis?.analyses ?? []);
+  const aggregated =
+    params.row.analysis?.analysisStatus === "analyzed" ? aggregateVisualPatterns([params.row.analysis]) : null;
   const { prompt, images, safeRulesDigest, brainContextSnippet } = buildVisualDnaSlotMosaicPayload({
     slotId: params.slot.id,
     sourceDocumentId: params.sourceDocumentId ?? params.slot.sourceDocumentId,
     row: params.row,
     aggregated,
     safeCreativeRules: params.assets.strategy.safeCreativeRules,
-    corporateContext: params.assets.knowledge.corporateContext ?? "",
+    corporateContext: "",
   });
 
   const body = buildVisualDnaSlotGeminiRequestBody({ prompt, images });

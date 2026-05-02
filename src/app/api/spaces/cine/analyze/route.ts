@@ -175,7 +175,7 @@ function userPrompt(request: CineAnalyzeRequest): string {
 
 export async function POST(req: NextRequest) {
   try {
-    await assertApiServiceEnabled("openai-brain-content");
+    await assertApiServiceEnabled("openai-cine-analyze");
     const apiKey = process.env.OPENAI_API_KEY?.trim();
     if (!apiKey) {
       return NextResponse.json({ error: "OPENAI_API_KEY no configurada." }, { status: 503 });
@@ -207,7 +207,7 @@ export async function POST(req: NextRequest) {
     await recordApiUsage({
       provider: "openai",
       userEmail: usageUserEmail,
-      serviceId: "openai-brain-content",
+      serviceId: "openai-cine-analyze",
       route: ROUTE,
       model: MODEL,
       inputTokens: usage?.prompt_tokens ?? 0,

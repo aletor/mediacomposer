@@ -70,6 +70,7 @@ export const USAGE_SERVICES = [
   { id: "openai-assistant", label: "OpenAI · Asistente del lienzo (GPT-4o mini)", category: "ia-text" as const },
   { id: "openai-enhance", label: "OpenAI · Mejorar prompt (GPT-4o)", category: "ia-text" as const },
   { id: "openai-describe", label: "OpenAI · Describir imagen/vídeo (GPT-4o)", category: "visual-analysis" as const },
+  { id: "openai-subtitles", label: "OpenAI · Transcripción / subtítulos", category: "ia-text" as const },
   { id: "grok-video", label: "xAI Grok · Vídeo (Imagine)", category: "ia-video" as const },
   { id: "runway-gen3", label: "Runway · Gen-3 Alpha Turbo", category: "ia-video" as const },
   { id: "replicate-bg", label: "Replicate · Quitar fondo", category: "ia-image" as const },
@@ -77,13 +78,19 @@ export const USAGE_SERVICES = [
   { id: "openai-brain-analyze", label: "OpenAI · Brain análisis documental", category: "brain" as const },
   { id: "openai-brain-chat", label: "OpenAI · Brain chat conocimiento", category: "brain" as const },
   { id: "openai-brain-content", label: "OpenAI · Brain generación contenido", category: "brain" as const },
+  { id: "openai-cine-analyze", label: "OpenAI · Cine análisis de guion", category: "ia-text" as const },
   { id: "openai-embeddings", label: "OpenAI · Embeddings", category: "embeddings" as const },
   { id: "pinterest-search", label: "Pinterest · Search API", category: "external-api" as const },
   { id: "beeble-api", label: "Beeble · API proxy", category: "external-api" as const },
   { id: "runway-status", label: "Runway · Status polling", category: "ia-video" as const },
   { id: "grok-status", label: "xAI Grok · Status polling", category: "ia-video" as const },
+  { id: "aws-fargate-render", label: "AWS Fargate · Render Video Editor", category: "infrastructure" as const },
+  { id: "aws-codebuild-render-worker", label: "AWS CodeBuild · Build render worker", category: "infrastructure" as const },
+  { id: "aws-ecr-render-worker", label: "AWS ECR · Imagen render worker", category: "infrastructure" as const },
+  { id: "aws-cloudwatch-logs", label: "AWS CloudWatch · Logs", category: "infrastructure" as const },
   { id: "s3-assets", label: "AWS S3 · Assets / uploads", category: "infrastructure" as const },
   { id: "s3-knowledge", label: "AWS S3 · Brain knowledge files", category: "infrastructure" as const },
+  { id: "s3-render-storage", label: "AWS S3 · Renders finales", category: "infrastructure" as const },
   { id: "unknown-ai", label: "Sin clasificar · IA (legado)", category: "unknown" as const },
   { id: "unknown-external", label: "Sin clasificar · externo (legado)", category: "unknown" as const },
 ] as const;
@@ -199,9 +206,11 @@ export function inferServiceIdFromRecord(r: UsageRecordLine): UsageServiceId {
   if (routePath.includes("/brain/knowledge/analyze")) return "openai-brain-analyze";
   if (routePath.includes("/brain/knowledge/chat")) return "openai-brain-chat";
   if (routePath.includes("/brain/content/generate")) return "openai-brain-content";
+  if (routePath.includes("/spaces/cine/analyze")) return "openai-cine-analyze";
   if (routePath.includes("/brain/knowledge/update")) return "openai-embeddings";
   if (routePath.includes("/pinterest/search")) return "pinterest-search";
   if (routePath.includes("/beeble/")) return "beeble-api";
+  if (routePath.includes("/video-editor/render")) return "aws-fargate-render";
 
   if (r.provider === "gemini") {
     warnAmbiguousLegacy("provider gemini sin ruta reconocida", r);
@@ -527,6 +536,45 @@ export type UsageByDay = {
   uniqueUsers: number;
 };
 
+export type UsageServiceRouteDetail = {
+  route: string;
+  calls: number;
+  costUsd: number;
+};
+
+export type UsageServiceModelDetail = {
+  provider: UsageProvider;
+  model: string;
+  calls: number;
+  costUsd: number;
+  totalTokens: number;
+};
+
+export type UsageServiceUserDetail = {
+  userEmail: string;
+  calls: number;
+  costUsd: number;
+};
+
+export type UsageServiceDetail = {
+  serviceId: UsageServiceId;
+  label: string;
+  category: UsageServiceCategory;
+  calls: number;
+  costUsd: number;
+  totalTokens: number;
+  bytes: number;
+  pricedCalls: number;
+  unpricedCalls: number;
+  uniqueUsers: number;
+  lastUsedAt: string | null;
+  avgCostUsd: number;
+  avgTokens: number;
+  routes: UsageServiceRouteDetail[];
+  models: UsageServiceModelDetail[];
+  users: UsageServiceUserDetail[];
+};
+
 export async function getUsageDeepReportSince(sinceIso: string): Promise<{
   since: string;
   totals: { calls: number; costUsd: number; totalTokens: number };
@@ -534,6 +582,7 @@ export async function getUsageDeepReportSince(sinceIso: string): Promise<{
   byUser: UsageByUser[];
   byProviderModel: UsageByProviderModel[];
   byDay: UsageByDay[];
+  topServices: UsageServiceDetail[];
 }> {
   const sinceMs = new Date(sinceIso).getTime();
   const lineSet = new Set<string>();
@@ -557,6 +606,24 @@ export async function getUsageDeepReportSince(sinceIso: string): Promise<{
   }
 
   const byService = new Map<UsageServiceId, UsageByService>();
+  const serviceDetails = new Map<
+    UsageServiceId,
+    {
+      serviceId: UsageServiceId;
+      label: string;
+      category: UsageServiceCategory;
+      calls: number;
+      costUsd: number;
+      totalTokens: number;
+      bytes: number;
+      pricedCalls: number;
+      unpricedCalls: number;
+      users: Map<string, UsageServiceUserDetail>;
+      routes: Map<string, UsageServiceRouteDetail>;
+      models: Map<string, UsageServiceModelDetail>;
+      lastUsedAt: string | null;
+    }
+  >();
   const byUser = new Map<string, UsageByUser>();
   const byProviderModel = new Map<string, UsageByProviderModel>();
   const byDay = new Map<string, { calls: number; costUsd: number; totalTokens: number; users: Set<string> }>();
@@ -568,6 +635,21 @@ export async function getUsageDeepReportSince(sinceIso: string): Promise<{
       calls: 0,
       costUsd: 0,
       totalTokens: 0,
+    });
+    serviceDetails.set(s.id, {
+      serviceId: s.id,
+      label: s.label,
+      category: s.category,
+      calls: 0,
+      costUsd: 0,
+      totalTokens: 0,
+      bytes: 0,
+      pricedCalls: 0,
+      unpricedCalls: 0,
+      users: new Map(),
+      routes: new Map(),
+      models: new Map(),
+      lastUsedAt: null,
     });
   }
 
@@ -589,12 +671,44 @@ export async function getUsageDeepReportSince(sinceIso: string): Promise<{
       const provider = r.provider;
       const model = (r.model || "unknown").trim();
       const day = new Date(ts).toISOString().slice(0, 10);
+      const route = r.route || "unknown";
+      const bytes = typeof r.bytes === "number" && Number.isFinite(r.bytes) ? r.bytes : 0;
+      const costKnown = r.costIsKnown !== false;
 
       const svc = byService.get(sid);
       if (svc) {
         svc.calls += 1;
         svc.costUsd += cost;
         svc.totalTokens += tokens;
+      }
+
+      const detail = serviceDetails.get(sid);
+      if (detail) {
+        detail.calls += 1;
+        detail.costUsd += cost;
+        detail.totalTokens += tokens;
+        detail.bytes += bytes;
+        if (!costKnown) detail.unpricedCalls += 1;
+        else if (cost > 0) detail.pricedCalls += 1;
+        const isoTs = new Date(ts).toISOString();
+        if (!detail.lastUsedAt || isoTs > detail.lastUsedAt) detail.lastUsedAt = isoTs;
+
+        const routeRow = detail.routes.get(route) ?? { route, calls: 0, costUsd: 0 };
+        routeRow.calls += 1;
+        routeRow.costUsd += cost;
+        detail.routes.set(route, routeRow);
+
+        const modelKey = `${provider}::${model}`;
+        const modelRow = detail.models.get(modelKey) ?? { provider, model, calls: 0, costUsd: 0, totalTokens: 0 };
+        modelRow.calls += 1;
+        modelRow.costUsd += cost;
+        modelRow.totalTokens += tokens;
+        detail.models.set(modelKey, modelRow);
+
+        const userRow = detail.users.get(userEmail) ?? { userEmail, calls: 0, costUsd: 0 };
+        userRow.calls += 1;
+        userRow.costUsd += cost;
+        detail.users.set(userEmail, userRow);
       }
 
       const u = byUser.get(userEmail) ?? {
@@ -642,6 +756,37 @@ export async function getUsageDeepReportSince(sinceIso: string): Promise<{
   }
 
   const normMoney = (n: number) => Math.round(n * 1_000_000) / 1_000_000;
+  const topServices = [...serviceDetails.values()]
+    .filter((r) => r.calls > 0)
+    .map((r): UsageServiceDetail => ({
+      serviceId: r.serviceId,
+      label: r.label,
+      category: r.category,
+      calls: r.calls,
+      costUsd: normMoney(r.costUsd),
+      totalTokens: r.totalTokens,
+      bytes: r.bytes,
+      pricedCalls: r.pricedCalls,
+      unpricedCalls: r.unpricedCalls,
+      uniqueUsers: r.users.size,
+      lastUsedAt: r.lastUsedAt,
+      avgCostUsd: normMoney(r.calls > 0 ? r.costUsd / r.calls : 0),
+      avgTokens: r.calls > 0 ? Math.round(r.totalTokens / r.calls) : 0,
+      routes: [...r.routes.values()]
+        .map((x) => ({ ...x, costUsd: normMoney(x.costUsd) }))
+        .sort((a, b) => b.calls - a.calls || b.costUsd - a.costUsd)
+        .slice(0, 3),
+      models: [...r.models.values()]
+        .map((x) => ({ ...x, costUsd: normMoney(x.costUsd) }))
+        .sort((a, b) => b.calls - a.calls || b.costUsd - a.costUsd)
+        .slice(0, 3),
+      users: [...r.users.values()]
+        .map((x) => ({ ...x, costUsd: normMoney(x.costUsd) }))
+        .sort((a, b) => b.calls - a.calls || b.costUsd - a.costUsd)
+        .slice(0, 3),
+    }))
+    .sort((a, b) => b.calls - a.calls || b.costUsd - a.costUsd)
+    .slice(0, 3);
 
   return {
     since: sinceIso,
@@ -668,6 +813,7 @@ export async function getUsageDeepReportSince(sinceIso: string): Promise<{
         uniqueUsers: v.users.size,
       }))
       .sort((a, b) => a.day.localeCompare(b.day)),
+    topServices,
   };
 }
 

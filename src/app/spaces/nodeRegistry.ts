@@ -194,10 +194,25 @@ export const NODE_REGISTRY: Record<string, NodeMetadata> = {
 	      label: 'string',
 	    },
 	  },
+	  video_editor: {
+	    type: 'video_editor',
+	    label: 'Video Editor',
+	    description: 'Recibe una media_list y la convierte en una timeline editable simple con vídeo, imágenes y audio generado por prompt.',
+	    inputs: [{ id: 'media_list', label: 'Media List', type: 'media_list' as HandleType, required: true }],
+	    outputs: [],
+	    dataSchema: {
+	      sourceMediaList: 'MediaListOutput',
+	      tracks: '{ video, audio, music, sfx, ambience, voiceover }',
+	      audioRequests: 'TimelineAudioRequest[]',
+	      playheadTime: 'number',
+	      totalDurationSeconds: 'number',
+	      mediaListOutput: 'MediaListOutput future output prepared',
+	    },
+	  },
 	  videoEditor: {
 	    type: 'videoEditor',
 	    label: 'Video Editor',
-	    description: 'Recibe una media_list y crea una timeline inicial ordenada con vídeos o still frames.',
+	    description: 'Alias legacy de Video Editor.',
 	    inputs: [{ id: 'media_list', label: 'Media List', type: 'media_list' as HandleType, required: true }],
 	    outputs: [],
 	    dataSchema: {

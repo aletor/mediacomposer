@@ -89,7 +89,7 @@ const HIGH_END_PRODUCTION_ITEMS: Array<{ type: string; label: string }> = [
   { type: 'projectAssets', label: 'Foldder' },
   { type: 'presenter', label: 'Presenter' },
   { type: 'export_multimedia', label: 'Export Multimedia' },
-  { type: 'videoEditor', label: 'Video Editor' },
+  { type: 'video_editor', label: 'Video Editor' },
 ];
 
 const TOOL_ITEMS: Array<{ type: string; label: string }> = [

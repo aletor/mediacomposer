@@ -111,12 +111,73 @@ type UsageByDay = {
   uniqueUsers: number;
 };
 
+type UsageServiceDetail = {
+  serviceId: string;
+  label: string;
+  category: string;
+  calls: number;
+  costUsd: number;
+  totalTokens: number;
+  bytes: number;
+  pricedCalls: number;
+  unpricedCalls: number;
+  uniqueUsers: number;
+  lastUsedAt: string | null;
+  avgCostUsd: number;
+  avgTokens: number;
+  routes: Array<{ route: string; calls: number; costUsd: number }>;
+  models: Array<{ provider: string; model: string; calls: number; costUsd: number; totalTokens: number }>;
+  users: Array<{ userEmail: string; calls: number; costUsd: number }>;
+};
+
 type ApiControl = {
   id: string;
   label: string;
   enabled: boolean;
   updatedAt: string;
   updatedBy: string;
+};
+
+type AdminCostComponent = {
+  id: string;
+  label: string;
+  category: "measured" | "estimated" | "check";
+  status: "measured" | "estimated" | "configured" | "not_tracked";
+  usage: string;
+  costUsd: number;
+  period: "period" | "monthly" | "per_build" | "variable";
+  note: string;
+};
+
+type AdminOperationalCosts = {
+  generatedAt: string;
+  pricingRegion: string;
+  fargate: {
+    configured: boolean;
+    cluster: string;
+    taskDefinition: string;
+    vcpu: number;
+    memoryGb: number;
+    minimumBilledSeconds: number;
+    vcpuSecondUsd: number;
+    gbSecondUsd: number;
+    renders: number;
+    costUsd: number;
+  };
+  storage: {
+    bucket: string;
+    totalBytes: number;
+    renderBytes: number;
+    s3StandardUsdPerGbMonth: number;
+    estimatedMonthlyUsd: number;
+    estimatedRenderMonthlyUsd: number;
+  };
+  totals: {
+    knownInfrastructureUsd: number;
+    estimatedMonthlyStorageUsd: number;
+    estimatedKnownPlusMonthlyStorageUsd: number;
+  };
+  components: AdminCostComponent[];
 };
 
 type OverviewResponse = {
@@ -135,6 +196,7 @@ type OverviewResponse = {
     apiCalls: number;
     apiCostUsd: number;
     apiTokens: number;
+    operationalCostUsd: number;
   };
   apiUsage: {
     since: string;
@@ -143,7 +205,9 @@ type OverviewResponse = {
     byUser: UsageByUser[];
     byProviderModel: UsageByProviderModel[];
     byDay: UsageByDay[];
+    topServices: UsageServiceDetail[];
   };
+  operationalCosts: AdminOperationalCosts;
   apiControls: ApiControl[];
   onlineUsers: AdminUser[];
   calendar: AdminCalendarDay[];
@@ -193,6 +257,21 @@ function formatMoney(usd: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 4,
   }).format(usd || 0);
+}
+
+function usageCategoryLabel(category: string): string {
+  const labels: Record<string, string> = {
+    "ia-text": "IA texto",
+    "ia-image": "IA imagen",
+    "ia-video": "IA vídeo",
+    "visual-analysis": "Análisis visual",
+    brain: "Brain",
+    embeddings: "Embeddings",
+    "external-api": "API externa",
+    infrastructure: "Infraestructura",
+    unknown: "Sin clasificar",
+  };
+  return labels[category] ?? category;
 }
 
 function CalendarHeatmap({ days }: { days: AdminCalendarDay[] }) {
@@ -252,6 +331,7 @@ export default function AdminPage() {
             ["S3 total", formatBytes(data.summary.totalBytes), HardDrive],
             ["Llamadas API", data.summary.apiCalls, Database],
             ["Coste API", formatMoney(data.summary.apiCostUsd), Clock3],
+            ["Coste ops", formatMoney(data.summary.operationalCostUsd), HardDrive],
           ]
         : [],
     [data],
@@ -613,6 +693,78 @@ export default function AdminPage() {
         {activeTab === "usage" && data && (
           <section className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
             <div className="space-y-3">
+              <div className="rounded-xl border border-cyan-300/20 bg-cyan-300/[0.045] p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs tracking-[0.1em] text-cyan-100/60 uppercase">Costes operativos AWS</p>
+                    <h3 className="mt-1 text-lg font-semibold">Fargate, S3, ECR, CodeBuild y logs</h3>
+                    <p className="mt-1 text-xs text-white/52">
+                      Región pricing: {data.operationalCosts.pricingRegion}. Medido por logs cuando existe; estimado/checklist cuando AWS no está integrado todavía.
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-cyan-100/15 bg-black/20 px-4 py-3 text-right">
+                    <p className="text-[10px] tracking-[0.12em] text-cyan-100/50 uppercase">Total ops visible</p>
+                    <p className="mt-1 text-2xl font-semibold">{formatMoney(data.operationalCosts.totals.estimatedKnownPlusMonthlyStorageUsd)}</p>
+                    <p className="mt-1 text-[11px] text-white/45">logs + storage mensual estimado</p>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-2 md:grid-cols-3">
+                  <div className="rounded-lg border border-white/10 bg-black/18 p-3">
+                    <p className="text-xs text-white/55">Fargate renders</p>
+                    <p className="mt-1 text-xl font-semibold">{data.operationalCosts.fargate.renders}</p>
+                    <p className="mt-1 text-xs text-white/45">{formatMoney(data.operationalCosts.fargate.costUsd)} · {data.operationalCosts.fargate.vcpu} vCPU / {data.operationalCosts.fargate.memoryGb} GB</p>
+                  </div>
+                  <div className="rounded-lg border border-white/10 bg-black/18 p-3">
+                    <p className="text-xs text-white/55">S3 total estimado</p>
+                    <p className="mt-1 text-xl font-semibold">{formatMoney(data.operationalCosts.storage.estimatedMonthlyUsd)}/mes</p>
+                    <p className="mt-1 text-xs text-white/45">{formatBytes(data.operationalCosts.storage.totalBytes)} · ${data.operationalCosts.storage.s3StandardUsdPerGbMonth}/GB-mes</p>
+                  </div>
+                  <div className="rounded-lg border border-white/10 bg-black/18 p-3">
+                    <p className="text-xs text-white/55">Renders en S3</p>
+                    <p className="mt-1 text-xl font-semibold">{formatMoney(data.operationalCosts.storage.estimatedRenderMonthlyUsd)}/mes</p>
+                    <p className="mt-1 text-xs text-white/45">{formatBytes(data.operationalCosts.storage.renderBytes)}</p>
+                  </div>
+                </div>
+
+                <div className="mt-4 overflow-auto rounded-lg border border-white/10">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[#11141d] text-[10px] tracking-[0.08em] text-white/60 uppercase">
+                      <tr>
+                        <th className="px-2 py-2">Componente</th>
+                        <th className="px-2 py-2">Estado</th>
+                        <th className="px-2 py-2">Uso</th>
+                        <th className="px-2 py-2">Coste</th>
+                        <th className="px-2 py-2">Nota</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.operationalCosts.components.map((row) => (
+                        <tr key={row.id} className="border-t border-white/6">
+                          <td className="px-2 py-2 font-medium">{row.label}</td>
+                          <td className="px-2 py-2">
+                            <span className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase ${
+                              row.status === "measured"
+                                ? "bg-emerald-300/12 text-emerald-100"
+                                : row.status === "estimated"
+                                  ? "bg-cyan-300/12 text-cyan-100"
+                                  : row.status === "configured"
+                                    ? "bg-amber-300/12 text-amber-100"
+                                    : "bg-white/8 text-white/50"
+                            }`}>
+                              {row.status === "measured" ? "medido" : row.status === "estimated" ? "estimado" : row.status === "configured" ? "configurado" : "no medido"}
+                            </span>
+                          </td>
+                          <td className="px-2 py-2 text-white/65">{row.usage}</td>
+                          <td className="px-2 py-2">{row.costUsd > 0 ? `${formatMoney(row.costUsd)}${row.period === "monthly" ? "/mes" : ""}` : "-"}</td>
+                          <td className="px-2 py-2 text-white/48">{row.note}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
               <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
                 <p className="text-xs tracking-[0.1em] text-white/48 uppercase">Estudio API (desde {formatDate(data.apiUsage.since)})</p>
                 <div className="mt-3 grid gap-2 sm:grid-cols-3">
@@ -628,6 +780,88 @@ export default function AdminPage() {
                     <p className="text-xs text-white/55">Tokens</p>
                     <p className="mt-1 text-xl font-semibold">{data.apiUsage.totals.totalTokens.toLocaleString("es-ES")}</p>
                   </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+                <div className="flex flex-wrap items-end justify-between gap-2">
+                  <div>
+                    <p className="text-xs tracking-[0.1em] text-white/48 uppercase">Top 3 APIs más usadas</p>
+                    <p className="mt-1 text-xs text-white/45">Ordenadas por número de llamadas. Útil para detectar coste silencioso aunque el coste unitario sea bajo.</p>
+                  </div>
+                  <span className="rounded-full border border-amber-200/20 bg-amber-200/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-100">
+                    cobertura de uso
+                  </span>
+                </div>
+                <div className="mt-3 grid gap-3 xl:grid-cols-3">
+                  {data.apiUsage.topServices.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-white/12 p-4 text-sm text-white/50 xl:col-span-3">
+                      Todavía no hay llamadas registradas en este periodo.
+                    </div>
+                  ) : data.apiUsage.topServices.map((service, index) => (
+                    <div key={service.serviceId} className="rounded-xl border border-white/10 bg-black/18 p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-semibold tracking-[0.14em] text-white/40 uppercase">#{index + 1} · {usageCategoryLabel(service.category)}</p>
+                          <p className="mt-1 line-clamp-2 text-sm font-semibold text-white/90">{service.label}</p>
+                        </div>
+                        <span className="rounded-full border border-white/10 bg-white/6 px-2 py-1 text-xs font-semibold">{service.calls}</span>
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                        <div className="rounded-lg bg-white/[0.035] p-2">
+                          <p className="text-white/42">Coste</p>
+                          <p className="font-semibold">{formatMoney(service.costUsd)}</p>
+                        </div>
+                        <div className="rounded-lg bg-white/[0.035] p-2">
+                          <p className="text-white/42">Media</p>
+                          <p className="font-semibold">{formatMoney(service.avgCostUsd)}/call</p>
+                        </div>
+                        <div className="rounded-lg bg-white/[0.035] p-2">
+                          <p className="text-white/42">Tokens</p>
+                          <p className="font-semibold">{service.totalTokens.toLocaleString("es-ES")}</p>
+                        </div>
+                        <div className="rounded-lg bg-white/[0.035] p-2">
+                          <p className="text-white/42">Usuarios</p>
+                          <p className="font-semibold">{service.uniqueUsers}</p>
+                        </div>
+                      </div>
+                      {service.unpricedCalls > 0 ? (
+                        <p className="mt-2 rounded-lg border border-amber-200/15 bg-amber-200/8 px-2 py-1.5 text-[11px] text-amber-100/75">
+                          {service.unpricedCalls} llamada(s) sin precio exacto. Revisar proveedor o endpoint.
+                        </p>
+                      ) : null}
+                      <div className="mt-3 space-y-2 text-[11px] text-white/58">
+                        <div>
+                          <p className="mb-1 font-semibold text-white/72">Rutas principales</p>
+                          {service.routes.map((route) => (
+                            <div key={route.route} className="flex justify-between gap-2 border-t border-white/6 py-1">
+                              <span className="truncate">{route.route}</span>
+                              <span className="shrink-0">{route.calls} · {formatMoney(route.costUsd)}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <div>
+                          <p className="mb-1 font-semibold text-white/72">Modelos</p>
+                          {service.models.map((model) => (
+                            <div key={`${model.provider}-${model.model}`} className="flex justify-between gap-2 border-t border-white/6 py-1">
+                              <span className="truncate">{model.provider} · {model.model}</span>
+                              <span className="shrink-0">{model.calls} · {formatMoney(model.costUsd)}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <div>
+                          <p className="mb-1 font-semibold text-white/72">Usuarios</p>
+                          {service.users.map((user) => (
+                            <div key={user.userEmail} className="flex justify-between gap-2 border-t border-white/6 py-1">
+                              <span className="truncate">{user.userEmail}</span>
+                              <span className="shrink-0">{user.calls} · {formatMoney(user.costUsd)}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="pt-1 text-white/38">Último uso: {formatDate(service.lastUsedAt)}</p>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
 

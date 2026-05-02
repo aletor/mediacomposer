@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatLearningReviewExample,
   formatLearningReviewCardHeadline,
+  formatLearningReviewReasoning,
+  formatLearningReviewText,
   humanEvidenceBullets,
   stripLearningValueUiPrefixes,
 } from "./brain-review-labels";
@@ -69,5 +72,23 @@ describe("formatLearningReviewCardHeadline", () => {
 
   it("normaliza valores que aún llevan prefijo guardado", () => {
     expect(formatLearningReviewCardHeadline("Brain ha detectado que Duplicado.")).toBe("Brain ha detectado que Duplicado.");
+  });
+
+  it("traduce candidatos técnicos heredados a una enseñanza clara", () => {
+    expect(formatLearningReviewText("Repeated manual changes to Brain length and tone presets in Designer.")).toBe(
+      "sueles ajustar el tono y la longitud de las sugerencias de texto en Designer.",
+    );
+    expect(formatLearningReviewCardHeadline("Mixed accept/ignore on same text slots—contextual only, not a preference.")).toBe(
+      "Brain ha detectado que hay señales mezcladas en las sugerencias de texto; por ahora conviene tratarlo como contexto puntual, no como una preferencia estable.",
+    );
+  });
+
+  it("traduce razonamientos y ejemplos internos de telemetría", () => {
+    expect(formatLearningReviewReasoning("Stronger signal from manualOverrideCounts than from ignored suggestions alone.")).toContain(
+      "has ajustado manualmente",
+    );
+    expect(formatLearningReviewExample("manual:brain:lengthPreset")).toBe(
+      "Cambiaste la longitud de una sugerencia de Brain.",
+    );
   });
 });
