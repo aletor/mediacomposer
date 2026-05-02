@@ -230,9 +230,10 @@ function brainVisualLookPartLabel(part: BrainVisualCapsuleSelectionPart): string
 
 function visualCapsuleIsUsableInDesigner(capsule: VisualCapsule): boolean {
   return (
-    capsule.analysisStatus === "ready" &&
     capsule.status !== "archived" &&
-    capsule.status !== "promoted_partial"
+    capsule.status !== "promoted_partial" &&
+    capsule.analysisStatus !== "analyzing" &&
+    capsule.analysisStatus !== "error"
   );
 }
 
@@ -9760,6 +9761,23 @@ export function FreehandStudioCanvas({
   const [brainVisualLookDraftCapsuleId, setBrainVisualLookDraftCapsuleId] = useState<string | null>(null);
   const [brainVisualLookDraftPart, setBrainVisualLookDraftPart] = useState<BrainVisualCapsuleSelectionPart | null>(null);
   const [brainVisualCapsuleSelection, setBrainVisualCapsuleSelection] = useState<BrainVisualCapsuleSelection | null>(null);
+  const [brainImageDnaActivated, setBrainImageDnaActivated] = useState(false);
+  const [brainImageDnaSource, setBrainImageDnaSource] = useState<"brand" | "project" | "special" | null>(null);
+  const [brainImageCustomPrompt, setBrainImageCustomPrompt] = useState("");
+  const [brainImageControlsPulseKey, setBrainImageControlsPulseKey] = useState(0);
+  const brainImageDnaUiStateByObjectRef = useRef<
+    Record<
+      string,
+      {
+        activated: boolean;
+        source: "brand" | "project" | "special" | null;
+        customPrompt: string;
+        capsuleId: string | null;
+        part: BrainVisualCapsuleSelectionPart | null;
+        selection: BrainVisualCapsuleSelection | null;
+      }
+    >
+  >({});
   const brainVariationHistoryRef = useRef<VariationFingerprint[]>([]);
   const brainSuggestionsSigRef = useRef("");
   const brainImageLoadingRef = useRef(false);
@@ -10685,18 +10703,43 @@ export function FreehandStudioCanvas({
   const effectiveTextKind: BrainTextBlockKind | null =
     (brainManualTextKind || autoDetectedTextKind) as BrainTextBlockKind | null;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const saved = singleSelected?.id ? brainImageDnaUiStateByObjectRef.current[singleSelected.id] : null;
     setBrainManualTextKind((prev) => (prev === "" ? prev : ""));
     setBrainSuggestionsTick((prev) => (prev === 0 ? prev : 0));
     setBrainVisualLookPickerOpen(false);
-    setBrainVisualLookDraftCapsuleId(null);
-    setBrainVisualLookDraftPart(null);
-    setBrainVisualCapsuleSelection(null);
+    setBrainVisualLookDraftCapsuleId(saved?.capsuleId ?? null);
+    setBrainVisualLookDraftPart(saved?.part ?? null);
+    setBrainVisualCapsuleSelection(saved?.selection ?? null);
+    setBrainImageDnaActivated(saved?.activated ?? false);
+    setBrainImageDnaSource(saved?.source ?? null);
+    setBrainImageCustomPrompt(saved?.customPrompt ?? "");
   }, [singleSelected?.id]);
 
   const supportsBrainTextSuggestions = brainConnected && !!singleSelected && (singleSelected.type === "text" || singleSelected.type === "textOnPath");
   const supportsBrainImageSuggestions =
     brainConnected && !!singleSelected && singleSelected.type === "rect" && !!singleSelected.isImageFrame;
+
+  useEffect(() => {
+    if (!singleSelected?.id || !supportsBrainImageSuggestions) return;
+    brainImageDnaUiStateByObjectRef.current[singleSelected.id] = {
+      activated: brainImageDnaActivated,
+      source: brainImageDnaSource,
+      customPrompt: brainImageCustomPrompt,
+      capsuleId: brainVisualLookDraftCapsuleId,
+      part: brainVisualLookDraftPart,
+      selection: brainVisualCapsuleSelection,
+    };
+  }, [
+    singleSelected?.id,
+    supportsBrainImageSuggestions,
+    brainImageDnaActivated,
+    brainImageDnaSource,
+    brainImageCustomPrompt,
+    brainVisualLookDraftCapsuleId,
+    brainVisualLookDraftPart,
+    brainVisualCapsuleSelection,
+  ]);
 
   const brainPageNearbyText = useMemo(() => {
     if (!singleSelected) return [];
@@ -11115,6 +11158,57 @@ export function FreehandStudioCanvas({
     [brainVisualLookDraftCapsule, brainVisualLookDraftPart, designerBrainAssets.strategy.visualDnaSlots],
   );
 
+  const activateBrainImageDnaControls = useCallback(() => {
+    setBrainImageDnaActivated(true);
+    setBrainImageControlsPulseKey((key) => key + 1);
+  }, []);
+
+  const selectBrainImageGeneralDna = useCallback(
+    (source: "brand" | "project") => {
+      activateBrainImageDnaControls();
+      setBrainImageDnaSource(source);
+      setBrainVisualCapsuleSelection(null);
+      setBrainVisualLookPickerOpen(false);
+      setBrainVisualLookDraftCapsuleId(null);
+      setBrainVisualLookDraftPart(null);
+    },
+    [activateBrainImageDnaControls],
+  );
+
+  const selectBrainImageSpecialDna = useCallback(
+    (capsule: VisualCapsule, part: BrainVisualCapsuleSelectionPart = "full_look") => {
+      activateBrainImageDnaControls();
+      setBrainImageDnaSource("special");
+      setBrainVisualLookDraftCapsuleId(capsule.id);
+      setBrainVisualLookDraftPart(part);
+      const example = visualCapsuleExamplesForPart(capsule, part, designerBrainAssets.strategy.visualDnaSlots)[0];
+      setBrainVisualCapsuleSelection(example ? buildBrainVisualCapsuleSelection(capsule, part, example) : null);
+    },
+    [activateBrainImageDnaControls, designerBrainAssets.strategy.visualDnaSlots],
+  );
+
+  const selectBrainImageExtractionPart = useCallback(
+    (part: BrainVisualCapsuleSelectionPart) => {
+      if (!brainImageDnaActivated) return;
+      setBrainVisualLookDraftPart(part);
+      if (brainImageDnaSource !== "special" || !brainVisualLookDraftCapsule) return;
+      const example = visualCapsuleExamplesForPart(
+        brainVisualLookDraftCapsule,
+        part,
+        designerBrainAssets.strategy.visualDnaSlots,
+      )[0];
+      setBrainVisualCapsuleSelection(
+        example ? buildBrainVisualCapsuleSelection(brainVisualLookDraftCapsule, part, example) : null,
+      );
+    },
+    [
+      brainImageDnaActivated,
+      brainImageDnaSource,
+      brainVisualLookDraftCapsule,
+      designerBrainAssets.strategy.visualDnaSlots,
+    ],
+  );
+
   useEffect(() => {
     if (!brainVisualCapsuleSelection) return;
     const stillAvailable = brainUsableVisualCapsules.some((c) => c.id === brainVisualCapsuleSelection.capsuleId);
@@ -11127,7 +11221,20 @@ export function FreehandStudioCanvas({
   const brainImagePromptPlans = useMemo(() => {
     const claim = brainClaims[0] ?? "Narrativa con evidencia";
     const claimB = brainClaims[1] ?? "Sistema creativo conectado";
-    const nearby = brainPageContextText || brainNearbyText[0] || selectedTextValue || "";
+    const dnaSourceInstruction =
+      brainImageDnaSource === "brand"
+        ? "Usa principalmente el ADN visual de marca como dirección de esta generación."
+        : brainImageDnaSource === "project"
+          ? "Usa principalmente el contexto visual y narrativo del proyecto como dirección de esta generación."
+          : "";
+    const extractionInstruction = brainImageDnaActivated && brainVisualLookDraftPart
+      ? `Tipo de extracción visual solicitada: ${
+          brainVisualLookDraftPart === "full_look" ? "look completo" : brainVisualLookPartLabel(brainVisualLookDraftPart).toLowerCase()
+        }.`
+      : "";
+    const nearby = [dnaSourceInstruction, extractionInstruction, brainPageContextText || brainNearbyText[0] || selectedTextValue || ""]
+      .filter(Boolean)
+      .join("\n");
     const featureLine = brainFeatureHints.length > 0 ? brainFeatureHints.join(", ") : "";
     const diffLine = brainDifferentiators.length > 0 ? brainDifferentiators.join(" | ") : "";
     const metricsLine = brainMarketSignals.length > 0 ? brainMarketSignals.join(", ") : "";
@@ -11167,6 +11274,7 @@ export function FreehandStudioCanvas({
       variety: varietyInput,
       varietyPlanSeed: "brain-img-1",
       visualCapsuleSelection: brainVisualCapsuleSelection ?? undefined,
+      customImageInstruction: brainImageCustomPrompt.trim() || undefined,
     });
     const performance = composeBrainDesignerImagePrompt({
       context: brainVisualPromptContext,
@@ -11180,6 +11288,7 @@ export function FreehandStudioCanvas({
       variety: varietyInput,
       varietyPlanSeed: "brain-img-2",
       visualCapsuleSelection: brainVisualCapsuleSelection ?? undefined,
+      customImageInstruction: brainImageCustomPrompt.trim() || undefined,
     });
 
     return [
@@ -11207,6 +11316,10 @@ export function FreehandStudioCanvas({
     brainFeatureHints,
     brainDifferentiators,
     brainMarketSignals,
+    brainImageDnaSource,
+    brainImageCustomPrompt,
+    brainImageDnaActivated,
+    brainVisualLookDraftPart,
     brainImageVarietyMode,
     brainImageLockPalette,
     brainImageLockLight,
@@ -11258,6 +11371,9 @@ export function FreehandStudioCanvas({
       brainMarketSignals.join("¦"),
       brainImageAspectRatio,
       brainImageVarietyMode,
+      brainImageDnaSource ?? "inactive",
+      brainImageCustomPrompt.trim(),
+      brainImageDnaActivated ? (brainVisualLookDraftPart ?? "part_auto") : "controls_inactive",
       [brainImageLockPalette, brainImageLockLight, brainImageLockTone, brainImageLockRealism].map(String).join(""),
       [brainImageVarySubjects, brainImageVaryFraming, brainImageVaryScene, brainImageVaryActivity, brainImageVaryProps]
         .map(String)
@@ -11276,6 +11392,10 @@ export function FreehandStudioCanvas({
     brainDifferentiators,
     brainMarketSignals,
     brainImageAspectRatio,
+    brainImageDnaSource,
+    brainImageCustomPrompt,
+    brainImageDnaActivated,
+    brainVisualLookDraftPart,
     brainImageVarietyMode,
     brainImageLockPalette,
     brainImageLockLight,
@@ -24104,375 +24224,295 @@ export function FreehandStudioCanvas({
                   )}
 
                   {supportsBrainImageSuggestions && (
-                    <div className="space-y-1.5 rounded-[8px] border border-white/[0.08] bg-white/[0.03] p-2">
-                      <div className="text-[10px] uppercase tracking-wider text-zinc-500">Imagen</div>
-                      <div className="rounded-[6px] border border-white/[0.06] bg-black/20">
+                    <div className="space-y-3">
+                      <style>{`
+                        @keyframes fhBrainReadyPulse {
+                          0% { filter: brightness(1); box-shadow: 0 0 0 rgba(139, 92, 246, 0); }
+                          45% { filter: brightness(1.12); box-shadow: 0 0 22px rgba(139, 92, 246, 0.22); }
+                          100% { filter: brightness(1); box-shadow: 0 0 0 rgba(139, 92, 246, 0); }
+                        }
+                        .fh-brain-ready-pulse { animation: fhBrainReadyPulse 520ms ease-out 1; }
+                      `}</style>
+
+                      <div className="space-y-2.5">
+                        <div className="text-[9px] font-black uppercase tracking-[0.18em] text-zinc-500">Selecciona ADN</div>
+
+                        <div className="space-y-2">
+                          <div className="text-[8px] font-bold uppercase tracking-[0.18em] text-zinc-600">Brand</div>
+                          <div className="grid grid-cols-2 gap-2">
+                            {([
+                              { id: "brand" as const, label: "Brand", seed: brainBrandColorLine },
+                              { id: "project" as const, label: "Proyecto", seed: brainClaims[0] ?? "Proyecto" },
+                            ]).map((item) => {
+                              const selected = brainImageDnaActivated && brainImageDnaSource === item.id;
+                              const faded = brainImageDnaActivated && !selected;
+                              const brandLogo = brainAssets.brand.logoPositive || brainAssets.brand.logoNegative;
+                              return (
+                                <button
+                                  key={item.id}
+                                  type="button"
+                                  onClick={() => selectBrainImageGeneralDna(item.id)}
+                                  className={`group relative aspect-[1.5] overflow-hidden rounded-[10px] border transition-all duration-200 ${
+                                    selected
+                                      ? "border-violet-300/70 opacity-100 shadow-[0_0_18px_rgba(139,92,246,0.32)]"
+                                      : faded
+                                        ? "border-white/[0.08] opacity-30 hover:opacity-70"
+                                        : "border-white/[0.08] opacity-100 hover:border-violet-300/35"
+                                  }`}
+                                  title={`Usar ADN ${item.label}`}
+                                >
+                                  <div
+                                    className="absolute inset-0"
+                                    style={{
+                                      background:
+                                        item.id === "brand"
+                                          ? `linear-gradient(135deg, ${normalizeHexColor(brainAssets.brand.colorPrimary ?? "") ?? "#4f46e5"}, ${normalizeHexColor(brainAssets.brand.colorSecondary ?? "") ?? "#18181b"})`
+                                          : "linear-gradient(135deg, rgba(39,39,42,1), rgba(88,28,135,0.9))",
+                                    }}
+                                  />
+                                  <div className="absolute inset-0 grid grid-cols-[0.42fr_1fr] gap-1.5 p-1.5">
+                                    <div className="grid gap-1">
+                                      {[brainAssets.brand.colorPrimary, brainAssets.brand.colorSecondary, brainAssets.brand.colorAccent]
+                                        .map((hex) => normalizeHexColor(hex ?? ""))
+                                        .filter((hex): hex is string => Boolean(hex))
+                                        .slice(0, 3)
+                                        .map((hex) => (
+                                          <span key={`${item.id}-${hex}`} className="rounded-[5px] border border-white/20" style={{ backgroundColor: hex }} />
+                                        ))}
+                                      {!brainAssets.brand.colorPrimary ? <span className="rounded-[5px] bg-white/15" /> : null}
+                                    </div>
+                                    <div className="relative overflow-hidden rounded-[7px] bg-black/22">
+                                      {item.id === "brand" && brandLogo ? (
+                                        <img src={brandLogo} alt="" className="h-full w-full object-contain p-2 opacity-90" />
+                                      ) : (
+                                        <div className="grid h-full grid-cols-2 gap-1 p-1">
+                                          <span className="rounded bg-white/14" />
+                                          <span className="rounded bg-violet-300/20" />
+                                          <span className="rounded bg-white/8" />
+                                          <span className="rounded bg-violet-500/24" />
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <span className="absolute left-1.5 top-1.5 rounded-full bg-black/52 px-2 py-0.5 text-[8px] font-black uppercase tracking-wide text-white backdrop-blur">
+                                    {item.label}
+                                  </span>
+                                  {selected ? (
+                                    <span className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-violet-500 text-white shadow-sm">
+                                      <Check size={10} strokeWidth={3} />
+                                    </span>
+                                  ) : null}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="text-[8px] font-bold uppercase tracking-[0.18em] text-zinc-600">Especial</div>
+                          {brainUsableVisualCapsules.length === 0 ? (
+                            <div className="rounded-[8px] border border-white/[0.08] bg-black/18 px-2 py-2 text-[10px] leading-snug text-zinc-500">
+                              No hay ADN de imagen listo.
+                            </div>
+                          ) : (
+                            <div className="grid max-h-[270px] grid-cols-2 gap-2 overflow-y-auto pr-1">
+                              {brainUsableVisualCapsules.map((capsule) => {
+                                const selected = brainImageDnaActivated && brainImageDnaSource === "special" && brainVisualLookDraftCapsuleId === capsule.id;
+                                const faded = brainImageDnaActivated && !selected;
+                                const preview = capsule.mosaicImageUrl || capsule.sourceImageUrl;
+                                return (
+                                  <button
+                                    key={capsule.id}
+                                    type="button"
+                                    onClick={() => selectBrainImageSpecialDna(capsule, brainVisualLookDraftPart ?? "full_look")}
+                                    className={`group relative aspect-[1.12] overflow-hidden rounded-[10px] border bg-white/[0.04] transition-all duration-200 ${
+                                      selected
+                                        ? "border-violet-300/70 opacity-100 shadow-[0_0_18px_rgba(139,92,246,0.32)]"
+                                        : faded
+                                          ? "border-white/[0.08] opacity-30 hover:opacity-70"
+                                          : "border-white/[0.08] opacity-100 hover:border-violet-300/35"
+                                    }`}
+                                    title="Seleccionar ADN de imagen"
+                                  >
+                                    {preview ? (
+                                      <img src={preview} alt="" className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.02]" />
+                                    ) : (
+                                      <span className="flex h-full w-full items-center justify-center bg-white/[0.05] text-zinc-500">
+                                        <ImageIconLucide size={16} />
+                                      </span>
+                                    )}
+                                    {selected ? (
+                                      <span className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-violet-500 text-white shadow-sm">
+                                        <Check size={10} strokeWidth={3} />
+                                      </span>
+                                    ) : null}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div
+                        key={`brain-image-controls-${brainImageControlsPulseKey}`}
+                        className={`space-y-2 rounded-[10px] transition-all duration-200 ${
+                          brainImageDnaActivated ? "opacity-100 fh-brain-ready-pulse" : "pointer-events-none opacity-10"
+                        }`}
+                      >
+                        <div className="flex flex-wrap gap-1.5">
+                          {([
+                            { id: "object" as BrainVisualCapsuleSelectionPart, label: "Objeto", Icon: Square },
+                            { id: "person" as BrainVisualCapsuleSelectionPart, label: "Personas", Icon: MousePointer2 },
+                            { id: "texture" as BrainVisualCapsuleSelectionPart, label: "Textura", Icon: Blend },
+                            { id: "environment" as BrainVisualCapsuleSelectionPart, label: "Entorno", Icon: ImageIconLucide },
+                            { id: "full_look" as BrainVisualCapsuleSelectionPart, label: "Completo", Icon: Sparkles },
+                          ]).map(({ id, label, Icon }) => {
+                            const active = brainVisualLookDraftPart === id;
+                            return (
+                              <button
+                                key={id}
+                                type="button"
+                                disabled={!brainImageDnaActivated}
+                                onClick={() => selectBrainImageExtractionPart(id)}
+                                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[9px] font-black uppercase tracking-wide transition-colors ${
+                                  active
+                                    ? "border-violet-300/65 bg-violet-500/24 text-violet-50 shadow-[0_0_14px_rgba(139,92,246,0.16)]"
+                                    : "border-white/[0.1] bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08]"
+                                }`}
+                              >
+                                <Icon size={11} strokeWidth={2.2} aria-hidden />
+                                {label}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <label className="block space-y-1">
+                          <span className="text-[8px] font-black uppercase tracking-[0.18em] text-zinc-600">Custom</span>
+                          <textarea
+                            value={brainImageCustomPrompt}
+                            disabled={!brainImageDnaActivated}
+                            onChange={(e) => setBrainImageCustomPrompt(e.target.value)}
+                            rows={2}
+                            placeholder="Describe un matiz concreto…"
+                            className="nodrag w-full resize-none rounded-[9px] border border-white/[0.08] bg-[#141820] px-2.5 py-2 text-[10px] leading-snug text-zinc-100 outline-none transition focus:border-violet-400/45 focus:ring-2 focus:ring-violet-500/10 disabled:cursor-not-allowed"
+                          />
+                        </label>
+
+                        {brainImageDnaSource === "special" ? (
+                          <label className="flex items-center gap-2 rounded-[8px] border border-white/[0.06] bg-white/[0.025] px-2.5 py-2 text-[10px] font-semibold text-zinc-300">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(brainVisualCapsuleSelection?.includeBrandContext)}
+                              disabled={!brainVisualCapsuleSelection}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setBrainVisualCapsuleSelection((prev) =>
+                                  prev ? { ...prev, includeBrandContext: checked } : prev,
+                                );
+                              }}
+                              className="h-3.5 w-3.5 rounded border-white/20 bg-white/5 accent-violet-500"
+                            />
+                            Incluir contexto de marca
+                          </label>
+                        ) : null}
+
+                        <button
+                          type="button"
+                          disabled={!brainImageDnaActivated || brainImageLoading}
+                          onClick={() => void generateBrainImageSuggestions(false)}
+                          className={`w-full rounded-[10px] border border-violet-300/25 bg-violet-600 px-3 py-2.5 text-[11px] font-black uppercase tracking-wide text-white shadow-[0_0_22px_rgba(124,58,237,0.18)] transition-all hover:bg-violet-500 disabled:cursor-not-allowed ${
+                            brainImageDnaActivated ? "opacity-100" : "opacity-10"
+                          }`}
+                        >
+                          {brainImageLoading ? "Generando…" : "Generar 2 opciones"}
+                        </button>
+                      </div>
+
+                      <div className="rounded-[9px] border border-white/[0.06] bg-black/18">
                         <button
                           type="button"
                           onClick={() => setBrainImageAdvancedOpen((open) => !open)}
-                          className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-[9px] font-semibold uppercase tracking-wide text-zinc-500 transition-colors hover:bg-white/[0.04]"
+                          className="flex w-full items-center justify-between gap-2 px-2.5 py-2 text-[9px] font-black uppercase tracking-[0.16em] text-zinc-500 transition-colors hover:bg-white/[0.04]"
                         >
                           <span>Avanzado</span>
                           {brainImageAdvancedOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                         </button>
                         {brainImageAdvancedOpen ? (
-                          <div className="space-y-1.5 border-t border-white/[0.06] p-2">
-                        <label className="block text-[9px] text-zinc-400">
-                          <span className="mb-0.5 block text-zinc-500">Modo</span>
-                          <select
-                            value={brainImageVarietyMode}
-                            onChange={(e) => setBrainImageVarietyMode(e.target.value as BrainVarietyMode)}
-                            className="nodrag w-full rounded border border-white/10 bg-[#141820] px-1.5 py-1 text-[10px] text-zinc-200"
-                          >
-                            <option value="conservative">Conservadora</option>
-                            <option value="balanced">Equilibrada</option>
-                            <option value="exploratory">Explorar dentro de marca</option>
-                          </select>
-                        </label>
-                        <div className="text-[8px] font-semibold uppercase tracking-wide text-zinc-600">
-                          Bloquear núcleo
-                        </div>
-                        <div className="flex flex-wrap gap-x-2 gap-y-1 text-[9px] text-zinc-300">
-                          <label className="nodrag flex cursor-pointer items-center gap-1">
-                            <input
-                              type="checkbox"
-                              checked={brainImageLockPalette}
-                              onChange={(e) => setBrainImageLockPalette(e.target.checked)}
-                            />
-                            Paleta
-                          </label>
-                          <label className="nodrag flex cursor-pointer items-center gap-1">
-                            <input
-                              type="checkbox"
-                              checked={brainImageLockLight}
-                              onChange={(e) => setBrainImageLockLight(e.target.checked)}
-                            />
-                            Luz
-                          </label>
-                          <label className="nodrag flex cursor-pointer items-center gap-1">
-                            <input
-                              type="checkbox"
-                              checked={brainImageLockTone}
-                              onChange={(e) => setBrainImageLockTone(e.target.checked)}
-                            />
-                            Tono
-                          </label>
-                          <label className="nodrag flex cursor-pointer items-center gap-1">
-                            <input
-                              type="checkbox"
-                              checked={brainImageLockRealism}
-                              onChange={(e) => setBrainImageLockRealism(e.target.checked)}
-                            />
-                            Realismo
-                          </label>
-                        </div>
-                        <div className="text-[8px] font-semibold uppercase tracking-wide text-zinc-600">
-                          Dejar variar
-                        </div>
-                        <div className="flex flex-wrap gap-x-2 gap-y-1 text-[9px] text-zinc-300">
-                          <label className="nodrag flex cursor-pointer items-center gap-1">
-                            <input
-                              type="checkbox"
-                              checked={brainImageVarySubjects}
-                              onChange={(e) => setBrainImageVarySubjects(e.target.checked)}
-                            />
-                            Sujetos
-                          </label>
-                          <label className="nodrag flex cursor-pointer items-center gap-1">
-                            <input
-                              type="checkbox"
-                              checked={brainImageVaryFraming}
-                              onChange={(e) => setBrainImageVaryFraming(e.target.checked)}
-                            />
-                            Encuadre
-                          </label>
-                          <label className="nodrag flex cursor-pointer items-center gap-1">
-                            <input
-                              type="checkbox"
-                              checked={brainImageVaryScene}
-                              onChange={(e) => setBrainImageVaryScene(e.target.checked)}
-                            />
-                            Escena
-                          </label>
-                          <label className="nodrag flex cursor-pointer items-center gap-1">
-                            <input
-                              type="checkbox"
-                              checked={brainImageVaryActivity}
-                              onChange={(e) => setBrainImageVaryActivity(e.target.checked)}
-                            />
-                            Actividad
-                          </label>
-                          <label className="nodrag flex cursor-pointer items-center gap-1">
-                            <input
-                              type="checkbox"
-                              checked={brainImageVaryProps}
-                              onChange={(e) => setBrainImageVaryProps(e.target.checked)}
-                            />
-                            Props
-                          </label>
-                        </div>
+                          <div className="space-y-2 border-t border-white/[0.06] p-2.5">
+                            <label className="block text-[9px] text-zinc-400">
+                              <span className="mb-0.5 block text-zinc-500">Modo</span>
+                              <select
+                                value={brainImageVarietyMode}
+                                onChange={(e) => setBrainImageVarietyMode(e.target.value as BrainVarietyMode)}
+                                className="nodrag w-full rounded border border-white/10 bg-[#141820] px-1.5 py-1 text-[10px] text-zinc-200"
+                              >
+                                <option value="conservative">Conservadora</option>
+                                <option value="balanced">Equilibrada</option>
+                                <option value="exploratory">Explorar dentro de marca</option>
+                              </select>
+                            </label>
+                            <div className="text-[8px] font-semibold uppercase tracking-wide text-zinc-600">Bloquear núcleo</div>
+                            <div className="flex flex-wrap gap-x-2 gap-y-1 text-[9px] text-zinc-300">
+                              <label className="nodrag flex cursor-pointer items-center gap-1"><input type="checkbox" checked={brainImageLockPalette} onChange={(e) => setBrainImageLockPalette(e.target.checked)} />Paleta</label>
+                              <label className="nodrag flex cursor-pointer items-center gap-1"><input type="checkbox" checked={brainImageLockLight} onChange={(e) => setBrainImageLockLight(e.target.checked)} />Luz</label>
+                              <label className="nodrag flex cursor-pointer items-center gap-1"><input type="checkbox" checked={brainImageLockTone} onChange={(e) => setBrainImageLockTone(e.target.checked)} />Tono</label>
+                              <label className="nodrag flex cursor-pointer items-center gap-1"><input type="checkbox" checked={brainImageLockRealism} onChange={(e) => setBrainImageLockRealism(e.target.checked)} />Realismo</label>
+                            </div>
+                            <div className="text-[8px] font-semibold uppercase tracking-wide text-zinc-600">Dejar variar</div>
+                            <div className="flex flex-wrap gap-x-2 gap-y-1 text-[9px] text-zinc-300">
+                              <label className="nodrag flex cursor-pointer items-center gap-1"><input type="checkbox" checked={brainImageVarySubjects} onChange={(e) => setBrainImageVarySubjects(e.target.checked)} />Sujetos</label>
+                              <label className="nodrag flex cursor-pointer items-center gap-1"><input type="checkbox" checked={brainImageVaryFraming} onChange={(e) => setBrainImageVaryFraming(e.target.checked)} />Encuadre</label>
+                              <label className="nodrag flex cursor-pointer items-center gap-1"><input type="checkbox" checked={brainImageVaryScene} onChange={(e) => setBrainImageVaryScene(e.target.checked)} />Escena</label>
+                              <label className="nodrag flex cursor-pointer items-center gap-1"><input type="checkbox" checked={brainImageVaryActivity} onChange={(e) => setBrainImageVaryActivity(e.target.checked)} />Actividad</label>
+                              <label className="nodrag flex cursor-pointer items-center gap-1"><input type="checkbox" checked={brainImageVaryProps} onChange={(e) => setBrainImageVaryProps(e.target.checked)} />Props</label>
+                            </div>
                           </div>
                         ) : null}
                       </div>
-                      <div className="space-y-2 rounded-[6px] border border-white/[0.06] bg-black/20 p-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <div>
-                            <div className="text-[9px] font-semibold uppercase tracking-wide text-zinc-500">
-                              Dirección visual
-                            </div>
-                            <div className="mt-0.5 flex items-center gap-1 text-[10px] text-emerald-200/90">
-                              <Check size={11} /> Estilo general de Brain
-                            </div>
+
+                      {brainImageError ? (
+                        <div className="rounded-[8px] border border-amber-300/15 bg-amber-500/10 px-2.5 py-2 text-[10px] leading-snug text-amber-100/90">
+                          {brainImageError}
+                        </div>
+                      ) : null}
+
+                      {brainImageSuggestions.length > 0 ? (
+                        <div className="space-y-2">
+                          <div className="grid grid-cols-2 gap-2">
+                            {brainImageSuggestions.slice(0, 2).map((it) => (
+                              <button
+                                key={it.id}
+                                type="button"
+                                onClick={() => {
+                                  void applyBrainImageSuggestion(it.src, `img:${it.id}`);
+                                }}
+                                title="Aplicar esta imagen"
+                                className="group relative overflow-hidden rounded-[9px] border border-white/[0.1] bg-[#171a21] transition-colors hover:border-violet-400/40"
+                              >
+                                <img
+                                  src={it.src}
+                                  alt={it.label || "Sugerencia Brain"}
+                                  className="h-[104px] w-full object-cover transition-transform duration-200 group-hover:scale-[1.02]"
+                                />
+                                <span className="pointer-events-none absolute bottom-1.5 right-1.5 rounded-full border border-black/20 bg-black/55 px-2 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-white opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100">
+                                  Aplicar
+                                </span>
+                              </button>
+                            ))}
                           </div>
-                          {brainVisualCapsuleSelection ? (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setBrainVisualCapsuleSelection(null);
-                                setBrainVisualLookPickerOpen(false);
-                                setBrainVisualLookDraftCapsuleId(null);
-                                setBrainVisualLookDraftPart(null);
-                              }}
-                              className="rounded border border-white/[0.1] px-1.5 py-1 text-[9px] font-semibold text-zinc-300 hover:bg-white/[0.06]"
-                            >
-                              Quitar
-                            </button>
-                          ) : null}
-                        </div>
-                        <div className="rounded-[6px] border border-white/[0.08] bg-[#11141b] p-2">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="text-[9px] font-semibold uppercase tracking-wide text-zinc-500">
-                                Look visual
-                              </div>
-                              {brainVisualCapsuleSelection ? (
-                                <div className="mt-1 space-y-0.5">
-                                  <p className="truncate text-[10px] font-semibold text-violet-200/90">
-                                    {brainVisualLookPartLabel(brainVisualCapsuleSelection.selectedPart)}
-                                  </p>
-                                  <label className="mt-1.5 flex items-start gap-1.5 text-[9px] leading-snug text-zinc-300">
-                                    <input
-                                      type="checkbox"
-                                      checked={Boolean(brainVisualCapsuleSelection.includeBrandContext)}
-                                      onChange={(e) => {
-                                        const checked = e.target.checked;
-                                        setBrainVisualCapsuleSelection((prev) =>
-                                          prev ? { ...prev, includeBrandContext: checked } : prev,
-                                        );
-                                      }}
-                                      className="mt-0.5 h-3 w-3 rounded border-white/20 bg-white/5 accent-violet-500"
-                                    />
-                                    <span>
-                                      Incluir contexto de marca
-                                      <span className="block text-[8px] text-zinc-500">
-                                        Combina el ADN de imagen con marca/paleta/logo si existen.
-                                      </span>
-                                    </span>
-                                  </label>
-                                </div>
-                              ) : (
-                                <p className="mt-1 text-[10px] leading-snug text-zinc-500">
-                                  Usa un look visual cuando quieras guiar la imagen con una referencia concreta de Brain.
-                                </p>
-                              )}
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setBrainVisualLookPickerOpen((open) => !open);
-                                if (!brainVisualLookDraftCapsuleId && brainUsableVisualCapsules[0]) {
-                                  setBrainVisualLookDraftCapsuleId(brainUsableVisualCapsules[0].id);
-                                }
-                              }}
-                              className="shrink-0 rounded border border-violet-400/25 bg-violet-500/10 px-1.5 py-1 text-[9px] font-semibold text-violet-100 hover:bg-violet-500/20"
-                            >
-                              {brainVisualCapsuleSelection ? "Cambiar" : "+ Añadir"}
-                            </button>
-                          </div>
-                          {brainVisualLookPickerOpen ? (
-                            <div className="mt-2 space-y-2 border-t border-white/[0.06] pt-2">
-                              {brainUsableVisualCapsules.length === 0 ? (
-                                <div className="rounded-[5px] border border-white/[0.08] bg-black/20 px-2 py-2 text-[10px] leading-snug text-zinc-500">
-                                  <p>No hay looks visuales listos.</p>
-                                  <p className="mt-1">Crea looks visuales en Brain subiendo imágenes a Looks visuales.</p>
-                                </div>
-                              ) : (
-                                <>
-                                  <div className="grid max-h-56 grid-cols-2 gap-1.5 overflow-y-auto pr-1">
-                                    {brainUsableVisualCapsules.map((capsule) => {
-                                      const selected = capsule.id === brainVisualLookDraftCapsuleId;
-                                      const preview = capsule.mosaicImageUrl || capsule.sourceImageUrl;
-                                      return (
-                                        <button
-                                          key={capsule.id}
-                                          type="button"
-                                          onClick={() => {
-                                            setBrainVisualLookDraftCapsuleId(capsule.id);
-                                            setBrainVisualLookDraftPart(null);
-                                          }}
-                                          className={`relative aspect-[4/3] w-full overflow-hidden rounded-[7px] border transition-colors ${
-                                            selected
-                                              ? "border-violet-400/45 bg-violet-500/15"
-                                              : "border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.06]"
-                                          }`}
-                                        >
-                                          {preview ? (
-                                            <img
-                                              src={preview}
-                                              alt="ADN image"
-                                              className="h-full w-full object-cover"
-                                            />
-                                          ) : (
-                                            <span className="flex h-full w-full items-center justify-center bg-white/[0.06] text-zinc-500">
-                                              <ImageIconLucide size={15} />
-                                            </span>
-                                          )}
-                                          {selected ? (
-                                            <span className="absolute right-1.5 top-1.5 rounded-full border border-white/20 bg-violet-500 px-1.5 py-0.5 text-[8px] font-semibold text-white shadow-sm">
-                                              ADN
-                                            </span>
-                                          ) : null}
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                  {brainVisualLookDraftCapsule ? (
-                                    <div className="space-y-2">
-                                      <div>
-                                        <div className="mb-1 text-[9px] font-semibold uppercase tracking-wide text-zinc-500">
-                                          ¿Qué quieres tomar de este look?
-                                        </div>
-                                        <div className="flex flex-wrap gap-1">
-                                          {BRAIN_VISUAL_LOOK_PARTS.map((part) => {
-                                            const active = brainVisualLookDraftPart === part.id;
-                                            return (
-                                              <button
-                                                key={part.id}
-                                                type="button"
-                                                title={part.description}
-                                                onClick={() => setBrainVisualLookDraftPart(part.id)}
-                                                className={`rounded-full border px-2 py-1 text-[9px] font-semibold ${
-                                                  active
-                                                    ? "border-violet-300/60 bg-violet-500/25 text-violet-50"
-                                                    : "border-white/[0.1] bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08]"
-                                                }`}
-                                              >
-                                                {part.label}
-                                              </button>
-                                            );
-                                          })}
-                                        </div>
-                                      </div>
-                                      {brainVisualLookDraftPart ? (
-                                        <div className="space-y-1.5">
-                                          {brainVisualLookDraftExamples.length === 0 ? (
-                                            <div className="rounded-[5px] border border-amber-300/20 bg-amber-500/10 px-2 py-2 text-[10px] leading-snug text-amber-100/90">
-                                              Este look no tiene ejemplos suficientes de esta categoría.
-                                            </div>
-                                          ) : (
-                                            brainVisualLookDraftExamples.map((example) => (
-                                              <button
-                                                key={example.id}
-                                                type="button"
-                                                onClick={() => {
-                                                  setBrainVisualCapsuleSelection(
-                                                    buildBrainVisualCapsuleSelection(
-                                                      brainVisualLookDraftCapsule,
-                                                      brainVisualLookDraftPart,
-                                                      example,
-                                                    ),
-                                                  );
-                                                  setBrainVisualLookPickerOpen(false);
-                                                }}
-                                                className="flex w-full items-center gap-2 rounded-[6px] border border-white/[0.08] bg-black/20 px-2 py-1.5 text-left hover:border-violet-400/35 hover:bg-violet-500/10"
-                                              >
-                                                {example.imageUrl ? (
-                                                  <img
-                                                    src={example.imageUrl}
-                                                    alt={example.title}
-                                                    className="h-9 w-9 shrink-0 rounded object-cover"
-                                                  />
-                                                ) : (
-                                                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded bg-white/[0.06] text-[9px] font-bold text-violet-200">
-                                                    {brainVisualLookPartLabel(brainVisualLookDraftPart).slice(0, 2).toUpperCase()}
-                                                  </span>
-                                                )}
-                                                <span className="min-w-0 flex-1">
-                                                  <span className="block truncate text-[10px] font-semibold text-zinc-100">
-                                                    {example.title}
-                                                  </span>
-                                                  <span className="line-clamp-2 text-[9px] leading-snug text-zinc-500">
-                                                    {example.description}
-                                                  </span>
-                                                </span>
-                                                <span className="shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 text-[8px] font-semibold text-violet-100">
-                                                  Usar
-                                                </span>
-                                              </button>
-                                            ))
-                                          )}
-                                        </div>
-                                      ) : null}
-                                    </div>
-                                  ) : null}
-                                </>
-                              )}
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                      {brainImageLoading ? (
-                        <div className="rounded-[6px] border border-white/[0.08] bg-[#171a21] px-2.5 py-2 text-[10px] text-zinc-400">
-                          Generando sugerencias visuales con Nano Banana…
-                        </div>
-                      ) : brainImageSuggestions.length === 0 ? (
-                        <div className="space-y-2 rounded-[6px] border border-white/[0.08] bg-[#171a21] px-2.5 py-2 text-[10px] text-zinc-400">
-                          {brainImageError ? (
-                            <p className="text-amber-300/90">{brainImageError}</p>
-                          ) : null}
                           <button
                             type="button"
-                            onClick={() => void generateBrainImageSuggestions(false)}
-                            className="w-full rounded-[5px] border border-violet-500/35 bg-violet-600/20 px-2 py-1.5 text-[10px] font-semibold text-violet-100 transition-colors hover:bg-violet-600/30"
+                            onClick={() => requestAnotherBrainImages()}
+                            disabled={brainImageLoading || brainForceCooldownMs > 0}
+                            className="w-full rounded-[8px] border border-white/[0.12] bg-white/[0.04] px-2 py-1.5 text-[10px] font-semibold text-zinc-200 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-55"
                           >
-                            Generar 2 sugerencias
+                            {brainForceCooldownMs > 0
+                              ? `Solicitar otra imagen (${Math.ceil(brainForceCooldownMs / 1000)}s)`
+                              : "Generar otras 2"}
                           </button>
                         </div>
-                      ) : (
-                        <div className="grid grid-cols-2 gap-2">
-                          {brainImageSuggestions.slice(0, 2).map((it) => (
-                            <button
-                              key={it.id}
-                              type="button"
-                              onClick={() => {
-                                void applyBrainImageSuggestion(it.src, `img:${it.id}`);
-                              }}
-                              title="Aplicar esta imagen"
-                              className="group relative overflow-hidden rounded-[8px] border border-white/[0.1] bg-[#171a21] transition-colors hover:border-violet-400/40"
-                            >
-                              <img
-                                src={it.src}
-                                alt={it.label || "Sugerencia Brain"}
-                                className="h-[104px] w-full object-cover transition-transform duration-200 group-hover:scale-[1.02]"
-                              />
-                              <span className="pointer-events-none absolute bottom-1.5 right-1.5 rounded-full border border-black/20 bg-black/55 px-2 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-white opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100">
-                                Aplicar
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      {brainImageSuggestions.length > 0 ? (
-                        <button
-                          type="button"
-                          onClick={() => requestAnotherBrainImages()}
-                          disabled={brainImageLoading || brainForceCooldownMs > 0}
-                          className="w-full rounded-[5px] border border-white/[0.12] bg-white/[0.04] px-2 py-1.5 text-[10px] font-semibold text-zinc-200 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-55"
-                        >
-                          {brainForceCooldownMs > 0
-                            ? `Solicitar otra imagen (${Math.ceil(brainForceCooldownMs / 1000)}s)`
-                            : "Generar otras 2"}
-                        </button>
                       ) : null}
                     </div>
                   )}

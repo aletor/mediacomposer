@@ -1054,8 +1054,22 @@ function buildVisualCapsuleSelectionDirective(selection?: BrainVisualCapsuleSele
     .join(" ");
 }
 
-function composeCapsuleOnlyDesignerImagePrompt(selection: BrainVisualCapsuleSelection): string {
+function buildCustomImagePriorityBlock(customImageInstruction?: string): string {
+  const custom = String(customImageInstruction ?? "").trim();
+  if (!custom) return "";
+  return [
+    "CUSTOM PRIORITARIO",
+    custom,
+    "Esta instrucción manda sobre el contenido literal inferido del ADN: sujeto, número de personas, objetos, entorno, acción o composición deben obedecer al CUSTOM. El ADN seleccionado se mantiene como referencia de estilo visual, materialidad, color, luz y atmósfera.",
+  ].join("\n");
+}
+
+function composeCapsuleOnlyDesignerImagePrompt(
+  selection: BrainVisualCapsuleSelection,
+  customImageInstruction?: string,
+): string {
   const directive = buildVisualCapsuleSelectionDirective(selection);
+  const customPriority = buildCustomImagePriorityBlock(customImageInstruction);
   const outputLineByPart: Record<BrainVisualCapsuleSelectionPart, string> = {
     person: "OUTPUT: imagen centrada en presencia/interacción humana genérica inspirada en el ADN seleccionado.",
     texture: "OUTPUT: textura/material de superficie. Debe poder funcionar como fondo o relleno visual del marco.",
@@ -1070,8 +1084,11 @@ function composeCapsuleOnlyDesignerImagePrompt(selection: BrainVisualCapsuleSele
     "",
     "ADN DE IMAGEN SELECCIONADO",
     directive,
+    customPriority ? "" : "",
+    customPriority,
     "",
     "REGLAS",
+    customPriority ? "- Si CUSTOM cambia el contenido, respeta CUSTOM y usa el ADN solo como dirección estética." : "",
     "- No uses contexto de marca ni contexto de proyecto.",
     "- No incluyas claims, métricas, mensajes comerciales, logos ni colores de marca salvo que formen parte explícita de la descripción del ADN seleccionado.",
     "- No mezcles otros looks visuales de Brain.",
@@ -1085,8 +1102,10 @@ function composeCapsuleWithBrandDesignerImagePrompt(params: {
   context: BrainVisualPromptContextResult;
   brandColorLine: string;
   logoBlock: string;
+  customImageInstruction?: string;
 }): string {
   const directive = buildVisualCapsuleSelectionDirective(params.selection);
+  const customPriority = buildCustomImagePriorityBlock(params.customImageInstruction);
   const brandContext = twoSentencesMax(
     [
       params.context.brandMessageContext?.trim(),
@@ -1103,12 +1122,15 @@ function composeCapsuleWithBrandDesignerImagePrompt(params: {
     "",
     "ADN DE IMAGEN SELECCIONADO",
     directive,
+    customPriority ? "" : "",
+    customPriority,
     "",
     "CONTEXTO DE MARCA",
     brandContext || "Marca sin contexto textual/paleta/logo suficiente; prioriza el ADN de imagen seleccionado.",
     avoid.length ? `Evitar por seguridad visual de marca: ${avoid.slice(0, 8).join(" · ")}` : "",
     "",
     "REGLAS",
+    customPriority ? "- Si CUSTOM cambia el contenido, respeta CUSTOM; el ADN y la Marca solo guían estilo, coherencia, paleta, tono y restricciones." : "",
     "- El ADN de imagen seleccionado manda sobre textura, persona, objeto, entorno, paleta o look elegido.",
     "- La Marca solo aporta coherencia visual, tono, paleta, logo o restricciones si aparecen en el contexto.",
     "- No uses contexto de proyecto, claims de campaña, métricas ni textos comerciales salvo que estén explícitamente en CONTEXTO DE MARCA.",
@@ -1135,18 +1157,20 @@ export function composeBrainDesignerImagePrompt(params: {
   /** Si true, permite un prompt más largo (sigue sin volcar todo el ADN). */
   advancedLongPrompt?: boolean;
   visualCapsuleSelection?: BrainVisualCapsuleSelection;
+  customImageInstruction?: string;
 }): { prompt: string; diagnostics: BrainImageSuggestionDiagnostics } {
   const ctx = params.context;
   if (params.visualCapsuleSelection) {
     const includeBrandContext = Boolean(params.visualCapsuleSelection.includeBrandContext);
     const prompt = includeBrandContext
-      ? composeCapsuleWithBrandDesignerImagePrompt({
-          selection: params.visualCapsuleSelection,
-          context: ctx,
-          brandColorLine: params.brandColorLine,
-          logoBlock: params.logoBlock,
-        })
-      : composeCapsuleOnlyDesignerImagePrompt(params.visualCapsuleSelection);
+        ? composeCapsuleWithBrandDesignerImagePrompt({
+            selection: params.visualCapsuleSelection,
+            context: ctx,
+            brandColorLine: params.brandColorLine,
+            logoBlock: params.logoBlock,
+            customImageInstruction: params.customImageInstruction,
+          })
+      : composeCapsuleOnlyDesignerImagePrompt(params.visualCapsuleSelection, params.customImageInstruction);
     const diagnostics: BrainImageSuggestionDiagnostics = {
       finalPromptUsed: prompt,
       visualSourcesUsed: {
@@ -1227,6 +1251,9 @@ export function composeBrainDesignerImagePrompt(params: {
   const pick = varietyPick.pick;
 
   const intention = [
+    params.customImageInstruction?.trim()
+      ? `CUSTOM PRIORITARIO: ${params.customImageInstruction.trim()}. Si entra en conflicto con otros contextos, el CUSTOM manda sobre sujeto, número, objeto, entorno, acción y composición.`
+      : "",
     params.pieceMessage.trim(),
     params.pageContext.trim() ? `Página / layout: ${params.pageContext.trim().slice(0, 360)}` : "",
     buildVisualCapsuleSelectionDirective(params.visualCapsuleSelection),

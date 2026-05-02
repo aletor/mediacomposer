@@ -842,6 +842,24 @@ function normalizeVisualCapsules(raw: unknown): VisualCapsule[] {
         : {}),
       ...(typeof o.lastError === "string" && o.lastError.trim() ? { lastError: o.lastError.trim().slice(0, 1000) } : {}),
     };
+    if (!capsule.mosaicImageUrl && capsule.sourceImageUrl && capsule.analysisStatus !== "analyzing") {
+      const hasUsefulFallbackDna = Boolean(
+        capsule.summary?.trim() ||
+          capsule.heroConclusion?.trim() ||
+          capsule.palette.length ||
+          capsule.persons.length ||
+          capsule.environments.length ||
+          capsule.textures.length ||
+          capsule.objects.length ||
+          capsule.generalLooks?.length ||
+          capsule.moodTags?.length ||
+          capsule.visualTraits?.length,
+      );
+      if (hasUsefulFallbackDna) {
+        capsule.mosaicImageUrl = capsule.sourceImageUrl;
+        if (capsule.analysisStatus === "error") capsule.analysisStatus = "incomplete";
+      }
+    }
     out.push(capsule);
     if (out.length >= 100) break;
   }

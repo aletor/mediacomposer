@@ -390,8 +390,33 @@ function visualCapsuleFromDocAndSlot(params: {
   const sourceImageUrl = slot?.sourceImageUrl?.trim() || doc.dataUrl?.trim() || doc.originalSourceUrl?.trim() || prev?.sourceImageUrl;
   const title = prev?.title || slot?.label || doc.name || "Look visual";
   const hasMosaic = Boolean(slot?.mosaic?.imageUrl?.trim() || slot?.mosaic?.s3Path?.trim());
+  const summary =
+    ignorePendingVisualCapsuleText(slot?.generalStyle?.summary) ||
+    ignorePendingVisualCapsuleText(slot?.hero?.description) ||
+    ignorePendingVisualCapsuleText(prev?.summary);
+  const heroConclusion =
+    ignorePendingVisualCapsuleText(slot?.hero?.conclusion) ||
+    ignorePendingVisualCapsuleText(slot?.hero?.description) ||
+    ignorePendingVisualCapsuleText(prev?.heroConclusion);
+  const hasUsableFallbackAnalysis = Boolean(
+    sourceImageUrl &&
+      (summary ||
+        heroConclusion ||
+        slot?.people?.notes ||
+        slot?.textures?.notes ||
+        slot?.objects?.notes ||
+        slot?.environments?.notes ||
+        slot?.generalStyle?.mood?.length ||
+        prev?.persons?.length ||
+        prev?.environments?.length ||
+        prev?.textures?.length ||
+        prev?.objects?.length),
+  );
   const analysisStatus = (() => {
     if (hasMosaic) return "ready";
+    if ((slot?.status === "failed" || analysis?.analysisStatus === "failed" || doc.status === "Error") && hasUsableFallbackAnalysis) {
+      return "incomplete";
+    }
     if (slot?.status === "failed" || analysis?.analysisStatus === "failed" || doc.status === "Error") return "error";
     if (slot?.status === "generating") return "analyzing";
     if (!analysis || analysis.analysisStatus === "pending" || analysis.analysisStatus === "queued" || analysis.analysisStatus === "analyzing") {
@@ -417,14 +442,8 @@ function visualCapsuleFromDocAndSlot(params: {
     status: params.status ?? prev?.status ?? "reference",
     analysisStatus,
     scope: "capsule",
-    summary:
-      ignorePendingVisualCapsuleText(slot?.generalStyle?.summary) ||
-      ignorePendingVisualCapsuleText(slot?.hero?.description) ||
-      ignorePendingVisualCapsuleText(prev?.summary),
-    heroConclusion:
-      ignorePendingVisualCapsuleText(slot?.hero?.conclusion) ||
-      ignorePendingVisualCapsuleText(slot?.hero?.description) ||
-      ignorePendingVisualCapsuleText(prev?.heroConclusion),
+    summary,
+    heroConclusion,
     palette,
     persons: visualCapsuleSuggestionsFromSlotSection(slot, "person", slot?.people, prev?.persons),
     environments: visualCapsuleSuggestionsFromSlotSection(slot, "environment", slot?.environments, prev?.environments),
@@ -437,7 +456,7 @@ function visualCapsuleFromDocAndSlot(params: {
     analysisProvider: slot?.mosaic?.provider ?? analysis?.visionProviderId ?? prev?.analysisProvider,
     sourceAnalysisId: analysis?.id ?? prev?.sourceAnalysisId,
     sourceVisualDnaSlotId: slot?.id ?? prev?.sourceVisualDnaSlotId,
-    mosaicImageUrl: slot?.mosaic?.imageUrl ?? prev?.mosaicImageUrl,
+    mosaicImageUrl: slot?.mosaic?.imageUrl ?? prev?.mosaicImageUrl ?? (hasUsableFallbackAnalysis ? sourceImageUrl : undefined),
     lastError: slot?.lastError ?? analysis?.failureReason ?? doc.errorMessage ?? prev?.lastError,
   };
 }
